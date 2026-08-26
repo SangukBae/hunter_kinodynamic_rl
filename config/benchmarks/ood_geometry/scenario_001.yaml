@@ -1,0 +1,22 @@
+# OOD geometry: obstacle density well above training's max_obstacles=8,
+# forcing a longer/narrower route than anything seen in training.
+scenario_id: ood_geometry_001
+seed: 20101
+start: {x: -5.5, y: -5.5, yaw: 0.785}
+goal: {x: 5.5, y: 5.5}
+static_obstacles:
+  - {x: -3.0, y: -1.0, radius: 0.3}
+  - {x: -2.0, y: 0.5, radius: 0.3}
+  - {x: -1.0, y: -0.5, radius: 0.3}
+  - {x: 0.0, y: 1.0, radius: 0.3}
+  - {x: 1.0, y: -1.0, radius: 0.3}
+  - {x: 2.0, y: 0.5, radius: 0.3}
+  - {x: 3.0, y: -0.5, radius: 0.3}
+  - {x: -0.5, y: 3.0, radius: 0.3}
+  - {x: 1.5, y: 3.5, radius: 0.3}
+  - {x: -2.5, y: -3.5, radius: 0.3}
+  - {x: 3.5, y: 2.5, radius: 0.3}
+  - {x: -4.0, y: 1.5, radius: 0.3}
+moving_obstacles: []
+dynamics: {}
+sensor: {}

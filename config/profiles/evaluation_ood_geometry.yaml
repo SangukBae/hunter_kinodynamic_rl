@@ -1,0 +1,20 @@
+# Out-of-distribution GEOMETRY benchmark: obstacle density/shape/layout/route
+# length outside the training range (config/benchmarks/ood_geometry/*.yaml).
+action_space:
+  mode: trajectory
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in
+risk:
+  enabled: true
+counterfactual:
+  enabled: true
+
+evaluation:
+  benchmark: ood_geometry
+  episodes_per_scenario: 1

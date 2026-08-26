@@ -1,0 +1,21 @@
+# Out-of-distribution DYNAMICS benchmark: steering response / friction /
+# command latency / velocity response pushed to edge-of-range or beyond
+# (config/benchmarks/ood_dynamics/*.yaml -- see domain_randomizer.py).
+action_space:
+  mode: trajectory
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in
+risk:
+  enabled: true
+counterfactual:
+  enabled: true
+
+evaluation:
+  benchmark: ood_dynamics
+  episodes_per_scenario: 1

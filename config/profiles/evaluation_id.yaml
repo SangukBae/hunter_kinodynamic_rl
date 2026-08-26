@@ -1,0 +1,21 @@
+# In-distribution benchmark: unseen scenarios sampled from the SAME
+# scenario/dynamics ranges training used, drawn from the test seed range only
+# (config/benchmarks/id/*.yaml -- fixed, not regenerated per run).
+action_space:
+  mode: trajectory
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in
+risk:
+  enabled: true
+counterfactual:
+  enabled: true
+
+evaluation:
+  benchmark: id
+  episodes_per_scenario: 1

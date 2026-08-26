@@ -1,0 +1,27 @@
+# Ablation E: D (kinodynamic_tqc_risk_supervised_only.yaml) + the
+# risk-aware actor penalty -- actor_lambda > 0 activates
+# _actor_extra_loss's risk-critic-mediated penalty on the actor's own
+# update (Contribution 2). No counterfactual candidate ranking yet (see
+# kinodynamic_tqc_counterfactual.yaml for F).
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: false
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: false
+
+scenario:
+  feasibility_check: ackermann

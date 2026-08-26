@@ -1,0 +1,26 @@
+# Ablation A: Vanilla TQC. Legacy [r, theta, yield] waypoint action (same
+# contract as drl_agent's environment_curriculum.yaml hybrid action), no
+# trajectory primitive, no dynamics rollout, no risk/counterfactual. This is
+# the fairest apples-to-apples comparison point against drl_agent's own TQC.
+action_space:
+  mode: legacy_waypoint
+
+features:
+  ackermann_rollout: false
+  risk_critic: false
+  counterfactual_risk: false
+
+# section P0-4 (baseline/reference parity): drl_agent's own 87D observation
+# contract has only a 7D robot-state tail (goal_dist, heading_err, prev_r,
+# prev_theta, v, yaw_rate, steering -- NOT a 3rd previous-action
+# component) -- config/training/defaults.yaml's shared 8D
+# (+L-memory) default is a deliberate research EXTENSION for the
+# trajectory-action profiles, not something this apples-to-apples baseline
+# may silently inherit.
+observation:
+  robot_state_dim: 7
+
+risk:
+  enabled: false
+counterfactual:
+  enabled: false

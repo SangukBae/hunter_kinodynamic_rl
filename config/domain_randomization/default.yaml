@@ -1,0 +1,18 @@
+# Opt-in domain randomization ranges (section 30). Disabled by default --
+# a profile enables it by setting domain_randomization.enabled: true and
+# overriding whichever ranges it wants (see evaluation_ood_dynamics.yaml for
+# how a FIXED, non-randomized edge-case is used for benchmark evaluation
+# instead -- this file is for TRAINING-time randomization).
+domain_randomization:
+  enabled: false
+  mass_scale_range: [0.9, 1.1]
+  friction_scale_range: [0.7, 1.1]
+  wheel_radius_scale_range: [0.97, 1.03]
+  steering_gain_range: [0.85, 1.15]
+  steering_delay_sec_range: [0.0, 0.08]
+  velocity_response_scale_range: [0.8, 1.1]
+  command_latency_sec_range: [0.0, 0.05]
+  lidar_range_noise_std_m_range: [0.0, 0.02]
+  lidar_dropout_prob_range: [0.0, 0.02]
+  odometry_noise_std_range: [0.0, 0.01]
+  sensor_frame_drop_prob_range: [0.0, 0.01]

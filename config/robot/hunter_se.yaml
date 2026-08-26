@@ -1,0 +1,32 @@
+# AgileX Hunter SE physical parameters.
+#
+# Sources (verified against the running system, not assumed):
+#   wheelbase_m, steering_limit_deg -- ros2_ws/src/hunter_se_gazebo/config/hunter_se_cmd_prefilter.yaml
+#     (wheelbase_m: 0.547696, steering_limit_deg: 21.58 -- matches
+#     vehicle_steering_limit_deg in drl_agent's environment.yaml)
+#   wheel_radius_m                  -- hunter_se_gazebo/urdf/mobile_robot/hunter_se_wheel.xacro (0.136)
+#   accel_limit_mps2/brake_decel_mps2/steering_rate_deg_s/speed_lag_tau_sec
+#                                    -- hunter_se_cmd_prefilter.yaml (the actual command
+#                                       shaper the robot runs through -- see dynamics/actuator_model.py)
+#   track_width_m, length/width/height, mass -- AgileX Hunter SE datasheet nominal
+#     values (see docs/RESEARCH_PROTOCOL.md); NOT yet corrected by real-robot
+#     system identification (see system_identification.py / docs/SIM2REAL.md).
+robot:
+  name: hunter_se
+  wheelbase_m: 0.547696
+  track_width_m: 0.503404
+  wheel_radius_m: 0.136
+  length_m: 0.760
+  width_m: 0.400
+  height_m: 0.140
+  mass_kg: 42.0
+  steering_limit_deg: 21.58
+  max_forward_speed_mps: 2.0
+  min_forward_speed_mps: 0.0
+  accel_limit_mps2: 6.0
+  brake_decel_mps2: 6.0
+  steering_rate_deg_s: 200.0
+  speed_lag_tau_sec: 0.05
+  # Bounding-circle collision footprint -- half the diagonal of the 0.76 x
+  # 0.40 m body footprint (~0.43 m), rounded up for a small margin.
+  collision_radius_m: 0.45

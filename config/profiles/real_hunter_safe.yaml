@@ -1,0 +1,42 @@
+# Real-robot deployment profile: INFERENCE ONLY (real_policy handles this --
+# training happens only in simulation). Conservative speed/lookahead bounds
+# on top of the full proposed system. Every safety guard in
+# env/safety/action_guard.py is mandatory here, not optional.
+action_space:
+  mode: trajectory
+  v_min_mps: 0.0
+  horizon_length_min_m: 0.5
+  horizon_length_max_m: 1.5   # shorter max lookahead than sim (conservative)
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+# section P0-4: must match the deployed checkpoint's own training-time
+# value EXACTLY (build_effective_profile's architecture-compatibility
+# check) -- kinodynamic_tqc_counterfactual.yaml (the checkpoint this
+# profile is designed to deploy) uses the 8D (+L-memory) trajectory-mode
+# observation contract.
+observation:
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+  min_safe_clearance_m: 0.5   # more conservative than the 0.3 m sim default
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+
+robot:
+  # Conservative speed CAP for the first real-robot trials -- the trained
+  # policy's action range is unchanged, but the deployment adapter clips
+  # commanded speed to this value (see env/safety/action_guard.py).
+  max_forward_speed_mps: 0.8
+
+runtime:
+  # Marks this profile INFERENCE-ONLY -- nodes/train_node.py refuses to
+  # train against it (section P2).
+  deployment: real_hardware

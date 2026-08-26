@@ -1,0 +1,11 @@
+scenario_id: dynamic_002
+seed: 20302
+start: {x: -5.0, y: -2.0, yaw: 0.2}
+goal: {x: 5.0, y: 2.0}
+static_obstacles:
+  - {x: 0.0, y: -2.5, radius: 0.30}
+moving_obstacles:
+  - {x0: -0.5, y0: 4.5, vx: 0.0, vy: -0.65, radius: 0.30}
+  - {x0: 3.5, y0: 2.5, vx: -0.45, vy: -0.10, radius: 0.30}
+dynamics: {}
+sensor: {}

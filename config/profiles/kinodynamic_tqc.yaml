@@ -1,0 +1,24 @@
+# Ablation B: TQC + Ackermann-feasible trajectory action [kappa, v_ref, L].
+# No temporal context, no risk prediction yet -- isolates Contribution 1.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: false
+  risk_critic: false
+  counterfactual_risk: false
+
+# section P0-4 (baseline/reference parity): trajectory-mode profiles opt
+# INTO the 8D (+3rd previous-action/L-memory) observation contract
+# explicitly -- drl_agent parity (7D) is the schema DEFAULT, reserved for
+# legacy_waypoint-mode profiles (baseline_tqc.yaml/legacy_waypoint_tqc.yaml).
+# See observation_builder.py's ROBOT_STATE_DIM_* constants.
+observation:
+  robot_state_dim: 8
+
+# Ackermann-aware (min-turning-radius/heading) procedural scenario feasibility
+# gate on top of the default grid-BFS connectivity check -- see
+# env/scenarios/ackermann_feasibility.py and generate_scenario()'s docstring.
+scenario:
+  feasibility_check: ackermann

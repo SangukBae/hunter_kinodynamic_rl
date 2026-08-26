@@ -1,0 +1,55 @@
+# Fast implementation-verification profile -- NOT for research results.
+# Full proposed system (same features as kinodynamic_tqc_counterfactual.yaml)
+# but with tiny warmup/batch/episode counts so a full reset->step->train->
+# checkpoint cycle finishes in seconds/minutes instead of hours. Per section
+# 50 of the research brief, the *research* profiles' timesteps_before_training
+# / batch_size / training horizon are never touched to make this fast --
+# only this dedicated profile is shrunk.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, mirrors kinodynamic_tqc_counterfactual.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+  # Research profiles keep the default 500-update warmup (never touched
+  # here) -- but a 200-step smoke run never reaches that, so
+  # risk/actor_penalty_active would stay 0 for the ENTIRE run and the
+  # actor-side risk-aware code path would go completely unexercised by the
+  # smoke test (code review P0 finding). Override ONLY in this dedicated
+  # smoke profile.
+  actor_penalty_warmup_updates: 3
+  min_valid_labels_per_batch: 1
+
+counterfactual:
+  enabled: true
+  # actor + stop + short/long-L + left/right alternatives must all survive
+  # truncation so the smoke run exercises every candidate family.
+  num_candidates: 8
+
+hyperparameters:
+  batch_size: 8
+  buffer_size: 2000
+  n_critics: 2
+
+scenario:
+  world_size_m: 8.0
+  min_obstacles: 1  # guarantee every episode has a real obstacle to detect risk against
+  max_obstacles: 2
+  feasibility_check: ackermann
+
+training:
+  max_timesteps: 200
+  timesteps_before_training: 20
+  eval_freq: 50
+  eval_episodes: 2
+  episode_length_steps: 50
+  seed: 0

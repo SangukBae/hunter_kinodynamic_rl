@@ -1,0 +1,23 @@
+# Dynamic-obstacle benchmark: unseen moving-obstacle motion patterns
+# (config/benchmarks/dynamic/*.yaml -- crossing/head-on/cut-in/parallel
+# beyond what training's generic moving-obstacle generator produced).
+action_space:
+  mode: trajectory
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in
+risk:
+  enabled: true
+counterfactual:
+  enabled: true
+scenario:
+  dynamic_obstacle_count: 4
+
+evaluation:
+  benchmark: dynamic
+  episodes_per_scenario: 1

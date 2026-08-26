@@ -1,0 +1,42 @@
+# The full proposed system (kinodynamic_tqc_counterfactual.yaml) PLUS
+# opt-in domain randomization for sim-to-real robustness (section P1-10).
+# Ranges come from config/domain_randomization/default.yaml via the
+# config loader's layering chain -- only `enabled: true` needs setting
+# here; override individual ranges below if a specific experiment needs
+# tighter/wider ones than the shared defaults.
+#
+# TRAIN-ONLY by construction: environment_node.py's `/reset` only samples
+# a procedural randomization draw on the non-fixed-benchmark branch (see
+# `_on_reset`'s `if is_fixed: ... elif domain_randomization.enabled: ...`)
+# -- a fixed evaluation/benchmark scenario run under THIS SAME profile
+# never picks up a draw, regardless of this flag (see
+# tests/test_domain_randomization_train_only.py).
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  include_stop_candidate: true
+
+domain_randomization:
+  enabled: true
+
+scenario:
+  feasibility_check: ackermann

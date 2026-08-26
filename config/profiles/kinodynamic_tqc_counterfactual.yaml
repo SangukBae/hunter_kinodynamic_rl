@@ -1,0 +1,28 @@
+# Ablation F: E + counterfactual candidate-trajectory risk ranking
+# (Contribution 3) -- the full proposed system.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  include_stop_candidate: true
+
+scenario:
+  feasibility_check: ackermann

@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>hunter_kinodynamic_rl</name>
+  <version>0.1.0</version>
+  <description>
+    Risk-aware kinodynamic reinforcement learning for Ackermann-steered
+    Hunter SE navigation: trajectory-level action space, Ackermann dynamics
+    rollout, dynamics-grounded future risk prediction, and counterfactual
+    risk-aware TQC. Independent research package -- reuses hunter_se_gazebo,
+    drl_agent_interfaces, pointcloud_to_laserscan and drl_obstacle_assets as
+    dependencies; does NOT depend on drl_agent (see docs/SOURCE_MAP.md for
+    which drl_agent code was copied in, and why).
+  </description>
+  <maintainer email="halmoney956@gmail.com">SangukBae</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+
+  <depend>rclpy</depend>
+  <!-- Reset/Step/GetDimensions/Seed service contracts, reused from drl_agent,
+       byte-identical / UNMODIFIED (section P1-5: shared-interface
+       preservation; an earlier revision added an ADDITIVE
+       `reset_generation` field to Reset.srv's response, but code review
+       found that violated this project's "reuse shared infrastructure
+       unmodified" requirement, so it was reverted). reset_generation is
+       instead learned purely from this package's OWN risk-telemetry
+       broadcast topic; see
+       hunter_kinodynamic_rl/training/trainer_base.py's
+       EnvironmentClient.reset()/_await_new_reset_marker and
+       docs/SOURCE_MAP.md. drl_agent_interfaces therefore needs no special
+       rebuild handling beyond the ordinary "build it once, source it"
+       flow already documented in its own README; unlike a real
+       shared-interface change, nothing here can desync a stale server
+       from a rebuilt client. -->
+  <depend>drl_agent_interfaces</depend>
+  <!-- SpawnEntity / DeleteEntity / SetEntityPose / ControlWorld -->
+  <depend>ros_gz_interfaces</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <!-- Runtime bring-up dependencies (robot model, LiDAR pipeline, obstacle
+       assets), used but never copied. See docs/SOURCE_MAP.md. -->
+  <exec_depend>hunter_se_gazebo</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>drl_obstacle_assets</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- Nav2-MPPI classical baseline (section 34/35): navigate_to_pose action
+       interface + the Nav2 server executables nav2_mppi.launch.py brings up
+       (controller_server/planner_server/behavior_server/bt_navigator/
+       lifecycle_manager, all map-free, see config/nav2_mppi/). -->
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_mppi_controller</exec_depend>
+  <exec_depend>nav2_rotation_shim_controller</exec_depend>
+  <exec_depend>nav2_navfn_planner</exec_depend>
+
+  <depend>python3-tensorboard-pip</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

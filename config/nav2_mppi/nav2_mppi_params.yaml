@@ -1,0 +1,335 @@
+# Nav2-MPPI classical baseline (docs/RESEARCH_PROTOCOL.md section 34/35) --
+# the second comparison point alongside Vanilla SAC. Adapted from
+# scout_nav2/scout_nav2/params/sim_lidar3d_amcl.yaml's controller_server /
+# costmap blocks (READ-ONLY reference package, never modified in place --
+# see CLAUDE.md) with two deliberate classes of change, both required for a
+# FAIR, scenario-matched comparison against this package's RL agents:
+#
+# 1. MAP-FREE: no AMCL, no map_server, no "map" frame anywhere. The RL
+#    benchmark scenarios (config/benchmarks/*/*.yaml) place obstacles
+#    procedurally per-scenario in drl_arena.world -- there is no pre-built
+#    occupancy-grid map matching that layout the way scout_nav2's hardcoded
+#    "warehouse/map_slam_v2.yaml" matches ITS world. Both costmaps below use
+#    global_frame: odom (odom already equals ground-truth world/Gazebo
+#    coordinates in this whole system -- environment_node.py's own risk/
+#    collision math and the benchmark scenario start/goal fields are
+#    compared directly against raw /odometry pose, see
+#    evaluation/benchmark_runner.py). global_costmap is a STATIC (non-
+#    rolling) costmap sized to cover the whole scenario world (see
+#    global_costmap.width/height below) built purely from live LiDAR
+#    marking, so nav2_navfn_planner can plan a full path with no prior map
+#    -- local_costmap stays a small rolling window for MPPI's own short
+#    control horizon, exactly as scout_nav2 configures it.
+#
+# 2. ACKERMANN, not DiffDrive: scout_nav2's own file sets
+#    `motion_model: "DiffDrive"` despite modeling an Ackermann platform
+#    (its AckermannConstraints block is configured but unused) -- Hunter SE
+#    genuinely cannot strafe, so MPPI must sample Ackermann-feasible
+#    trajectories here or the "constrained" baseline would silently exploit
+#    holonomic motion the RL agent's own action space never has access to.
+#    min_turning_r/vx_max/vx_min/footprint below are read from THIS
+#    package's own config/robot/hunter_se.yaml (min_turning_r_m =
+#    wheelbase_m / tan(steering_limit_rad) = 0.547696 / tan(21.58 deg) =
+#    1.3847, computed once and pinned as a literal here since Nav2 params
+#    files are static YAML, not Python -- see
+#    tests/test_nav2_mppi_runner.py::test_min_turning_r_matches_hunter_se_geometry
+#    for the regression check against schema.py's own RobotConfig.max_curvature).
+#
+# Every other MPPI critic weight below is UNCHANGED from scout_nav2's
+# verified block -- this is a controller/costmap SUBSTRATE adaptation, not
+# a re-tuned baseline.
+
+controller_server:
+    ros__parameters:
+        controller_frequency: 10.0
+        min_x_velocity_threshold: 0.001
+        min_y_velocity_threshold: 0.5
+        min_theta_velocity_threshold: 0.001
+        failure_tolerance: 0.3
+        progress_checker_plugin: "progress_checker"
+        goal_checker_plugins: ["general_goal_checker"]
+        controller_plugins: ["FollowPath"]
+        use_realtime_priority: false
+        odom_topic: /odometry
+
+        progress_checker:
+            plugin: "nav2_controller::SimpleProgressChecker"
+            required_movement_radius: 0.25
+            movement_time_allowance: 10.0
+        general_goal_checker:
+            plugin: "nav2_controller::SimpleGoalChecker"
+            # xy_goal_tolerance matches reward.goal_threshold_m (config/
+            # training/defaults.yaml) -- the RL agent's OWN success radius,
+            # for a fair comparison. yaw_goal_tolerance is left permissive
+            # (success is POSITION-ONLY in this whole research protocol --
+            # reward_calculator.py::is_goal_reached never checks heading,
+            # and benchmark scenarios don't specify a goal yaw) so Nav2 is
+            # never penalized for a criterion the RL agent was never held to.
+            xy_goal_tolerance: 0.42
+            yaw_goal_tolerance: 3.15
+        FollowPath:
+            plugin: "nav2_rotation_shim_controller::RotationShimController"
+            primary_controller: "nav2_mppi_controller::MPPIController"
+
+            angular_dist_threshold: 0.5
+            forward_sampling_distance: 0.5
+            rotate_to_heading_angular_vel: 1.0
+            max_angular_accel: 2.0
+            simulate_ahead_time: 3.0
+
+            time_steps: 50
+            model_dt: 0.1
+            batch_size: 1000
+            vx_std: 0.2
+            vy_std: 0.0
+            wz_std: 0.4
+            # section above: robot.max_forward_speed_mps / robot.min_forward_speed_mps
+            # (config/robot/hunter_se.yaml) -- same physical speed range the RL
+            # action space is bound to (action_space.v_min_mps=0.0, v_max defaults
+            # to robot.max_forward_speed_mps).
+            vx_max: 2.0
+            vx_min: 0.0
+            vy_max: 0.0
+            wz_max: 1.44
+            iteration_count: 1
+            temperature: 0.3
+            gamma: 0.015
+            visualize: false
+            retry_attempt_limit: 1
+            regenerate_noises: false
+
+            TrajectoryVisualizer:
+                trajectory_step: 20
+                time_step: 5
+            transform_tolerance: 0.1
+            prune_distance: 1.5
+            enforce_path_inversion: true
+            inversion_xy_tolerance: 0.2
+            inversion_yaw_tolerance: 0.4
+            motion_model: "Ackermann"
+            AckermannConstraints:
+                min_turning_r: 1.3847
+            critics: [
+                    "ConstraintCritic",
+                    "ObstaclesCritic",
+                    "GoalCritic",
+                    "GoalAngleCritic",
+                    "PathAlignCritic",
+                    "PathFollowCritic",
+                    "PathAngleCritic",
+                    "TwirlingCritic",
+                ]
+            ConstraintCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 4.0
+            GoalCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 20.0
+                threshold_to_consider: 0.7
+            GoalAngleCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 5.0
+                threshold_to_consider: 0.7
+            ObstaclesCritic:
+                enabled: true
+                cost_power: 1
+                repulsion_weight: 1.4
+                critical_weight: 20.0
+                consider_footprint: true
+                collision_cost: 10000.0
+                collision_margin_distance: 0.1
+                near_goal_distance: 0.7
+            PathAlignCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 20.0
+                max_path_occupancy_ratio: 0.05
+                trajectory_point_step: 3
+                offset_from_furthest: 30
+                use_path_orientations: true
+                threshold_to_consider: 0.7
+            PathFollowCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 4.0
+                offset_from_furthest: 6
+                threshold_to_consider: 0.7
+            PathAngleCritic:
+                enabled: true
+                cost_power: 1
+                cost_weight: 4.0
+                mode: 2
+                offset_from_furthest: 4
+                max_angle_to_furthest: 0.7
+                threshold_to_consider: 0.7
+            TwirlingCritic:
+                enabled: true
+                twirling_cost_power: 1
+                twirling_cost_weight: 10.0
+
+# Small rolling window for MPPI's own short control horizon -- unchanged in
+# spirit from scout_nav2's local_costmap (odom frame, rolling, voxel+
+# inflation only), just the robot frame name / footprint corrected to
+# Hunter SE (hunter_se_gazebo publishes odom -> base_footprint, not
+# mobile_robot_base_link -- see ros2_gz_bridge_config.yaml).
+local_costmap:
+    local_costmap:
+        ros__parameters:
+            update_frequency: 5.0
+            publish_frequency: 2.0
+            global_frame: odom
+            robot_base_frame: base_footprint
+            rolling_window: true
+            width: 8
+            height: 8
+            resolution: 0.05
+            # Half-extents of robot.length_m/width_m (0.76 x 0.40 m) -- see
+            # config/robot/hunter_se.yaml.
+            footprint: "[ [0.38, 0.20], [0.38, -0.20], [-0.38, -0.20], [-0.38, 0.20] ]"
+            footprint_padding: 0.02
+            lethal_cost_threshold: 100
+            track_unknown_space: true
+
+            plugins: ["voxel_layer", "inflation_layer"]
+
+            voxel_layer:
+                plugin: "nav2_costmap_2d::VoxelLayer"
+                enabled: True
+                footprint_clearing_enabled: true
+                publish_voxel_map: False
+                origin_z: 0.0
+                z_resolution: 0.05
+                z_voxels: 16
+                max_obstacle_height: 2.0
+                mark_threshold: 0
+                observation_sources: scan
+                scan:
+                    topic: /scan
+                    max_obstacle_height: 2.0
+                    clearing: True
+                    marking: True
+                    data_type: "LaserScan"
+                    raytrace_max_range: 10.0
+                    raytrace_min_range: 0.0
+                    obstacle_max_range: 10.0
+                    obstacle_min_range: 0.0
+
+            inflation_layer:
+                plugin: "nav2_costmap_2d::InflationLayer"
+                cost_scaling_factor: 2.0
+                inflation_radius: 0.5
+            always_send_full_costmap: True
+
+# STATIC (non-rolling), world-sized costmap in the odom frame -- the map-
+# free substitute for scout_nav2's StaticLayer+AMCL global_costmap (see this
+# file's header comment, point 1). Sized 20x20 m centered at the origin --
+# large enough for every benchmark scenario's world_size_m (config/
+# benchmarks/*/*.yaml scenarios stay within world_size_m<=12 m, see
+# config/schema.py::ScenarioConfig) since drl_arena.world and this whole
+# system's odom origin coincide (robot spawns near (0,0), no localization
+# drift model -- environment_node.py never corrects odom against a map).
+global_costmap:
+    global_costmap:
+        ros__parameters:
+            update_frequency: 2.0
+            publish_frequency: 1.0
+            global_frame: odom
+            robot_base_frame: base_footprint
+            rolling_window: false
+            width: 20
+            height: 20
+            origin_x: -10.0
+            origin_y: -10.0
+            resolution: 0.05
+            footprint: "[ [0.38, 0.20], [0.38, -0.20], [-0.38, -0.20], [-0.38, 0.20] ]"
+            footprint_padding: 0.02
+            lethal_cost_threshold: 100
+            track_unknown_space: true
+
+            plugins: ["voxel_layer", "inflation_layer"]
+
+            voxel_layer:
+                plugin: "nav2_costmap_2d::VoxelLayer"
+                enabled: True
+                footprint_clearing_enabled: true
+                publish_voxel_map: False
+                origin_z: 0.0
+                z_resolution: 0.05
+                z_voxels: 16
+                max_obstacle_height: 2.0
+                mark_threshold: 0
+                observation_sources: scan
+                scan:
+                    topic: /scan
+                    max_obstacle_height: 2.0
+                    clearing: True
+                    marking: True
+                    data_type: "LaserScan"
+                    raytrace_max_range: 10.0
+                    raytrace_min_range: 0.0
+                    obstacle_max_range: 10.0
+                    obstacle_min_range: 0.0
+
+            inflation_layer:
+                plugin: "nav2_costmap_2d::InflationLayer"
+                cost_scaling_factor: 2.0
+                inflation_radius: 0.5
+            always_send_full_costmap: True
+
+planner_server:
+    ros__parameters:
+        planner_plugins: ["GridBased"]
+        GridBased:
+            plugin: "nav2_navfn_planner/NavfnPlanner"
+            tolerance: 0.3
+            use_astar: true
+            allow_unknown: true
+
+# Serves the recovery behaviors (Spin/BackUp/Wait) the default nav_to_pose
+# BT falls back to when the primary FollowPath controller reports failure --
+# without this node the BT navigator's default tree fails to construct at
+# all (missing action servers), not just "recoveries silently do nothing".
+behavior_server:
+    ros__parameters:
+        local_costmap_topic: local_costmap/costmap_raw
+        global_costmap_topic: global_costmap/costmap_raw
+        local_footprint_topic: local_costmap/published_footprint
+        global_footprint_topic: global_costmap/published_footprint
+        cycle_frequency: 10.0
+        behavior_plugins: ["spin", "backup", "wait"]
+        spin:
+            plugin: "nav2_behaviors/Spin"
+        backup:
+            plugin: "nav2_behaviors/BackUp"
+        wait:
+            plugin: "nav2_behaviors/Wait"
+        global_frame: odom
+        robot_base_frame: base_footprint
+        transform_tolerance: 0.1
+        simulate_ahead_time: 2.0
+        max_rotational_vel: 1.0
+        min_rotational_vel: 0.4
+        rotational_acc_lim: 3.2
+
+bt_navigator:
+    ros__parameters:
+        global_frame: odom
+        robot_base_frame: base_footprint
+        odom_topic: /odometry
+        # default_nav_to_pose_bt_xml deliberately NOT set here -- found live:
+        # an EMPTY string does NOT fall back to bt_navigator's own compiled-
+        # in default, it is taken literally ("Behavior tree threw exception:
+        # Empty Tree. Exiting with failure."). The real installed default
+        # path is distro/install-location-specific, so nav2_mppi.launch.py
+        # resolves it at launch time via ament_index and passes it as a
+        # parameter override -- see that file's ``bt_xml_param`` for the
+        # exact file (nav2_bt_navigator's own
+        # navigate_to_pose_w_replanning_and_recovery.xml).
+
+lifecycle_manager_navigation:
+    ros__parameters:
+        autostart: true
+        node_names: ["controller_server", "planner_server", "behavior_server", "bt_navigator"]

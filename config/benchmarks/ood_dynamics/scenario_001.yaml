@@ -1,0 +1,16 @@
+# OOD dynamics: friction + command latency pushed to edge-of-range vs.
+# training's domain_randomization ranges (see
+# env/randomization/domain_randomizer.py's SUPPORTED_DYNAMICS_OVERRIDE_KEYS
+# -- steering_delay_sec/LiDAR/odometry-noise keys are NOT yet supported and
+# would fail this scenario's reset on purpose rather than silently no-op).
+scenario_id: ood_dynamics_001
+seed: 20201
+start: {x: -4.0, y: 0.0, yaw: 0.0}
+goal: {x: 4.0, y: 0.0}
+static_obstacles:
+  - {x: 0.0, y: 0.0, radius: 0.3}
+moving_obstacles: []
+dynamics:
+  friction_scale: 0.6          # slippery -- below training's randomization floor
+  command_latency_sec: 0.1     # 0.1s command delay -- measurable lag vs. nominal
+sensor: {}

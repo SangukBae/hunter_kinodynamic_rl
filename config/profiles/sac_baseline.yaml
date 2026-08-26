@@ -1,0 +1,18 @@
+# Vanilla SAC (section 34/35) -- the algorithm-choice comparison point.
+# Mirrors kinodynamic_tqc.yaml's ablation row B EXACTLY (same trajectory
+# action space, no temporal/risk/counterfactual) so this isolates ALGORITHM
+# choice (SAC vs TQC) as the only variable, not a different task setup.
+algorithm:
+  name: sac
+
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: false
+  risk_critic: false
+  counterfactual_risk: false
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, mirrors kinodynamic_tqc.yaml exactly

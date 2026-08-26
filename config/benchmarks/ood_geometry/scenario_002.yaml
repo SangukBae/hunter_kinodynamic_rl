@@ -1,0 +1,18 @@
+scenario_id: ood_geometry_002
+seed: 20102
+start: {x: -5.3, y: -4.5, yaw: 0.55}
+goal: {x: 5.3, y: 4.5}
+static_obstacles:
+  - {x: -3.8, y: -1.8, radius: 0.45}
+  - {x: -3.0, y: 0.2, radius: 0.40}
+  - {x: -2.0, y: 2.0, radius: 0.45}
+  - {x: -1.0, y: -1.0, radius: 0.40}
+  - {x: 0.0, y: 1.0, radius: 0.45}
+  - {x: 1.0, y: 3.0, radius: 0.40}
+  - {x: 1.5, y: -2.5, radius: 0.45}
+  - {x: 2.5, y: -0.5, radius: 0.40}
+  - {x: 3.3, y: 1.5, radius: 0.45}
+  - {x: 4.2, y: 3.0, radius: 0.40}
+moving_obstacles: []
+dynamics: {}
+sensor: {}

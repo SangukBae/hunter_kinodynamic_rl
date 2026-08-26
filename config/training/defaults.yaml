@@ -1,0 +1,141 @@
+# Baseline defaults shared by every profile (see config/profiles/*.yaml for
+# the per-experiment overrides). Numbers mirror drl_agent's proven TQC
+# hyperparameters/train config where this is meant to be a like-for-like
+# comparison (see docs/SOURCE_MAP.md) -- not re-derived from scratch.
+action_space:
+  mode: trajectory
+  kappa_scale: 1.0
+  v_min_mps: 0.0
+  horizon_length_min_m: 0.5
+  horizon_length_max_m: 3.0
+  legacy_r_min_m: 0.0
+  legacy_r_max_m: 2.0
+  legacy_theta_max_rad: 0.524
+  legacy_yield_enabled: true
+
+trajectory:
+  primitive: constant_curvature_arc
+  num_samples: 15
+  dt_sec: 0.1
+
+dynamics:
+  horizon_sec: 2.0
+  horizon_min_sec: 0.5
+  horizon_max_sec: 3.0
+  min_safety_horizon_sec: 1.5
+  dt_sec: 0.1
+  model_actuator_lag: true
+
+observation:
+  lidar_bins: 80
+  frame_stack: 4
+  robot_state_dim: 8
+  lidar_max_range_m: 10.0
+  front_sector_width_rad: 3.141592653589793
+  collision_margin_m: 0.05
+
+risk:
+  enabled: false
+  clearance_horizon_sec: 2.0
+  ttc_horizon_sec: 3.0
+  min_safe_clearance_m: 0.3
+  stopping_margin_safety_factor: 1.2
+  actor_lambda: 0.0
+  actor_penalty_warmup_updates: 500
+  min_valid_labels_per_batch: 4
+
+counterfactual:
+  enabled: false
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  horizon_fractions: [0.67, 1.33]
+  include_stop_candidate: true
+  min_progress_ratio: 0.8
+  max_progress_loss_m: 0.25
+  candidate_supervision_weight: 0.5
+  counterfactual_weight_scale: 2.0
+
+hyperparameters:
+  discount: 0.99
+  batch_size: 256
+  buffer_size: 1000000
+  n_quantiles: 25
+  n_critics: 2
+  top_quantiles_to_drop_per_net: 2
+  tau: 0.005
+  target_update_interval: 1
+  ent_coef: "auto_1.0"
+  ent_coef_lr: 0.0003
+  actor_hdim: 256
+  actor_activ: "relu"
+  actor_lr: 0.0003
+  critic_hdim: 256
+  critic_activ: "elu"
+  critic_lr: 0.0003
+
+# Vanilla SAC (section 34/35) -- only consumed when algorithm.name=sac; the
+# TQC-based rows (A-F) never read this section. No quantile fields (unlike
+# hyperparameters: above) -- see config/schema.py::SACHyperparameters.
+sac_hyperparameters:
+  discount: 0.99
+  batch_size: 256
+  buffer_size: 1000000
+  n_critics: 2
+  tau: 0.005
+  target_update_interval: 1
+  ent_coef: "auto_1.0"
+  ent_coef_lr: 0.0003
+  actor_hdim: 256
+  actor_activ: "relu"
+  actor_lr: 0.0003
+  critic_hdim: 256
+  critic_activ: "elu"
+  critic_lr: 0.0003
+
+algorithm:
+  name: tqc
+
+features:
+  temporal_context: false
+  ackermann_rollout: true
+  risk_critic: false
+  counterfactual_risk: false
+  curriculum: false
+
+scenario:
+  world_size_m: 12.0
+  min_obstacles: 0
+  max_obstacles: 8
+  dynamic_obstacle_count: 0
+  train_seed_range: [0, 9999]
+  validation_seed_range: [10000, 10999]
+  test_seed_range: [20000, 20999]
+
+training:
+  max_timesteps: 2000000
+  timesteps_before_training: 12000
+  eval_freq: 12000
+  eval_episodes: 20
+  episode_length_steps: 600
+  seed: 0
+  log_full_state: false
+
+runtime:
+  time_delta_sec: 0.1
+  reset_settle_time_sec: 0.2
+  gz_service_wait_timeout_sec: 5.0
+  gz_service_call_timeout_sec: 3.0
+  gz_service_poll_sec: 0.5
+  sensor_freshness_timeout_sec: 1.5
+  watchdog_command_timeout_sec: 1.0
+  watchdog_period_sec: 0.2
+
+reward:
+  goal_reached_reward: 100.0
+  collision_penalty: -100.0
+  goal_threshold_m: 0.42
+  progress_weight: 1.0
+  step_penalty: -0.01
+  trajectory_smoothness_weight: 0.0
+  control_smoothness_weight: 0.05

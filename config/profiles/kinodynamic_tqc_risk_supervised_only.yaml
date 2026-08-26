@@ -1,0 +1,30 @@
+# Ablation D: C + dynamics-grounded future risk prediction, SUPERVISED
+# ONLY -- actor_lambda=0.0 means _actor_extra_loss's early-return path
+# (`if ... actor_lambda <= 0.0: return zeros, {}`) fires every step, so the
+# risk critic trains on privileged labels but NEVER influences the actor's
+# own gradient (see tests/test_ablation_profiles.py's
+# test_ablation_d_trains_only_the_risk_critic_not_the_actor). Isolates
+# "does the risk critic learn anything useful" from "does penalizing the
+# actor with it help" -- see kinodynamic_tqc_risk.yaml (E) for the latter.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: false
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.0
+
+counterfactual:
+  enabled: false
+
+scenario:
+  feasibility_check: ackermann

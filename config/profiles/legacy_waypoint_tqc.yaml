@@ -1,0 +1,15 @@
+# Same as baseline_tqc.yaml but named per the research brief's explicit
+# baseline list (section 34) -- kept as a separate, stable profile name so
+# aggregate_results tooling can label it distinctly from "vanilla TQC" if the
+# two ever diverge (e.g. different reward shaping ablation on top of legacy
+# waypoint actions).
+action_space:
+  mode: legacy_waypoint
+
+features:
+  ackermann_rollout: false
+
+# section P0-4: drl_agent parity (7D robot state) -- see baseline_tqc.yaml's
+# identical comment.
+observation:
+  robot_state_dim: 7

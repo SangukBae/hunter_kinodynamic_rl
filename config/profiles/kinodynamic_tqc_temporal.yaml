@@ -1,0 +1,18 @@
+# Ablation C: B + temporal LiDAR observation context (frame_stack from
+# observation.frame_stack, fused via a small temporal encoder -- see
+# sensing/temporal_stack.py).
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: false
+  counterfactual_risk: false
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+scenario:
+  feasibility_check: ackermann

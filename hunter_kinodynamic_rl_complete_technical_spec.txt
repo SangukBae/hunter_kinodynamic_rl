@@ -1,0 +1,1216 @@
+Hunter SE Kinodynamic RL 연구 패키지 상세 기술 명세서
+====================================================
+
+문서 성격
+--------
+이 문서는 신규 ROS2 강화학습 패키지 `hunter_kinodynamic_rl`의 전체 연구·설계·구현·검증 기준을 정리한 기술 명세서이다. 실제 코드가 이미 모두 구현되었다는 완료 보고서가 아니라, 현재 확정된 연구 방향과 기존 `drl_agent`의 구조를 기준으로 "새 패키지가 무엇을 위해 존재하고, 어떤 구조로 구현되어야 하며, 무엇을 검증해야 하는지"를 정리한 마스터 문서다.
+
+최종 목표는 단순 Gazebo 데모가 아니라 다음을 동시에 만족하는 연구용 소프트웨어를 만드는 것이다.
+- 실제 AgileX Hunter SE의 Ackermann 동역학을 반영한다.
+- LiDAR와 robot state를 이용해 local trajectory를 강화학습으로 생성한다.
+- 미래 trajectory의 collision/clearance/TTC/stopping 위험을 예측한다.
+- 현재 action뿐 아니라 대안 action들의 미래 위험을 비교한다.
+- TQC 기반 off-policy RL에 risk-aware learning을 결합한다.
+- ID/OOD simulation과 실제 Hunter SE에서 검증 가능하다.
+- 향후 로봇·센서·알고리즘·risk model을 교체하기 쉽다.
+- 기존 `drl_agent`를 망가뜨리지 않고 baseline/reference로 보존한다.
+
+
+1. 연구 주제와 핵심 질문
+======================
+
+가칭 연구 제목:
+1) Risk-Aware Kinodynamic Reinforcement Learning for Real-World Ackermann Robot Navigation
+2) Kinodynamic Counterfactual TQC for Safe Local Trajectory Generation of Ackermann-Steered Mobile Robots
+
+핵심 질문:
+LiDAR와 robot state를 사용하는 TQC 기반 off-policy 강화학습 정책이 Hunter SE의 steering limit, minimum turning radius, velocity/stopping dynamics를 고려하여 실제 실행 가능한 local trajectory를 생성하고, 해당 trajectory의 미래 위험을 사전에 예측·비교하여 unseen simulation 및 실제 Hunter SE에서 안전하게 주행할 수 있는가?
+
+이 연구는 단순히 "장애물이 없는 방향을 찾는 RL"을 목표로 하지 않는다. 정책은 다음 질문까지 고려해야 한다.
+- 이 action을 Hunter SE가 물리적으로 실행할 수 있는가?
+- steering limit 안에서 가능한 곡률인가?
+- 현재 속도에서 해당 경로를 따라가다 충분히 멈출 수 있는가?
+- 1~3초 뒤 장애물 또는 동적 객체와 얼마나 가까워지는가?
+- 지금 action보다 비슷한 goal progress를 유지하면서 더 안전한 feasible action이 있었는가?
+- 현재 상태가 이미 회피 가능한 control이 사라진 unrecoverable state인가?
+
+
+2. 핵심 연구 Contribution
+=========================
+
+Contribution 1: Ackermann-constrained trajectory-level RL
+- 기존의 `[r, theta, yield]` waypoint action은 baseline으로 유지한다.
+- 신규 primary action은 `[kappa, v_ref, L]`를 사용한다.
+- `kappa`: local trajectory curvature
+- `v_ref`: desired forward velocity, 0 포함
+- `L`: trajectory arc length 또는 local horizon
+- action을 실제 steering/velocity 범위로 변환하고 Ackermann-feasible trajectory primitive를 생성한다.
+- 정책이 differential-drive식 순간 회전 명령을 내는 것이 아니라 Hunter SE가 실제 추종 가능한 local trajectory를 생성하도록 한다.
+
+Contribution 2: Dynamics-grounded future trajectory risk prediction
+- candidate trajectory를 Hunter SE bicycle/Ackermann model로 미래까지 rollout한다.
+- future minimum clearance, TTC, collision-within-horizon, stopping margin, steering saturation을 계산한다.
+- Gazebo에서는 privileged obstacle state를 이용해 supervised risk label을 생성할 수 있다.
+- 실제 배치에서는 privileged state 없이 LiDAR history + robot state + goal + candidate action만 사용한다.
+
+Contribution 3: Counterfactual risk-aware distributional off-policy RL
+- actor가 선택한 한 action만 평가하지 않는다.
+- left/right/slower/stop 등 여러 feasible candidate를 생성한다.
+- 각 후보의 미래 trajectory risk와 goal progress를 비교한다.
+- "현재 선택보다 비슷한 progress를 유지하면서 더 안전한 대안이 있었는가?"를 학습 신호로 활용한다.
+- TQC의 reward objective와 별도로 risk penalty 또는 risk critic을 결합한다.
+
+
+3. 기존 시스템과 신규 패키지의 관계
+================================
+
+기존 workspace의 핵심:
+ros2_ws/src/
+├── drl_agent/                  # 현재 정상 동작하는 DRL 기준 구현체
+├── drl_agent_interfaces/       # Reset/Step/GetDimensions/Seed 등 custom srv
+├── drl_experiments/            # profile, sweep, experiment script
+├── hunter_se_gazebo/           # Hunter SE URDF/mesh/Gazebo
+├── hunter_se_unity/
+├── ugv_gazebo_sim/
+├── scout_nav2/
+├── drl_obstacle_assets/
+├── pointcloud_to_laserscan/
+├── LIO-SAM/
+├── hunav_sim/
+├── hunav_gazebo_fortress_wrapper/
+├── lightsfm/
+├── people_msgs/
+└── dataset_builder/
+
+기존 `drl_agent`는 다음 역할을 한다.
+- 기존 TQC/SAC/TD7 등 RL 코드의 reference
+- 기존 replay buffer/checkpoint 구조의 reference
+- ROS2 environment service loop의 기준
+- 기존 observation/reward/Pure Pursuit 동작의 기준
+- 기존 연구 결과 재현 및 baseline 비교용
+
+신규 패키지:
+`ros2_ws/src/hunter_kinodynamic_rl/`
+
+원칙:
+- 기존 `drl_agent` 대규모 수정 금지
+- 기존 profile 덮어쓰기 금지
+- 기존 파일 삭제 금지
+- 파괴적 git 명령 금지
+- 기존 코드를 신규 패키지에 가져올 경우 provenance를 `docs/SOURCE_MAP.md`에 기록
+- 신규 reference TQC는 기존 TQC와 parity test 수행
+
+
+4. 권장 신규 패키지 구조
+======================
+
+hunter_kinodynamic_rl/
+├── package.xml
+├── setup.py
+├── setup.cfg
+├── README.md
+├── config/
+├── launch/
+├── scripts/
+├── docs/
+├── test/
+└── hunter_kinodynamic_rl/
+    ├── nodes/
+    ├── robot/
+    ├── sensing/
+    ├── dynamics/
+    │   ├── bicycle_model.py
+    │   ├── ackermann_rollout.py
+    │   ├── stopping_model.py
+    │   ├── actuator_model.py
+    │   └── system_identification.py
+    ├── trajectory/
+    │   ├── action_space.py
+    │   ├── trajectory_primitive.py
+    │   ├── trajectory_sampler.py
+    │   ├── trajectory_executor.py
+    │   └── pure_pursuit_adapter.py
+    ├── env/
+    │   ├── simulation/
+    │   ├── observation/
+    │   ├── scenarios/
+    │   ├── randomization/
+    │   ├── spawning/
+    │   └── safety/
+    ├── risk/
+    │   ├── future_clearance.py
+    │   ├── ttc.py
+    │   ├── stopping_margin.py
+    │   ├── trajectory_risk.py
+    │   ├── counterfactual_sampler.py
+    │   └── unrecoverable_state.py
+    ├── rl/
+    │   ├── algorithms/
+    │   ├── networks/
+    │   ├── replay/
+    │   └── checkpointing/
+    ├── training/
+    ├── evaluation/
+    ├── baselines/
+    ├── config/
+    └── common/
+
+권장 추상화:
+RobotModel / SensorAdapter / ObservationEncoder / TrajectoryGenerator / DynamicsModel / RiskEstimator / RLAgent / ScenarioGenerator / DomainRandomizer / Controller / BenchmarkEvaluator
+
+목표는 로봇·센서·RL·risk·controller를 느슨하게 결합해 향후 교체 가능하게 하는 것이다.
+
+
+5. Hunter SE 로봇과 동역학
+=========================
+
+모델: AgileX Hunter SE (`hunter_se`)
+구동: 뒷바퀴 구동
+조향: 앞바퀴 Ackermann steering
+제자리 회전: 불가능
+최소 회전반경: 존재
+조향각 제한: 존재
+
+기본 파라미터:
+- wheelbase: 0.547696 m
+- track width: 0.503404 m
+- wheel radius: 0.136 m
+- vehicle dimensions: 약 760 x 400 x 140 mm
+- mass: 약 42 kg
+- training max forward speed: 2.0 m/s
+- steering limit: 약 ±21.58°
+
+기본 bicycle relation:
+yaw_rate = v * tan(delta) / wheelbase
+kappa = tan(delta) / wheelbase
+delta = atan(wheelbase * kappa)
+
+이 파라미터는 코드에 하드코딩하지 않고 YAML/config로 관리한다.
+
+향후 확장할 실제 동역학:
+- steering response delay
+- steering rate limit
+- velocity response lag
+- acceleration/deceleration limit
+- command latency
+- friction/slip
+- wheel radius uncertainty
+
+Hunter SE에서 중요한 점은 geometric free-space와 dynamically reachable free-space가 다르다는 것이다. LiDAR상 공간이 비어 있어도 조향 한계와 최소 회전반경 때문에 실제 차량이 그 공간으로 진입할 수 없을 수 있다. 따라서 이 연구는 단순 장애물 거리보다 "미래에 실제로 그려질 vehicle trajectory"를 중심으로 안전을 판단한다.
+
+
+6. 센서와 Observation
+====================
+
+기본 센서: Ouster OS1 계열 3D LiDAR
+주요 topic:
+- Gazebo point cloud: `/hunter_se/pointcloud/points`
+- ROS bridge: `/ouster/points`
+
+기존 sensor spec:
+- 128 channels
+- 20 Hz
+- 2048 samples
+- range 약 0.3~120 m
+- vertical FOV 약 -22.5°~22.5°
+
+초기 학습 representation은 기존 `drl_agent`와 맞춘다.
+- LiDAR environment state: 80D
+- robot/goal state: 7D
+- scan frame stack: 4
+
+Robot/goal state에는 최소 다음을 포함한다.
+- goal distance
+- heading error
+- current velocity
+- yaw rate
+- steering angle
+- previous action
+- 필요 시 local target 관련 값
+
+Temporal history의 목적:
+- 정적/동적 장애물의 변화 추론
+- 접근 중인 객체 감지
+- 단일 frame에서 알 수 없는 상대 motion cue 제공
+
+Temporal encoder는 향후 direct stack, 1D CNN, GRU, Transformer 등으로 교체 가능하게 분리한다.
+
+
+7. Action과 Local Trajectory
+==========================
+
+Legacy action:
+`[r, theta, yield]`
+- 기존 연구와 baseline/ablation 비교를 위해 유지
+- Pure Pursuit 기반 local waypoint control
+
+신규 action:
+`[kappa, v_ref, L]`
+
+Actor는 일반적으로 `[-1,1]` 범위의 normalized action을 출력하고 adapter가 physical 값으로 변환한다.
+
+예:
+- kappa ∈ [-kappa_max, +kappa_max]
+- v_ref ∈ [0, v_max]
+- L ∈ [L_min, L_max]
+
+`v_ref=0`을 허용하여 별도 yield dimension 없이도 정지 가능하게 한다.
+
+실행 흐름:
+TQC Actor
+→ normalized action
+→ `[kappa, v_ref, L]`
+→ Ackermann-feasible trajectory primitive
+→ Pure Pursuit
+→ 기존 command prefilter
+→ Gazebo AckermannSteering plugin 또는 실제 Hunter controller
+→ Hunter SE
+
+초기 trajectory primitive는 constant-curvature arc로 충분하다. 계산이 단순하고 Ackermann kinematics와 직접 연결되며 candidate rollout과 ablation이 쉽다.
+
+향후:
+- clothoid
+- spline
+- polynomial
+- multi-segment curvature
+- learned trajectory decoder
+등으로 교체 가능하게 한다.
+
+
+8. 기존 TQC와 신규 Risk-Aware TQC
+================================
+
+기존 TQC는 SAC 계열 off-policy maximum-entropy 구조에 distributional quantile critic과 truncated quantile target을 사용하는 형태다.
+
+기본 구성:
+- actor
+- multiple quantile critics
+- target critics
+- replay buffer
+- automatic entropy coefficient
+- target soft update
+
+기본 loop:
+state → actor action → environment step → replay 저장 → batch sample → critic update → actor update → entropy update → target soft update
+
+신규 연구에서는 이 기본 동작을 가능한 한 유지하고 safety 측을 분리한다.
+
+개념:
+state + action
+├── Reward TQC critics
+└── Risk critic / risk head
+
+Actor objective 개념:
+높은 Q + entropy - lambda_risk * predicted_future_risk
+
+`lambda_risk`는 config로 관리한다.
+
+향후 확장:
+- scalar expected risk
+- quantile risk
+- CVaR
+- Lagrangian constraint
+- distributional safety critic
+
+
+9. Ackermann Future Rollout
+==========================
+
+핵심 모듈: `dynamics/ackermann_rollout.py`
+
+입력:
+- current robot state
+- candidate action/trajectory
+- rollout dt
+- horizon
+- robot dynamics config
+
+최소 state:
+x, y, yaw, v, steering
+
+기본:
+geometric bicycle model
+
+향후:
+- steering actuator first-order response
+- steering delay
+- velocity lag
+- acceleration/deceleration
+- command latency
+- dynamics uncertainty
+
+출력:
+- future poses
+- velocity history
+- steering history
+- path length
+- constraint violation
+- trajectory validity
+
+이 rollout은 policy 실행용 planner가 아니라 주로:
+- trajectory feasibility 검증
+- future risk label 생성
+- counterfactual candidate 비교
+- unrecoverable-state 판정
+에 사용한다.
+
+
+10. Future Risk 정의
+===================
+
+각 candidate trajectory에 대해 다음을 계산한다.
+
+1) Future Minimum Clearance
+rollout horizon 내 robot footprint와 obstacle 사이 최소 거리.
+
+2) TTC
+Time To Collision. 동적 객체가 있으면 robot future와 obstacle future를 함께 고려한다.
+
+3) Collision Within Horizon
+설정된 horizon 내 collision 예상 여부 또는 probability target.
+
+4) Stopping Margin
+개념:
+stopping_margin = free_distance - estimated_stopping_distance
+현재 속도와 deceleration을 고려해 실제로 멈출 여유가 있는지 나타낸다.
+
+5) Steering Saturation
+candidate가 steering limit에 얼마나 근접하거나 포화되는지 나타낸다.
+
+6) Composite Risk
+필요 시 여러 raw metric을 0~1 risk로 통합하되 raw metric 자체도 반드시 저장한다.
+
+Gazebo에서는 privileged state를 이용해 정확한 label을 만들 수 있으나 real inference에는 해당 정보가 들어가면 안 된다.
+
+
+11. Counterfactual Risk
+======================
+
+목표:
+"선택한 action이 위험했는가?"뿐 아니라 "다른 feasible action을 선택했다면 더 안전했는가?"까지 학습한다.
+
+후보 예:
+- actor action
+- left curvature perturbation
+- right curvature perturbation
+- slower action
+- stop action
+- L variation
+
+Candidate마다:
+action
+→ trajectory primitive
+→ Ackermann rollout
+→ future clearance/TTC/stopping/collision
+→ risk
+→ goal progress
+
+활용 방법 후보:
+- risk regression
+- candidate ranking loss
+- actor risk penalty
+- safer alternative imitation
+- critic risk input
+- contrastive preference
+
+후보는 항상 physical bound를 만족해야 한다.
+- steering limit 초과 금지
+- invalid speed 금지
+- invalid horizon 금지
+- NaN/Inf 금지
+
+
+12. Unrecoverable State
+=======================
+
+정의:
+현재 상태에서 steering/braking constraint를 만족하는 feasible candidate trajectory들을 평가했을 때 일정 horizon 내 collision을 피할 후보가 하나도 없는 상태.
+
+초기 근사:
+1. feasible candidate set 생성
+2. 모든 후보 Ackermann rollout
+3. collision/safety 검사
+4. 전부 unsafe이면 unrecoverable=true
+
+평가 metric:
+Unrecoverable State Rate
+
+Collision Rate보다 더 일찍 policy의 문제를 포착할 수 있다. 특히 Hunter SE처럼 늦은 회피가 물리적으로 불가능한 Ackermann 플랫폼에서는 중요한 metric이다.
+
+
+13. Replay Buffer와 Supervised Label
+===================================
+
+기본 transition:
+- state
+- action
+- reward
+- next_state
+- done
+
+신규 optional field:
+- risk_target
+- future_min_clearance
+- future_ttc
+- collision_within_horizon
+- stopping_margin
+- steering_saturation
+- counterfactual actions
+- counterfactual risks
+- unrecoverable flag
+
+Replay schema는 versioning한다.
+
+중요 목적:
+과거 checkpoint와 데이터셋을 유지하면서 새로운 label을 점진적으로 추가할 수 있어야 한다.
+
+
+14. Reward 설계
+==============
+
+Reward는 연구 novelty가 아니므로 지나치게 복잡하게 만들지 않는다.
+
+기본:
+- goal reached reward
+- collision penalty
+- goal progress
+- time/step penalty
+- trajectory smoothness
+- control smoothness
+
+주의:
+risk prediction과 collision reward가 같은 정보를 과도하게 중복하지 않도록 한다.
+
+Ablation에서:
+reward-only
+vs
+reward + explicit risk
+차이를 명확하게 측정 가능해야 한다.
+
+
+15. Procedural Training Environment
+==================================
+
+특정 corridor/maze 하나에 종속되지 않는다.
+
+매 episode randomize:
+- start
+- goal
+- obstacle count
+- obstacle position
+- obstacle size
+- obstacle orientation
+- density
+- moving obstacle motion
+- dynamics
+- sensor perturbation
+
+기본 arena 크기는 config화한다.
+
+Static obstacle:
+- box
+- cylinder
+- wall
+- 단순 `drl_obstacle_assets`
+
+처음부터 복잡한 visual asset에 의존하기보다 geometry가 명확한 장애물로 학습 및 위험 계산을 검증한다.
+
+Dynamic obstacle:
+- crossing
+- head-on
+- cut-in
+- parallel
+- constant velocity
+- random waypoint
+
+첫 연구는 human-specific social navigation으로 제한하지 않는다. 이후 HuNav pedestrian으로 확장할 수 있다.
+
+
+16. Scenario Feasibility
+=======================
+
+Procedural generator가 Hunter SE로 애초에 해결 불가능한 map을 만들 수 있다.
+
+따라서 scenario 생성 후 start-goal feasibility를 검사한다.
+
+후보:
+- Hybrid A*
+- Dubins 기반 검사
+- Ackermann-aware Nav2 planner
+- curvature-aware occupancy check
+
+이 planner는 policy를 도와주는 online planner가 아니라 scenario validation 전용이다.
+
+목표:
+"policy가 실패한 것"과 "애초에 물리적으로 풀 수 없는 환경"을 분리한다.
+
+
+17. Curriculum과 Domain Randomization
+====================================
+
+Curriculum:
+- 이번 연구 contribution의 필수 요소가 아님
+- 기본 `enabled: false`
+- 학습이 매우 불안정할 때만 stabilization option으로 사용
+
+Domain Randomization:
+현 단계의 simulation 실험은 nominal Gazebo 물성을 고정한 안정된 환경에서 수행한다.
+물성 및 센서 domain randomization은 현재 실험의 필수 요소가 아니며,
+sim-to-real robustness를 검증하는 향후 단계에서 활성화한다.
+
+현재 simulation 실험 원칙:
+- mass, friction, wheel radius 등 Gazebo 물성은 nominal 값으로 고정
+- 같은 baseline/ablation은 동일한 물성과 시나리오를 사용
+- seed, obstacle layout, dynamic obstacle trajectory 변화는 유지
+- 물성 변화 없이 ID/OOD geometry/dynamic 성능을 우선 검증
+
+향후 sim-to-real 단계의 Dynamics randomization 후보:
+- mass
+- friction
+- wheel radius
+- steering gain
+- steering delay
+- velocity response
+- acceleration/deceleration
+- command latency
+
+향후 Sensor randomization 후보:
+- LiDAR range noise
+- point/beam dropout
+- frame loss
+- odometry noise
+
+향후 활성화할 모든 범위는 YAML로 관리하며 최종적으로 실제 Hunter system identification 결과를 반영하는 것이 바람직하다.
+
+
+18. Hunter SE System Identification
+==================================
+
+실차와 simulator의 차이를 줄이기 위한 도구를 미리 구현한다.
+
+A. Straight velocity response
+- 0→0.5→1.0→1.5 m/s 등
+- command vs actual velocity
+- rise time, delay, steady-state error, acceleration
+
+B. Steering step response
+- 0→5°, 10°, 15°, 20°
+- actual yaw rate 및 응답 지연
+
+C. Constant-circle test
+- 여러 steering angle에서 실제 turning radius 측정
+
+D. Stopping test
+- 여러 initial velocity에서 stop
+- stopping distance/time/deceleration 측정
+
+결과:
+CSV/JSON/YAML
+→ `hunter_se_identified.yaml` 같은 config로 반영 가능
+
+실차 데이터가 없을 때는 nominal Gazebo/URDF model로 동작한다.
+
+
+19. Benchmark 설계
+=================
+
+Train/validation/test를 완전히 분리한다.
+
+예:
+- train seed: 0~9999
+- validation: 10000~10999
+- test: 20000~20999
+
+논문용 fixed benchmark:
+benchmarks/
+├── id/
+├── ood_geometry/
+└── dynamic/
+
+`ood_dynamics/`는 향후 sim-to-real robustness 검증용 optional benchmark로 유지한다.
+현재 안정 물성 simulation 실험의 필수 결과에는 포함하지 않는다.
+
+ID:
+training distribution과 유사하지만 unseen layout
+
+OOD Geometry:
+- obstacle density
+- obstacle shape/size
+- route length
+- spatial arrangement
+
+OOD Dynamics:
+- 향후 sim-to-real 단계에서 활성화
+- steering delay
+- friction
+- velocity response
+- command latency
+
+Dynamic:
+- unseen crossing/cut-in/head-on 등
+
+모든 baseline이 동일 scenario를 사용해야 한다.
+
+
+20. Baseline과 Ablation
+======================
+
+최소 baseline:
+1. SAC
+2. Vanilla TQC
+3. Legacy waypoint TQC `[r,theta,yield]`
+4. Kinodynamic trajectory TQC `[kappa,v_ref,L]`
+5. + Temporal
+6. + Future Risk
+7. + Risk-aware critic/actor
+8. + Counterfactual Risk
+
+가능하면 strong classical baseline:
+- Nav2 MPPI + Ackermann motion model
+
+권장 ablation:
+A. Vanilla TQC
+B. + trajectory-level Ackermann action
+C. + temporal history
+D. + future risk
+E. + risk-aware actor/critic
+F. + counterfactual risk
+
+각 기능은 config flag로 on/off하며 코드 주석 처리로 실험하지 않는다.
+
+
+21. 평가 Metrics
+===============
+
+Navigation:
+- Success Rate
+- Collision Rate
+- Timeout Rate
+- SPL
+- Navigation Time
+- Path Length
+- Goal Progress
+- Average Velocity
+
+Safety:
+- Minimum Clearance
+- TTC statistics
+- Emergency Stop Count
+- Unrecoverable State Rate
+
+Ackermann-specific:
+- Steering Saturation Rate
+- average steering magnitude
+- steering smoothness
+- steering rate
+- control smoothness
+- curvature feasibility violation
+- stopping margin
+
+Sim-to-real:
+- simulation performance
+- real performance
+- relative performance drop
+- sim/real trajectory 또는 response 차이
+
+
+22. Logging, Checkpoint, Reproducibility
+======================================
+
+Step/Episode logging:
+- timestamp
+- run/episode/seed/scenario id
+- state
+- normalized action
+- physical `[kappa,v,L]`
+- generated trajectory
+- robot pose/goal
+- velocity/yaw rate/steering
+- reward 및 reward components
+- predicted risk
+- ground-truth risk
+- future clearance
+- TTC
+- stopping margin
+- counterfactual candidates/risks
+- success/collision/timeout/unrecoverable
+
+저장:
+CSV / JSONL / NPZ / TensorBoard 중 목적에 맞게 사용
+
+Checkpoint:
+- actor
+- reward critics
+- target critics
+- risk model/critic
+- optimizers
+- entropy coefficient
+- training step
+- config
+- seed
+
+Seed:
+Python / NumPy / PyTorch / CUDA / scenario / environment / replay sampler 등을 가능한 범위에서 통제한다.
+
+Run 구조 예:
+runs/<timestamp_profile_seed>/
+├── config/
+├── checkpoints/
+├── logs/
+├── evaluation/
+├── benchmark/
+├── tensorboard/
+└── metadata.json
+
+
+23. ROS2 실행 구조
+=================
+
+가능하면 기존 `drl_agent_interfaces`를 재사용한다.
+
+Service:
+- /reset
+- /step
+- /get_dimensions
+- /seed
+
+개념 loop:
+train node
+→ environment service
+→ action
+→ trajectory
+→ controller
+→ Gazebo
+→ next state/reward/done
+→ replay
+→ TQC update
+
+Node 역할:
+- environment_node.py: reset/step/observation/reward/scenario
+- train_node.py: agent/replay/update/checkpoint
+- evaluation_node.py: fixed benchmark
+- system_id_node.py: real Hunter identification
+
+Node는 얇은 ROS wrapper로 유지하고 실제 로직은 core module에 둔다.
+
+
+24. Config/Profiles
+==================
+
+하드코딩 금지:
+- wheelbase
+- steering limit
+- velocity limit
+- action range
+- L range
+- rollout dt/horizon
+- LiDAR dimension
+- frame stack
+- network size
+- TQC hyperparameter
+- reward weight
+- risk lambda
+- counterfactual candidate count
+- scenario range
+- domain randomization (향후 sim-to-real 단계에서 활성화할 경우)
+- seed/evaluation config
+
+시작 시 schema validation으로 fail-fast한다.
+
+필수 목적 profile:
+- baseline_tqc
+- legacy_waypoint_tqc
+- kinodynamic_tqc
+- kinodynamic_tqc_temporal
+- kinodynamic_tqc_risk
+- kinodynamic_tqc_counterfactual
+- smoke_test
+- evaluation_id
+- evaluation_ood_geometry
+- evaluation_dynamic
+- real_hunter_safe
+
+향후/optional profile:
+- evaluation_ood_dynamics
+
+
+25. 실차 Deployment와 안전
+==========================
+
+실차에서는 기본적으로 inference를 수행한다.
+
+Simulation과 real은 가능한 한 동일:
+- observation builder
+- policy
+- action mapper
+- trajectory generator
+- risk predictor
+
+를 사용하고 simulator-specific 기능만 adapter로 격리한다.
+
+필수 safety guard:
+- max velocity clamp
+- steering bound
+- NaN/Inf rejection
+- stale LiDAR timeout
+- stale odometry timeout
+- policy timeout
+- command timeout
+- proximity emergency stop
+- hardware/software E-stop compatibility
+
+비정상 상황에서는 safe stop으로 fallback한다.
+
+실차 rosbag 후보:
+- /ouster/points
+- /odom
+- /tf
+- /tf_static
+- /cmd_vel
+- /cmd_vel_filtered
+- policy action
+- local trajectory
+- predicted risk/TTC/clearance
+- goal
+- collision/stop event
+
+실제 topic은 runtime에서 확인한다.
+
+
+26. 실제 테스트 환경
+===================
+
+A. Static course
+- box/cone/wall 등
+- simulation에서 보지 않은 배치
+- success/path/steering/clearance 평가
+
+B. Dynamic crossing
+- 반복 가능한 moving cart 또는 robot obstacle 권장
+- 사람을 사용하면 ecological validity는 높지만 반복성이 떨어질 수 있음
+
+C. Unseen real environment
+- training simulation 제작 시 사용하지 않은 복도/로비/open space
+- zero-shot 또는 최소 adaptation 성능 평가
+
+실차 검증이 없으면 문서와 코드에서 실차 완료를 주장하지 않는다.
+
+
+27. Testing과 완료 기준
+======================
+
+Unit test:
+Dynamics
+- straight/left/right rollout
+- curvature↔steering conversion
+- zero velocity
+- steering saturation
+
+Trajectory
+- normalized→physical action
+- trajectory generation
+- path length
+- Pure Pursuit compatibility
+
+Risk
+- collision/no-collision
+- TTC
+- clearance
+- stopping margin
+- counterfactual ranking
+
+Replay/TQC
+- insert/sample
+- schema version
+- actor/critic update
+- entropy
+- checkpoint roundtrip
+- NaN detection
+
+Environment
+- reset
+- step
+- get_dimensions
+- seed determinism
+
+Existing TQC parity:
+동일 seed/input/weight/batch 조건에서 기존 `drl_agent` TQC와 신규 reference TQC의 결과를 비교한다.
+
+End-to-end Gazebo smoke test:
+Gazebo
+→ Hunter spawn
+→ LiDAR
+→ environment/train node
+→ reset/step
+→ actor action
+→ `[kappa,v,L]`
+→ trajectory
+→ Pure Pursuit
+→ Hunter movement
+→ replay
+→ actor/critic/risk update
+→ checkpoint save/resume
+
+단순 import 성공으로 완료 처리하지 않는다.
+
+
+28. Docker 검증
+==============
+
+기준 container:
+`docker exec -it 7a2702b311a1 /bin/bash`
+
+필요 시:
+`docker exec 7a2702b311a1 bash -lc '<command>'`
+
+직접 수행해야 할 것:
+- workspace inspection
+- dependency 확인
+- colcon build
+- source install/setup.bash
+- pytest
+- ros2 pkg/topic/service 확인
+- Gazebo launch
+- smoke training
+- checkpoint resume
+
+최소 신규 build:
+`colcon build --packages-select hunter_kinodynamic_rl`
+
+새 패키지 추가로 기존:
+- drl_agent
+- drl_agent_interfaces
+- hunter_se_gazebo
+가 깨지지 않는지도 확인한다.
+
+실행 명령은 사용자에게 하나씩 묻지 않고 package.xml/setup.py/launch/profile/scripts/README를 직접 조사하여 판단한다.
+
+
+29. 유지보수 및 장기 확장
+=======================
+
+원칙:
+1. Config-first
+2. Interface separation
+3. Versioned replay/checkpoint
+4. Baseline protection
+5. Fixed benchmark
+6. SOURCE_MAP provenance
+7. Real/simulation separation
+8. Critical math unit tests
+
+향후 알고리즘:
+- SAC
+- TD7
+- TQC variants
+- constrained RL
+- CVaR RL
+- model-based RL
+- offline RL
+
+향후 trajectory:
+- clothoid
+- spline
+- multi-segment
+- neural decoder
+
+향후 risk:
+- uncertainty
+- distributional risk
+- CVaR
+- reachability
+- CBF
+- conformal calibration
+
+향후 perception:
+- 360° LiDAR
+- raw point cloud
+- BEV
+- LiDAR-camera fusion
+
+향후 robot:
+- 다른 Ackermann UGV
+- Scout/F1TENTH 계열
+- 새로운 controller
+
+향후 social navigation:
+- HuNav pedestrian
+- crowd
+- yielding
+- social distance
+
+향후 simulation robustness / sim-to-real:
+- Gazebo mass/friction/wheel radius 물성 randomization
+- steering delay/velocity response/command latency randomization
+- LiDAR/odometry sensor randomization
+- `evaluation_ood_dynamics` benchmark
+- Hunter SE system identification 결과를 randomization 범위에 반영
+
+
+30. 논문에서 반드시 보여줄 핵심
+==============================
+
+논문 스토리는 "TQC에 여러 feature를 붙였다"가 되어서는 안 된다.
+
+핵심 비교:
+1. Vanilla TQC:
+   위험 인지가 늦고 Hunter SE의 steering/stopping constraint 때문에 회복 불가능한 상태에 진입.
+
+2. Kinodynamic trajectory TQC:
+   애초에 물리적으로 feasible한 local trajectory를 생성하여 steering saturation 및 실행 불가능 action 감소.
+
+3. Future risk:
+   현재는 안전해 보여도 1~3초 뒤 위험한 trajectory를 사전에 회피.
+
+4. Counterfactual risk:
+   동일한 progress를 유지하면서 더 안전한 alternative를 학습.
+
+5. Real Hunter:
+   simulation 대비 성능 하락을 제한하며 실제 하드웨어에서도 동작.
+
+향후 확장 비교:
+- OOD dynamics: steering delay/friction/latency 변화에 대한 robustness
+
+권장 Figure:
+- 전체 architecture
+- geometric free-space vs Ackermann reachable space
+- candidate trajectories + risk
+- vanilla vs proposed risk detection timing
+- unrecoverable state 사례
+- sim-to-real 결과 (향후 물성 randomization 및 실차 검증 단계)
+- ablation
+
+
+31. 예상 연구 위험과 대응
+========================
+
+Risk 1: `[kappa,v,L]`가 너무 단순함
+→ constant curvature가 부족하면 multi-segment/clothoid로 확장
+
+Risk 2: risk label과 reward가 중복
+→ raw safety metric을 분리하고 ablation
+
+Risk 3: counterfactual candidate가 actor distribution에서 너무 멂
+→ actor-centered perturbation과 feasible projection 사용
+
+Risk 4: privileged label 과적합
+→ 현 단계에서 deployment input 제한, 향후 domain randomization으로 추가 검증
+
+Risk 5: sim-real dynamics mismatch
+→ 향후 system identification + OOD dynamics benchmark로 검증
+
+Risk 6: risk penalty 때문에 policy가 정지 위주
+→ stop ratio, progress-risk tradeoff, adaptive lambda 분석
+
+Risk 7: candidate rollout 계산량 증가
+→ batched/vectorized rollout, candidate 수 제한
+
+
+32. 전체 시스템 Data Flow
+=========================
+
+Ouster LiDAR
++
+robot state
++
+goal
+↓
+scan processing
+↓
+temporal observation
+↓
+TQC Actor
+↓
+normalized action
+↓
+[kappa, v_ref, L]
+↓
+Ackermann-feasible trajectory primitive
+↓
+Hunter SE dynamics rollout
+↓
+future trajectory
++
+obstacle future
+↓
+future clearance / TTC / stopping margin / collision risk
+↓
+Reward TQC critics + Risk critic/head
+↓
+counterfactual feasible candidate comparison
+↓
+risk-aware actor learning
+↓
+selected trajectory
+↓
+Pure Pursuit
+↓
+command prefilter
+↓
+Gazebo AckermannSteering / real Hunter controller
+↓
+Hunter SE
+↓
+next observation + reward + risk labels
+↓
+Replay Buffer
+↓
+off-policy update
+
+
+33. 기존 `drl_agent`와 신규 연구의 핵심 차이
+=========================================
+
+기존 `drl_agent`의 현재 연구 방향:
+- waypoint-level `[r,theta,yield]`
+- Pure Pursuit
+- TQC
+- temporal LiDAR
+- curriculum
+- human avoidance
+- aux future risk
+- action-risk
+- counterfactual risk
+- risk-balanced sampling
+
+신규 `hunter_kinodynamic_rl`의 중심:
+- trajectory-level `[kappa,v_ref,L]`
+- explicit Ackermann bounds
+- Hunter SE future dynamics rollout
+- stopping feasibility
+- steering saturation
+- trajectory-level risk
+- counterfactual feasible trajectory comparison
+- fixed ID/OOD geometry/dynamic benchmark
+- system identification
+- sim-to-real/real Hunter validation
+
+향후 확장:
+- OOD dynamics
+- Gazebo 물성/sensor domain randomization
+
+즉 차별점은 "risk feature를 추가했다"가 아니라:
+"Hunter SE가 실제 실행할 수 있는 trajectory 자체를 RL action으로 정의하고, 그 trajectory의 미래 위험을 실제 차량 동역학을 이용해 평가한다"는 것이다.
+
+
+34. 최종 연구 목표
+=================
+
+이 패키지의 최종 목표는 단순히 보이는 빈 공간으로 이동하는 로봇이 아니다.
+
+목표는:
+"자신의 조향·회전·정지 한계를 고려해 실제 실행 가능한 local trajectory를 만들고, 지금 선택한 trajectory가 몇 초 뒤에도 안전한지를 예측하며, 필요하면 더 안전한 feasible alternative를 선택하는 Ackermann 강화학습 자율주행 로봇"
+
+을 구현하는 것이다.
+
+최종적으로 다음을 실험적으로 증명해야 한다.
+- trajectory action이 waypoint/direct action보다 물리적 실행 가능성을 높이는가?
+- temporal observation이 dynamic risk 인식에 도움이 되는가?
+- future risk prediction이 collision 이전의 조기 의사결정을 개선하는가?
+- counterfactual risk가 단순 risk prediction보다 추가 안전성 향상을 만드는가?
+- 실제 Hunter SE에서 simulation 성능을 어느 정도 유지하는가?
+
+향후 sim-to-real 확장 단계에서 다음을 추가로 증명한다.
+- dynamics가 바뀐 OOD 환경에서도 robust한가?
+
+이 철학이 패키지 구조, 학습, 평가, benchmark, 실차 검증, 논문 contribution을 일관되게 관통해야 한다.
