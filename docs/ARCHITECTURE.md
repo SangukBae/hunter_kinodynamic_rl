@@ -316,6 +316,81 @@ what this gate decided. Its only job is reducing (not eliminating) how
 often the trainer/evaluator is handed a scenario that turns out to be
 geometrically unsolvable for an Ackermann vehicle.
 
+## Safe start pose / obstacle pool / sensor noise (drl_agent port)
+
+Three independent, curriculum-INDEPENDENT features ported from `drl_agent`
+(that package's own automatic 10-stage curriculum is deliberately NOT
+introduced here -- these are single, constant-for-the-whole-run settings).
+See `config/profiles/kinodynamic_tqc_stability.yaml` for a shipped example
+with all three enabled together; every OTHER profile leaves them at their
+schema defaults, which reproduce the pre-existing behaviour exactly.
+
+**1. Safe start pose (`config/schema.py::StartPoseConfig`,
+`env/scenarios/safe_start.py`).** `start_pose.heading_mode` defaults to
+`"legacy_random"` -- byte-identical to the original
+`start_yaw = rng.uniform(-pi, pi)`, drawn before any obstacle exists.
+`"random_rejected"` / `"goal_biased"` / `"free_space_biased"` instead
+sample the heading AFTER `generate_scenario`'s static obstacles for that
+attempt are known, rejecting a candidate that points into an obstacle's
+front cone or straight at the world boundary, with a bounded attempt
+budget and a deterministic (still clearance-checked) fallback sweep. If
+even the fallback finds nothing safe, the WHOLE scenario attempt is
+redrawn (never a silently-accepted unsafe heading) -- `generate_scenario`
+only raises once its own `max_attempts` is exhausted, exactly like every
+other infeasibility path already in that function.
+`start_pose.min_wall_clearance_m`/`min_obstacle_clearance_m` are read
+UNCONDITIONALLY (their defaults just rename pre-existing magic numbers),
+so only a profile that changes them sees a different layout even under
+`legacy_random`.
+
+**2. Deterministic obstacle entity pool
+(`config/schema.py::ObstaclePoolConfig`, `env/spawning/obstacle_pool.py`).**
+Disabled by default (the legacy delete-then-recreate-every-`/reset` path,
+unchanged). When enabled, `ObstaclePool.ensure_spawned` pre-spawns
+`max_static`/`max_dynamic` plain-cylinder markers exactly ONCE; every
+subsequent episode only teleports (`SetEntityPose`) the slots it needs and
+parks the rest at a fixed position far enough outside the arena to clear
+any LiDAR ray from anywhere inside it
+(`world_size_m/2 + lidar_max_range_m + parking_margin_m`). No further
+Spawn/Delete calls ever happen for pooled entities. Static obstacle radii
+are continuous but a spawned SDF's geometry is fixed at spawn time, so
+`obstacle_pool.static_size_classes_m` discretizes the radius: whenever the
+pool is active, `generate_scenario` is called with a
+`static_radius_quantizer` that snaps each drawn radius UP to the nearest
+class BEFORE any feasibility check runs, so the feasibility math and the
+physical Gazebo geometry are always for the identical radius. Only
+PROCEDURAL (training) episodes ever use the pool -- a fixed benchmark
+scenario always uses the legacy path (never approximated by the pool's
+quantized classes), and any pool slot left active by a previous procedural
+episode is explicitly parked before a fixed-benchmark episode runs.
+`/reset`/`/step` already share one `MutuallyExclusiveCallbackGroup`
+(`services_cb_group`), so dynamic-obstacle motion ticking (`_on_step`) and
+obstacle (re)placement (`_on_reset`) can never run concurrently regardless
+of pooling.
+
+**3. Fixed-shape sensor/localization noise model
+(`config/schema.py::SensorNoiseConfig`, `env/simulation/sensor_noise.py`).**
+Disabled by default. Unlike `domain_randomization` (a NEW magnitude drawn
+every episode from a configured RANGE, for sim-to-real training
+robustness), every magnitude here is a single profile-authored CONSTANT,
+composed on top of (after) whatever domain-randomization noise is already
+active. Covers LiDAR range noise/bias/dropout, localization x/y/yaw
+Gaussian noise plus Ornstein-Uhlenbeck drift (mean-reverting, so it stays
+bounded over a long episode, unlike a plain random walk) and optional
+fixed-step latency, and velocity/yaw-rate/steering measurement noise.
+Every function in `sensor_noise.py` is called EXCLUSIVELY from
+`environment_node.py`'s observation-construction path
+(`_observation_obs_state`/`_build_state_vector`) -- it perturbs only local
+variables used to build the policy's observation vector, never
+`self._robot_pose`/`self._robot_twist`/the real LiDAR scan, which stay the
+simulator's untouched ground truth for collision detection, reward, and
+the privileged risk label. Its RNG stream (`SensorNoiseState`) is
+re-seeded every `/reset` purely from the episode seed -- never scenario
+generation's own RNG or `domain_randomization`'s `_domain_rand_step_rng` --
+so it needs no dedicated checkpoint state at all: resuming a trainer
+(which persists only `SeedScheduler.episode_index`) automatically
+regenerates the identical noise-RNG seed for every subsequent episode.
+
 ## Not yet done (see docs/DELIVERY_REPORT.md for the full list)
 
 - Real Hunter SE hardware trials (no hardware available in this

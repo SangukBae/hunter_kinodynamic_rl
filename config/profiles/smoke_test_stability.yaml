@@ -1,0 +1,69 @@
+# Fast implementation-verification profile for the drl_agent ->
+# hunter_kinodynamic_rl port (start_pose / obstacle_pool / sensor_noise) --
+# NOT for research results. Same tiny footprint as smoke_test.yaml (a full
+# reset->step->train->checkpoint->resume cycle finishes in seconds), plus
+# the three new features actually enabled so a training/checkpoint smoke
+# run exercises them, not just environment_node resets in isolation.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+  actor_penalty_warmup_updates: 3
+  min_valid_labels_per_batch: 1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+
+hyperparameters:
+  batch_size: 8
+  buffer_size: 2000
+  n_critics: 2
+
+scenario:
+  world_size_m: 8.0
+  min_obstacles: 1
+  max_obstacles: 2
+  feasibility_check: ackermann
+
+start_pose:
+  heading_mode: goal_biased
+  min_wall_clearance_m: 0.2
+  front_safety_distance_m: 0.6
+  max_sampling_attempts: 30
+
+obstacle_pool:
+  enabled: true
+  max_static: 6   # scenario.max_obstacles(2) * len(static_size_classes_m)(3)
+  max_dynamic: 2
+  static_size_classes_m: [0.2, 0.35, 0.5]
+  parking_margin_m: 5.0
+
+sensor_noise:
+  enabled: true
+  lidar_range_noise_std_m: 0.02
+  lidar_dropout_prob: 0.01
+  localization_xy_noise_std_m: 0.03
+  localization_drift_xy_sigma_m: 0.01
+  localization_latency_steps: 1
+  velocity_noise_std_mps: 0.02
+  steering_noise_std_rad: 0.01
+
+training:
+  max_timesteps: 200
+  timesteps_before_training: 20
+  eval_freq: 50
+  eval_episodes: 2
+  episode_length_steps: 50
+  seed: 0

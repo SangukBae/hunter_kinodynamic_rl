@@ -58,7 +58,7 @@ class _FakeEnv:
             collision_within_horizon=False, stopping_margin_m=1.0, unrecoverable=False,
             safer_alternative_margin=0.0, actor_candidate_index=0,
         )
-        return [0.0] * 4, 0.0, done, False, False, 10.0, telemetry
+        return [0.0] * 4, 0.0, done, False, False, 10.0, telemetry, None
 
     def set_scenario_override(self, path):
         return True

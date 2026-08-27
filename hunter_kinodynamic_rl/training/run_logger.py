@@ -33,6 +33,7 @@ from typing import Dict, Optional
 
 from hunter_kinodynamic_rl.config.schema import Profile
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
+from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
 from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand
 from hunter_kinodynamic_rl.trajectory.trajectory_primitive import make_primitive
 
@@ -50,6 +51,61 @@ def _nan_to_none(value):
     if isinstance(value, float) and math.isnan(value):
         return None
     return value
+
+
+def _sensor_diagnostics_dict(d: sd.SensorDiagnostics) -> dict:
+    """requirement 5 fix (invalid-diagnostics fields must be null, never
+    0/0.0): ``sensor_diagnostics.invalid()`` only sets the pose/velocity/
+    steering fields to NaN (already caught by ``_nan_to_none`` below) --
+    ``drift_*``/``localization_latency_steps``/``lidar_beam_count``/
+    ``lidar_dropout_count``/``lidar_perturbation_{mean,max}_m`` all default
+    to a concrete ``0``/``0.0`` on the dataclass, which is
+    INDISTINGUISHABLE, once serialized, from "the measurement really was
+    zero this step". So every measurement field is forced to an explicit
+    ``None`` here whenever ``d.valid`` is False, regardless of what those
+    defaults happen to hold -- a reader must trust ``valid``/
+    ``invalid_reason`` alone to know whether ANY of these numbers mean
+    anything, never infer it from a field happening to read 0.
+
+    ``schema_version``/``episode_id``/``sim_timestamp_sec`` are always
+    included (even when invalid) for traceability -- pairing a JSONL record
+    back to the exact wire-format version and episode/sim-time it came from
+    without needing to cross-reference a separate ``episode_start`` record."""
+    base = {
+        "schema_version": sd.SCHEMA_VERSION, "valid": d.valid, "invalid_reason": d.invalid_reason,
+        "step_id": d.step_id, "reset_generation": d.reset_generation, "episode_id": d.episode_id,
+        "sim_timestamp_sec": _nan_to_none(d.sim_timestamp_sec),
+    }
+    if not d.valid:
+        base.update({
+            "gt_pose": {"x": None, "y": None, "yaw": None},
+            "noisy_pose": {"x": None, "y": None, "yaw": None},
+            "gt_velocity_mps": None, "noisy_velocity_mps": None,
+            "gt_yaw_rate_rad_s": None, "noisy_yaw_rate_rad_s": None,
+            "gt_steering_rad": None, "noisy_steering_rad": None,
+            "localization_drift": {"x_m": None, "y_m": None, "yaw_rad": None},
+            "localization_latency_steps": None,
+            "lidar_beam_count": None, "lidar_dropout_count": None,
+            "lidar_perturbation_mean_m": None, "lidar_perturbation_max_m": None,
+        })
+        return base
+    base.update({
+        "gt_pose": {"x": _nan_to_none(d.gt_x), "y": _nan_to_none(d.gt_y), "yaw": _nan_to_none(d.gt_yaw)},
+        "noisy_pose": {"x": _nan_to_none(d.noisy_x), "y": _nan_to_none(d.noisy_y),
+                       "yaw": _nan_to_none(d.noisy_yaw)},
+        "gt_velocity_mps": _nan_to_none(d.gt_v_mps),
+        "noisy_velocity_mps": _nan_to_none(d.noisy_v_mps),
+        "gt_yaw_rate_rad_s": _nan_to_none(d.gt_yaw_rate_radps),
+        "noisy_yaw_rate_rad_s": _nan_to_none(d.noisy_yaw_rate_radps),
+        "gt_steering_rad": _nan_to_none(d.gt_steering_rad),
+        "noisy_steering_rad": _nan_to_none(d.noisy_steering_rad),
+        "localization_drift": {"x_m": d.drift_x_m, "y_m": d.drift_y_m, "yaw_rad": d.drift_yaw_rad},
+        "localization_latency_steps": d.localization_latency_steps,
+        "lidar_beam_count": d.lidar_beam_count, "lidar_dropout_count": d.lidar_dropout_count,
+        "lidar_perturbation_mean_m": d.lidar_perturbation_mean_m,
+        "lidar_perturbation_max_m": d.lidar_perturbation_max_m,
+    })
+    return base
 
 
 def run_directory(profile: Profile, base_root: str) -> str:
@@ -127,7 +183,8 @@ class RunLogger:
                  state=None, next_state=None, measured_velocity_mps: Optional[float] = None,
                  measured_yaw_rate_rad_s: Optional[float] = None,
                  measured_steering_rad: Optional[float] = None,
-                 predicted_risk: Optional[float] = None) -> None:
+                 predicted_risk: Optional[float] = None,
+                 sensor_diagnostics: Optional[sd.SensorDiagnostics] = None) -> None:
         """section P1-11: ``pose`` is an optional ``(x, y, yaw)`` tuple (real
         odometry, from the trainer's own EnvironmentClient -- None if not
         yet received); ``trajectory_command`` is the DECODED
@@ -139,7 +196,20 @@ class RunLogger:
 
         Every risk-telemetry field that can be NaN (section 5's "no label
         this step" convention) is emitted as JSON ``null`` here, never a
-        raw NaN token (section P1-11 -- see ``_nan_to_none``)."""
+        raw NaN token (section P1-11 -- see ``_nan_to_none``).
+
+        ``sensor_diagnostics`` (requirement 5) is the GT-vs-noisy-observation
+        side-channel sample for THIS exact step (``env/simulation/
+        sensor_diagnostics.py``'s ``SensorDiagnostics``, as fetched by
+        ``EnvironmentClient._await_matching_sensor_diagnostics`` -- already
+        paired to this step's own ``(reset_generation, step_id)``, so it is
+        NEVER a stale sample from a different step/episode by construction).
+        ``None`` (the default) omits the ``sensor_diagnostics`` key entirely
+        -- for callers that never fetch it; a caller that DID attempt the
+        fetch always passes a real (possibly ``valid=False``, e.g. on a poll
+        timeout) object, never silently drops it, so ``valid``/
+        ``invalid_reason`` are always there to tell a reader whether the
+        embedded GT/noisy values are trustworthy for this record."""
         trajectory_points = None
         if isinstance(trajectory_command, TrajectoryCommand):
             primitive = make_primitive(
@@ -201,6 +271,8 @@ class RunLogger:
                 for c in telemetry.candidates
             ],
         }
+        if sensor_diagnostics is not None:
+            record["sensor_diagnostics"] = _sensor_diagnostics_dict(sensor_diagnostics)
         self._steps_file.write(json.dumps(record) + "\n")
         self._steps_file.flush()
 

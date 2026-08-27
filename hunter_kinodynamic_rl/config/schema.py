@@ -523,6 +523,121 @@ class ScenarioConfig:
 
 
 @dataclass
+class StartPoseConfig:
+    """Safe start-position/initial-yaw sampling (curriculum-independent --
+    this package has no drl_agent-style curriculum stages; every field here
+    applies uniformly for the whole run). Default ``heading_mode="legacy_random"``
+    is BYTE-IDENTICAL to the pre-existing behaviour (``start_yaw =
+    rng.uniform(-pi, pi)`` drawn immediately after the start position, before
+    any obstacle is placed) -- every other mode is an explicit opt-in that
+    changes ``generate_scenario``'s internal RNG draw ORDER (obstacles are
+    placed BEFORE the heading is sampled, so the sampler can reject a
+    heading that points at a wall or into a nearby obstacle), so enabling
+    one changes the exact scenario a given seed produces even though the
+    *distribution* of feasible layouts stays the same class of problem.
+
+    ``min_wall_clearance_m``/``min_obstacle_clearance_m`` are read
+    UNCONDITIONALLY by ``generate_scenario`` (regardless of ``heading_mode``)
+    -- they only rename pre-existing magic numbers (the robot-radius-only
+    wall inset, and the hardcoded ``0.5`` obstacle-placement rejection
+    margin) into config fields, so their DEFAULTS reproduce the old
+    numeric behaviour exactly; only a profile that explicitly changes them
+    sees a different obstacle/start layout.
+    """
+
+    heading_mode: str = "legacy_random"  # legacy_random | random_rejected | goal_biased | free_space_biased
+    min_wall_clearance_m: float = 0.0
+    min_obstacle_clearance_m: float = 0.5
+    front_safety_distance_m: float = 0.6
+    front_cone_half_angle_rad: float = 0.5236  # ~30 deg
+    max_sampling_attempts: int = 50
+    # goal_biased: probability a candidate heading is drawn toward the goal
+    # (+/- goal_bias_spread_rad jitter) rather than uniformly at random.
+    goal_bias_prob: float = 0.5
+    goal_bias_spread_rad: float = 0.3
+    # free_space_biased: number of evenly-spaced probe directions scored by
+    # obstacle/wall clearance; a candidate is drawn from a softmax over
+    # those clearance scores (so it's biased toward open directions, not
+    # deterministic argmax, keeping the sampler's own attempts/fallback
+    # machinery meaningful).
+    free_space_probe_count: int = 12
+
+    def validate(self) -> None:
+        valid_modes = ("legacy_random", "random_rejected", "goal_biased", "free_space_biased")
+        if self.heading_mode not in valid_modes:
+            raise ConfigError(f"start_pose.heading_mode must be one of {valid_modes}, got {self.heading_mode!r}")
+        if self.min_wall_clearance_m < 0.0:
+            raise ConfigError("start_pose.min_wall_clearance_m must be >= 0")
+        if self.min_obstacle_clearance_m < 0.0:
+            raise ConfigError("start_pose.min_obstacle_clearance_m must be >= 0")
+        if self.front_safety_distance_m <= 0.0:
+            raise ConfigError("start_pose.front_safety_distance_m must be > 0")
+        if not (0.0 < self.front_cone_half_angle_rad <= math.pi):
+            raise ConfigError("start_pose.front_cone_half_angle_rad must be in (0, pi]")
+        if self.max_sampling_attempts < 1:
+            raise ConfigError("start_pose.max_sampling_attempts must be >= 1")
+        if not (0.0 <= self.goal_bias_prob <= 1.0):
+            raise ConfigError("start_pose.goal_bias_prob must be in [0, 1]")
+        if self.goal_bias_spread_rad < 0.0:
+            raise ConfigError("start_pose.goal_bias_spread_rad must be >= 0")
+        if self.free_space_probe_count < 1:
+            raise ConfigError("start_pose.free_space_probe_count must be >= 1")
+
+
+@dataclass
+class ObstaclePoolConfig:
+    """Deterministic Gazebo obstacle ENTITY POOL (opt-in): pre-spawn a fixed
+    set of static/dynamic markers once and reuse them (teleport active
+    slots to the new episode's positions, park the rest off-arena) instead
+    of deleting and re-spawning every ``/reset`` -- avoids the
+    delete/create service-call churn (and the resulting Ignition
+    "not found, so not removed" log spam when bookkeeping ever drifts) a
+    high-reset-rate training loop otherwise produces every single episode.
+
+    Only applies to PROCEDURALLY generated (training) scenarios -- a fixed
+    benchmark scenario (``evaluation_node.py``'s exact YAML-authored
+    layouts) always uses the legacy spawn/delete path regardless of this
+    setting, so evaluation geometry is never approximated by the pool's
+    quantized size classes (see env/spawning/obstacle_pool.py's module
+    docstring for the full rationale).
+
+    Disabled by default -- byte-identical to pre-existing behaviour.
+    """
+
+    enabled: bool = False
+    max_static: int = 8
+    max_dynamic: int = 4
+    # Static markers are plain cylinders (bypassing the drl_obstacle_assets
+    # catalog meshes used by the legacy path) whose radius is SNAPPED UP to
+    # the nearest class here -- keeps the pool's REAL Gazebo collision
+    # geometry exactly consistent with whatever radius
+    # generate_scenario's feasibility checks assumed, at the cost of some
+    # visual/geometric diversity relative to the legacy catalog-backed path.
+    # Must be sorted ascending; the largest class must cover
+    # generate_scenario's own max static-obstacle radius (0.5 m).
+    static_size_classes_m: List[float] = field(default_factory=lambda: [0.5])
+    # Parked slots are placed in a grid this far beyond
+    # (scenario.world_size_m/2 + observation.lidar_max_range_m) -- far
+    # enough outside the arena that no LiDAR ray from anywhere inside it
+    # can ever reach a parked marker.
+    parking_margin_m: float = 5.0
+
+    def validate(self) -> None:
+        if self.max_static < 0:
+            raise ConfigError("obstacle_pool.max_static must be >= 0")
+        if self.max_dynamic < 0:
+            raise ConfigError("obstacle_pool.max_dynamic must be >= 0")
+        if self.enabled and not self.static_size_classes_m:
+            raise ConfigError("obstacle_pool.static_size_classes_m must be non-empty when enabled")
+        if any(c <= 0.0 for c in self.static_size_classes_m):
+            raise ConfigError("obstacle_pool.static_size_classes_m entries must be > 0")
+        if list(self.static_size_classes_m) != sorted(self.static_size_classes_m):
+            raise ConfigError("obstacle_pool.static_size_classes_m must be sorted ascending")
+        if self.parking_margin_m <= 0.0:
+            raise ConfigError("obstacle_pool.parking_margin_m must be > 0")
+
+
+@dataclass
 class TrainingConfig:
     max_timesteps: int = 2_000_000
     timesteps_before_training: int = 12_000
@@ -587,6 +702,64 @@ class DomainRandomizationConfig:
             r = getattr(self, name)
             if not (0.0 <= r[0] and r[1] <= 1.0):
                 raise ConfigError(f"domain_randomization.{name} must be within [0, 1], got {r}")
+
+
+@dataclass
+class SensorNoiseConfig:
+    """Fixed-shape, CURRICULUM-INDEPENDENT sensor/localization error model
+    (this package has no drl_agent-style curriculum stages -- every
+    magnitude here is a single profile-authored constant applied uniformly
+    for the whole run, unlike ``domain_randomization`` above, which draws a
+    NEW magnitude every episode from a configured RANGE for sim-to-real
+    training-robustness purposes). Applies ON TOP OF (after)
+    ``domain_randomization``'s own LiDAR/odometry noise when both are
+    enabled -- see ``env/simulation/sensor_noise.py``'s module docstring
+    for the exact composition order and the observation/ground-truth
+    separation this module enforces.
+
+    Disabled by default -- byte-identical to pre-existing behaviour. Every
+    field is independently zero/False-able without touching any other."""
+
+    enabled: bool = False
+    lidar_range_noise_std_m: float = 0.0
+    lidar_bias_m: float = 0.0
+    lidar_dropout_prob: float = 0.0
+    localization_xy_noise_std_m: float = 0.0
+    localization_yaw_noise_std_rad: float = 0.0
+    # OU (Ornstein-Uhlenbeck) drift on the MEASURED (x, y, yaw) -- models a
+    # slowly-varying localization bias (e.g. SLAM drift), distinct from the
+    # i.i.d.-per-step noise above. Integrated via the EXACT discrete-time OU
+    # update (env/simulation/sensor_noise.py::_ou_step), not Euler-Maruyama.
+    # theta = mean-reversion rate (1/s, >= 0). sigma = the SDE's own
+    # DIFFUSION COEFFICIENT (dX = -theta*X*dt + sigma*dW), units
+    # <state-unit>/sqrt(sec) -- NOT a per-step standard deviation; the
+    # actual per-tick noise std is derived from sigma, theta, and dt
+    # together. A zero sigma disables its own drift axis entirely (theta is
+    # then irrelevant) -- byte-identical.
+    localization_drift_theta: float = 1.0
+    localization_drift_xy_sigma_m: float = 0.0
+    localization_drift_yaw_sigma_rad: float = 0.0
+    # The observation's localization reading is the (noise+drift-applied)
+    # pose from this many CONTROL TICKS ago -- 0 disables latency (the
+    # reading is always this tick's own).
+    localization_latency_steps: int = 0
+    velocity_noise_std_mps: float = 0.0
+    yaw_rate_noise_std_radps: float = 0.0
+    steering_noise_std_rad: float = 0.0
+
+    def validate(self) -> None:
+        for name in (
+            "lidar_range_noise_std_m", "lidar_dropout_prob", "localization_xy_noise_std_m",
+            "localization_yaw_noise_std_rad", "localization_drift_theta", "localization_drift_xy_sigma_m",
+            "localization_drift_yaw_sigma_rad", "velocity_noise_std_mps", "yaw_rate_noise_std_radps",
+            "steering_noise_std_rad",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ConfigError(f"sensor_noise.{name} must be >= 0")
+        if not (0.0 <= self.lidar_dropout_prob <= 1.0):
+            raise ConfigError("sensor_noise.lidar_dropout_prob must be in [0, 1]")
+        if self.localization_latency_steps < 0:
+            raise ConfigError("sensor_noise.localization_latency_steps must be >= 0")
 
 
 @dataclass
@@ -920,6 +1093,116 @@ class EvaluationConfig:
 
 
 @dataclass
+class MissionConfig:
+    """Hierarchical-navigation mission lifecycle (Phase 1 --
+    ``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 5.7).
+    Consumed only by ``navigation/`` -- the existing local-only env/training
+    path never reads this section, so it is opt-in by construction (no
+    ``enabled`` flag needed)."""
+
+    position_tolerance_m: float = 0.6
+    heading_tolerance_rad: float = math.pi
+    require_low_speed_on_goal: bool = True
+    goal_speed_threshold_mps: float = 0.1
+    reset_memory_on_goal_change: bool = True
+
+    def validate(self) -> None:
+        if self.position_tolerance_m <= 0.0:
+            raise ConfigError("mission.position_tolerance_m must be > 0")
+        if not (0.0 <= self.heading_tolerance_rad <= math.pi):
+            raise ConfigError("mission.heading_tolerance_rad must be in [0, pi]")
+        if self.goal_speed_threshold_mps < 0.0:
+            raise ConfigError("mission.goal_speed_threshold_mps must be >= 0")
+
+
+@dataclass
+class LocalizationConfig:
+    """Localization backend selection + validity gating (Phase 1 section
+    5.7). ``backend="odom"`` is the ROS-free
+    :class:`~hunter_kinodynamic_rl.navigation.localization.odom_backend.OdomLocalizationBackend`
+    (tests, replay); ``"gazebo_odom"`` additionally parses
+    ``nav_msgs/Odometry`` covariance into a confidence estimate (see
+    ``navigation/localization/gazebo_odom_backend.py``)."""
+
+    backend: str = "gazebo_odom"
+    odom_topic: str = "/odometry"
+    pose_timeout_sec: float = 0.5
+    minimum_confidence: float = 0.5
+    publish_mission_tf: bool = True
+
+    def validate(self) -> None:
+        if self.backend not in ("odom", "gazebo_odom"):
+            raise ConfigError(f"localization.backend must be odom|gazebo_odom, got {self.backend!r}")
+        if self.pose_timeout_sec <= 0.0:
+            raise ConfigError("localization.pose_timeout_sec must be > 0")
+        if not (0.0 <= self.minimum_confidence <= 1.0):
+            raise ConfigError("localization.minimum_confidence must be in [0, 1]")
+
+
+@dataclass
+class MappingConfig:
+    """Online partial-map accumulation (Phase 1 section 5.4/5.5/5.6).
+    ``free_threshold`` MUST stay strictly below ``occupied_threshold`` --
+    otherwise a single log-odds value could satisfy both the ``occupied``
+    and ``free`` channel predicates at once, which would violate the
+    spec's explicit UNKNOWN/FREE/OCCUPIED exclusivity requirement.
+
+    A strict ``free_threshold < occupied_threshold`` still leaves a real
+    gap between them -- an observed cell whose log-odds falls inside that
+    gap is neither confidently free nor confidently occupied. This is not
+    a bug: it is the map's actual, documented FOURTH state,
+    ``MapChannels.observed_uncertain`` (see
+    ``navigation/mapping/partial_map.py``'s module docstring) -- together
+    with occupied/free/unknown it exhaustively and disjointly partitions
+    every cell."""
+
+    resolution_m: float = 0.2
+    mission_size_cells: int = 256
+    rolling_size_cells: int = 128
+    free_log_odds_delta: float = -0.4
+    occupied_log_odds_delta: float = 0.85
+    free_threshold: float = -0.2
+    occupied_threshold: float = 0.2
+    log_odds_min: float = -4.0
+    log_odds_max: float = 4.0
+    inflation_radius_m: float = 0.45
+    visit_radius_m: float = 0.4
+    visited_count_saturation: int = 1000
+    failure_count_saturation: int = 100
+
+    def validate(self) -> None:
+        if self.resolution_m <= 0.0:
+            raise ConfigError("mapping.resolution_m must be > 0")
+        if self.mission_size_cells <= 0:
+            raise ConfigError("mapping.mission_size_cells must be > 0")
+        if self.rolling_size_cells <= 0:
+            raise ConfigError("mapping.rolling_size_cells must be > 0")
+        if self.free_log_odds_delta >= 0.0:
+            raise ConfigError("mapping.free_log_odds_delta must be < 0 (a free observation must DECREASE log-odds)")
+        if self.occupied_log_odds_delta <= 0.0:
+            raise ConfigError(
+                "mapping.occupied_log_odds_delta must be > 0 (an occupied observation must INCREASE log-odds)"
+            )
+        if self.free_threshold >= self.occupied_threshold:
+            raise ConfigError(
+                "mapping.free_threshold must be strictly < occupied_threshold, otherwise a single log-odds "
+                "value could be classified as both free and occupied (channel exclusivity violation)"
+            )
+        if self.log_odds_min >= self.log_odds_max:
+            raise ConfigError("mapping.log_odds_min must be < log_odds_max")
+        if not (self.log_odds_min <= self.free_threshold and self.occupied_threshold <= self.log_odds_max):
+            raise ConfigError("mapping.{free,occupied}_threshold must lie within [log_odds_min, log_odds_max]")
+        if self.inflation_radius_m < 0.0:
+            raise ConfigError("mapping.inflation_radius_m must be >= 0")
+        if self.visit_radius_m <= 0.0:
+            raise ConfigError("mapping.visit_radius_m must be > 0")
+        if not (0 < self.visited_count_saturation <= 65535):
+            raise ConfigError("mapping.visited_count_saturation must be in (0, 65535] (uint16 storage)")
+        if not (0 < self.failure_count_saturation <= 255):
+            raise ConfigError("mapping.failure_count_saturation must be in (0, 255] (uint8 storage)")
+
+
+@dataclass
 class Profile:
     """The fully-resolved config for one run -- what a training/eval node
     actually consumes."""
@@ -937,18 +1220,26 @@ class Profile:
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
     features: FeatureFlags = field(default_factory=FeatureFlags)
     scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+    start_pose: StartPoseConfig = field(default_factory=StartPoseConfig)
+    obstacle_pool: ObstaclePoolConfig = field(default_factory=ObstaclePoolConfig)
+    sensor_noise: SensorNoiseConfig = field(default_factory=SensorNoiseConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     domain_randomization: DomainRandomizationConfig = field(default_factory=DomainRandomizationConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    mission: MissionConfig = field(default_factory=MissionConfig)
+    localization: LocalizationConfig = field(default_factory=LocalizationConfig)
+    mapping: MappingConfig = field(default_factory=MappingConfig)
 
     def validate(self) -> None:
         for section in (
             self.robot, self.action_space, self.trajectory, self.dynamics,
             self.observation, self.risk, self.counterfactual,
-            self.hyperparameters, self.sac_hyperparameters, self.algorithm, self.scenario, self.training,
+            self.hyperparameters, self.sac_hyperparameters, self.algorithm, self.scenario, self.start_pose,
+            self.obstacle_pool, self.sensor_noise, self.training,
             self.evaluation, self.reward, self.domain_randomization, self.runtime,
+            self.mission, self.localization, self.mapping,
         ):
             section.validate()
         # Cross-section consistency checks that no single section can do alone.
@@ -1001,3 +1292,73 @@ class Profile:
                 "algorithm.name=sac has no risk-critic/counterfactual extension -- "
                 "features.risk_critic and features.counterfactual_risk must both be False"
             )
+        # env/spawning/obstacle_pool.py only ever pools PROCEDURAL scenarios
+        # -- a fixed benchmark (self.evaluation.benchmark set) always parks
+        # every pool slot via activate_static([])/activate_dynamic([])
+        # (see environment_node.py::_spawn_scenario_obstacles's
+        # `elif use_pool:` branches) and NEVER draws from
+        # self.scenario.max_obstacles/dynamic_obstacle_count at all -- that
+        # scenario section instead describes the fixed benchmark's own
+        # YAML-authored geometry. Checking pool capacity against it for a
+        # benchmark profile is meaningless and previously broke evaluating
+        # ANY pool-enabled checkpoint (whose own training-time
+        # obstacle_pool sizing has nothing to do with the requested
+        # evaluation profile's scenario.max_obstacles) through
+        # build_effective_profile (nodes/evaluation_node.py), which layers
+        # the checkpoint's obstacle_pool together with the eval profile's
+        # scenario section into one Profile before calling validate().
+        if self.obstacle_pool.enabled and not self.evaluation.benchmark:
+            validate_procedural_pool_capacity(self.obstacle_pool, self.scenario)
+
+
+def validate_procedural_pool_capacity(obstacle_pool: "ObstaclePoolConfig", scenario: "ScenarioConfig") -> None:
+    """Capacity must cover the worst case generate_scenario can actually
+    draw for a PROCEDURAL (non-fixed-benchmark) profile's own scenario
+    section, or activation would fail mid-run on a perfectly ordinary (if
+    unlucky) episode instead of at load time (live-Docker-verification
+    finding: a 6-static-obstacle episode whose radii happened to cluster in
+    the top size bucket exhausted that bucket's slots and crashed the whole
+    /reset). requirement 4: activate_static NEVER escalates a radius to a
+    LARGER class when its own exact class runs out of free slots (doing so
+    would spawn Gazebo collision geometry bigger than ScenarioSpec.radius, a
+    silent mismatch against whatever feasibility/risk computation assumed)
+    -- it fails fast instead. So EVERY class, independently, must be able to
+    hold the worst case of ALL scenario.max_obstacles obstacles drawing a
+    radius that lands in that one class. ObstaclePool's own slot allocation
+    is a simple round-robin over static_size_classes_m (see
+    ObstaclePool.__post_init__), so the smallest number of slots any ONE
+    class can end up with is max_static // len(static_size_classes_m) --
+    requiring THAT (the worst-populated class) to already cover
+    scenario.max_obstacles guarantees EVERY class does too, so
+    activate_static can never raise for capacity reasons regardless of how
+    the radius draws happen to distribute across classes."""
+    min_slots_per_class = obstacle_pool.max_static // len(obstacle_pool.static_size_classes_m)
+    if min_slots_per_class < scenario.max_obstacles:
+        raise ConfigError(
+            f"obstacle_pool.max_static ({obstacle_pool.max_static}) split across "
+            f"{len(obstacle_pool.static_size_classes_m)} static_size_classes_m gives only "
+            f"{min_slots_per_class} slots for the smallest-allocated class, but "
+            f"scenario.max_obstacles ({scenario.max_obstacles}) static obstacles could ALL "
+            "draw a radius needing that class in the worst case -- set obstacle_pool.max_static "
+            f">= scenario.max_obstacles * len(static_size_classes_m) "
+            f"({scenario.max_obstacles * len(obstacle_pool.static_size_classes_m)}), or use "
+            "fewer static_size_classes_m"
+        )
+    if obstacle_pool.max_dynamic < scenario.dynamic_obstacle_count:
+        raise ConfigError(
+            f"obstacle_pool.max_dynamic ({obstacle_pool.max_dynamic}) must be >= "
+            f"scenario.dynamic_obstacle_count ({scenario.dynamic_obstacle_count})"
+        )
+    # generate_scenario draws static obstacle radii in [0.15, 0.5] --
+    # see env/scenarios/procedural_generator.py's STATIC_OBSTACLE_RADIUS_RANGE_M.
+    from hunter_kinodynamic_rl.env.scenarios.procedural_generator import (
+        STATIC_OBSTACLE_RADIUS_RANGE_M,
+    )
+    max_drawable_radius = STATIC_OBSTACLE_RADIUS_RANGE_M[1]
+    if obstacle_pool.static_size_classes_m[-1] < max_drawable_radius - 1e-9:
+        raise ConfigError(
+            f"obstacle_pool.static_size_classes_m's largest class "
+            f"({obstacle_pool.static_size_classes_m[-1]}) must be >= the largest radius "
+            f"generate_scenario can draw ({max_drawable_radius}) -- otherwise some episodes' "
+            "static obstacles would have no pool slot large enough to spawn them safely"
+        )

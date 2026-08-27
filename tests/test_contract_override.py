@@ -12,7 +12,7 @@ from hunter_kinodynamic_rl.evaluation.contract_override import (
 )
 
 
-def test_write_then_load_round_trips_the_four_contract_sections(tmp_path):
+def test_write_then_load_round_trips_the_five_contract_sections(tmp_path):
     profile = load_profile("evaluation_id")
     path = str(tmp_path / "override.yaml")
     write_evaluation_contract_override(path, profile)
@@ -23,9 +23,10 @@ def test_write_then_load_round_trips_the_four_contract_sections(tmp_path):
     assert sections["scenario"] == profile.scenario
     assert sections["runtime"] == profile.runtime
     assert sections["evaluation"] == profile.evaluation
+    assert sections["sensor_noise"] == profile.sensor_noise
 
 
-def test_apply_evaluation_contract_replaces_only_the_four_sections():
+def test_apply_evaluation_contract_replaces_only_the_five_sections():
     training_profile = load_profile("kinodynamic_tqc")
     eval_profile = load_profile("evaluation_id")
     sections = {name: getattr(eval_profile, name) for name in CONTRACT_SECTION_NAMES}
@@ -36,6 +37,7 @@ def test_apply_evaluation_contract_replaces_only_the_four_sections():
     assert effective.scenario == eval_profile.scenario
     assert effective.runtime == eval_profile.runtime
     assert effective.evaluation == eval_profile.evaluation
+    assert effective.sensor_noise == eval_profile.sensor_noise
     # Everything architecture-owned (and training-loop-only) stays from
     # the TRAINING profile, untouched.
     assert effective.action_space == training_profile.action_space
@@ -95,6 +97,26 @@ def test_apply_then_fingerprint_matches_the_source_evaluation_profile():
         effective = apply_evaluation_contract(training_profile, sections)
 
     assert evaluation_contract_fingerprint(effective) == evaluation_contract_fingerprint(eval_profile)
+
+
+def test_write_then_load_round_trips_a_noise_enabled_sensor_noise_section(tmp_path):
+    """requirement 2: an evaluation profile that turns sensor_noise ON
+    (with real, non-default magnitudes) must round-trip through the
+    override file byte-for-byte, not just the disabled default."""
+    import dataclasses as dc
+
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+
+    profile = dc.replace(load_profile("evaluation_id"), sensor_noise=SensorNoiseConfig(
+        enabled=True, lidar_range_noise_std_m=0.03, localization_xy_noise_std_m=0.05,
+        localization_drift_theta=0.5, localization_drift_xy_sigma_m=0.02, localization_latency_steps=2,
+    ))
+    path = str(tmp_path / "override.yaml")
+    write_evaluation_contract_override(path, profile)
+
+    sections = load_evaluation_contract_override(path)
+    assert sections["sensor_noise"] == profile.sensor_noise
+    assert sections["sensor_noise"].enabled is True
 
 
 def test_contract_section_names_matches_fingerprint_evaluation_contract_sections():

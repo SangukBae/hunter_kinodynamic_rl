@@ -43,7 +43,10 @@ def main():
         print(json.dumps(summary, indent=2, sort_keys=True))
     finally:
         env.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT can already have triggered rclpy's own shutdown before
+        # this finally block runs -- guard against calling it twice.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

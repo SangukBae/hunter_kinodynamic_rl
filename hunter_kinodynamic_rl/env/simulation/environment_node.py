@@ -67,12 +67,14 @@ from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedPoolViolation
 from hunter_kinodynamic_rl.env.simulation.gazebo_runtime import GazeboRuntimeMixin
 from hunter_kinodynamic_rl.env.simulation.gazebo_service_wait import GazeboServiceError
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
+from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
+from hunter_kinodynamic_rl.env.simulation import sensor_noise
 from hunter_kinodynamic_rl.env.simulation.risk_computation import (
     compute_common_evaluation_metrics, compute_risk_telemetry,
 )
 from hunter_kinodynamic_rl.risk.boundary import distance_to_boundary_m
 from hunter_kinodynamic_rl.rl.checkpointing.manager import sha256_of_file
-from hunter_kinodynamic_rl.env.spawning import obstacle_spawner
+from hunter_kinodynamic_rl.env.spawning import obstacle_pool, obstacle_spawner
 from hunter_kinodynamic_rl.env.spawning.obstacle_catalog import load_catalog
 from hunter_kinodynamic_rl.robot.hunter_se import HunterSE
 from hunter_kinodynamic_rl.sensing.scan_processor import front_and_full_state
@@ -307,6 +309,21 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
         self._catalog = load_catalog()
         self._obstacle_rng = np.random.RandomState(run_seed)
+        # section (obstacle pool): built from the LAUNCH-time profile only
+        # (self.profile here is still self._launch_profile -- no
+        # evaluation-contract override has run yet), mirroring
+        # RUNTIME_FIELDS_FIXED_AT_LAUNCH's own launch-time-fixed pattern --
+        # see obstacle_pool.py's build_pool docstring for why parking
+        # distance must not be re-derived from a later override. None when
+        # disabled (every profile that doesn't set obstacle_pool.enabled),
+        # in which case every obstacle-management code path below stays on
+        # the legacy spawn/delete-every-reset behaviour, unchanged.
+        self._obstacle_pool = (
+            obstacle_pool.build_pool(
+                self.profile.obstacle_pool, self.profile.scenario.world_size_m,
+                self.profile.observation.lidar_max_range_m,
+            ) if self.profile.obstacle_pool.enabled else None
+        )
 
         self.scan_update_count = 0
         self.odom_update_count = 0
@@ -340,9 +357,23 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # /reset for reproducibility from the episode seed alone.
         self._active_domain_rand_draw = RandomizationDraw()
         self._domain_rand_step_rng: Optional[np.random.RandomState] = None
+        # section (sensor noise): a DEDICATED per-episode RNG stream --
+        # never scenario-generation's own rng or _domain_rand_step_rng
+        # above -- reset fresh every /reset from the episode seed alone
+        # (see sensor_noise.py's module docstring for the reproducibility
+        # argument this gives across checkpoint/resume for free). None
+        # whenever profile.sensor_noise.enabled is False (every profile
+        # that doesn't opt in), in which case every call site below is a
+        # byte-identical no-op.
+        self._sensor_noise_state: Optional[sensor_noise.SensorNoiseState] = None
         self._filtered_steering_rad = 0.0
         self._filtered_speed_mps = 0.0
         self._last_obs_state: Optional[np.ndarray] = None
+        # section (sensor diagnostics race fix): the ground-truth LiDAR
+        # frame sampled at the SAME instant as `_last_obs_state` above --
+        # see `_observation_obs_state`'s own docstring for why diagnostics
+        # must read this instead of calling `_current_scan_states()` again.
+        self._last_gt_obs_state: Optional[np.ndarray] = None
 
         self._frame_stack = FrameStack(
             frame_dim=self.profile.observation.lidar_bins,
@@ -370,6 +401,11 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
         self._cmd_pub = self.create_publisher(Twist, self.get_parameter("cmd_vel_topic").value, 10)
         self._risk_pub = self.create_publisher(Float32MultiArray, "/hunter_kinodynamic_rl/risk_telemetry", 10)
+        # requirement 5: a SEPARATE, versioned diagnostics topic -- see
+        # sensor_diagnostics.py's own module docstring for why this is
+        # never folded into risk_telemetry's own wire format.
+        self._sensor_diag_pub = self.create_publisher(
+            Float32MultiArray, "/hunter_kinodynamic_rl/sensor_diagnostics", 10)
 
         # Gazebo service CLIENTS live in their OWN callback group, separate
         # from the service SERVERS below -- a /reset or /step server callback
@@ -465,8 +501,22 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         (section P1-10). NEVER used for collision/risk computation, which
         always calls ``_current_scan_states()`` directly for the untouched
         ground truth -- perturbing what the agent SEES must never perturb
-        what actually happened."""
+        what actually happened.
+
+        section (sensor diagnostics race fix): the ground-truth frame read
+        below is also snapshotted into ``self._last_gt_obs_state`` -- the
+        SAME instant's ground truth ``self._last_obs_state`` (the noisy
+        result) was derived from. A multi-threaded executor can run the
+        scan subscription callback between this call and a LATER,
+        independent ``self._current_scan_states()`` call (e.g. from
+        ``_compute_and_publish_sensor_diagnostics``), so re-querying ground
+        truth there instead of reading this snapshot could compare THIS
+        tick's noisy observation against a DIFFERENT (newer) scan --
+        misattributing real robot/obstacle motion between the two scans to
+        noise perturbation. Diagnostics must read this snapshot, never call
+        ``_current_scan_states()`` again for the same tick."""
         obs_state, _ = self._current_scan_states()
+        self._last_gt_obs_state = obs_state
         if self._domain_rand_step_rng is not None:
             if (self._last_obs_state is not None
                     and should_drop_sensor_frame(self._active_domain_rand_draw, self._domain_rand_step_rng)):
@@ -474,23 +524,125 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             else:
                 obs_state = apply_lidar_noise(
                     obs_state, self._active_domain_rand_draw, self._domain_rand_step_rng, self._max_range())
+        # section (sensor noise): applied AFTER domain_randomization's own
+        # LiDAR noise (composable, not exclusive -- see sensor_noise.py's
+        # module docstring) -- a no-op whenever profile.sensor_noise.enabled
+        # is False.
+        if self._sensor_noise_state is not None:
+            obs_state = sensor_noise.apply_lidar_noise(
+                self._sensor_noise_state, self.profile.sensor_noise, obs_state, self._max_range())
         self._last_obs_state = obs_state
         return obs_state
 
     def _build_state_vector(self) -> np.ndarray:
+        """Per-STEP contract: sample exactly ONE fresh (possibly noisy)
+        LiDAR frame, push it onto the frame stack (evicting the oldest),
+        and assemble the full observation from the result. Reset uses
+        :meth:`_assemble_state_vector` directly instead (see that method's
+        own docstring for why) -- never call this method from the reset
+        path, or the initial LiDAR frame gets sampled/pushed TWICE (once
+        here, once already by whatever filled the frame stack for reset)."""
         obs_state = self._observation_obs_state()
         self._frame_stack.push(obs_state)
+        return self._assemble_state_vector()
+
+    def _assemble_state_vector(self) -> np.ndarray:
+        """Builds the full observation vector from whatever is ALREADY in
+        ``self._frame_stack`` (never samples a new LiDAR frame or pushes
+        one) -- the shared tail of both the per-step path
+        (:meth:`_build_state_vector`, which pushes a fresh frame first) and
+        the reset path (which instead calls ``self._frame_stack.reset(...)``
+        with a SINGLE noisy frame sampled once, then calls this method
+        directly so that frame is never re-sampled/re-pushed a second
+        time -- see requirement 3 / this node's own ``reset`` docstring)."""
         lidar_frame = self._frame_stack.stacked()
-        x, y, yaw = self._robot_pose
-        v, yaw_rate = self._robot_twist
+        gt_x, gt_y, gt_yaw = self._robot_pose
+        gt_v, gt_yaw_rate = self._robot_twist
+        gt_steering = self._center_steering
+        x, y, yaw, v, yaw_rate, steering = gt_x, gt_y, gt_yaw, gt_v, gt_yaw_rate, gt_steering
         if self._domain_rand_step_rng is not None:
             v, yaw_rate = apply_odometry_noise(v, yaw_rate, self._active_domain_rand_draw, self._domain_rand_step_rng)
-        robot_state = RobotState(x=x, y=y, yaw=yaw, v=v, yaw_rate=yaw_rate, steering=self._center_steering)
+        # section (sensor noise): perturbs ONLY these local variables, used
+        # below solely to build the AGENT'S observation -- self._robot_pose/
+        # self._robot_twist/self._center_steering (ground truth) are never
+        # written to, so collision detection, reward, and the privileged
+        # risk label (all of which read those attributes directly elsewhere
+        # in this node) are completely unaffected regardless of whether
+        # sensor_noise is enabled.
+        if self._sensor_noise_state is not None:
+            cfg = self.profile.sensor_noise
+            x, y, yaw = sensor_noise.measured_pose(self._sensor_noise_state, cfg, x, y, yaw)
+            v, yaw_rate = sensor_noise.measured_velocity(self._sensor_noise_state, cfg, v, yaw_rate)
+            steering = sensor_noise.measured_steering(self._sensor_noise_state, cfg, steering)
+        robot_state = RobotState(x=x, y=y, yaw=yaw, v=v, yaw_rate=yaw_rate, steering=steering)
         robot_state_vec = build_robot_state_vector(
             robot_state, self._scenario.goal_x, self._scenario.goal_y, self._prev_action,
             robot_state_dim=self.profile.observation.robot_state_dim,
         )
+        self._compute_and_publish_sensor_diagnostics(
+            gt_x=gt_x, gt_y=gt_y, gt_yaw=gt_yaw, gt_v=gt_v, gt_yaw_rate=gt_yaw_rate, gt_steering=gt_steering,
+            noisy_x=x, noisy_y=y, noisy_yaw=yaw, noisy_v=v, noisy_yaw_rate=yaw_rate, noisy_steering=steering,
+        )
         return build_observation(lidar_frame, robot_state_vec)
+
+    def _compute_and_publish_sensor_diagnostics(
+        self, gt_x: float, gt_y: float, gt_yaw: float, gt_v: float, gt_yaw_rate: float, gt_steering: float,
+        noisy_x: float, noisy_y: float, noisy_yaw: float, noisy_v: float, noisy_yaw_rate: float,
+        noisy_steering: float,
+    ) -> None:
+        """requirement 5: publishes ONE ``sensor_diagnostics.SensorDiagnostics``
+        record for THIS tick (reset snapshot at step_id=0, or a real
+        ``/step``) -- called from :meth:`_assemble_state_vector` alone, the
+        one place ground truth and the agent's actual (possibly noisy)
+        pose/velocity/steering are both already available in local
+        variables (never re-reads ``self._robot_pose``/``self._robot_twist``,
+        which could have moved on by the time a LATER call site read them).
+        Mirrors ``_compute_and_publish_risk``'s own try/except-then-publish
+        shape: a computation failure here must never crash the /reset or
+        /step it's attached to, only degrade THIS diagnostics message to
+        ``invalid(..., reason=COMPUTATION_EXCEPTION)``."""
+        step_id = self._step_id
+        reset_generation = self._reset_generation
+        episode_id = self._episode_seed or 0
+        sim_timestamp_sec = self._latest_sim_time_sec if self._latest_sim_time_sec is not None else float("nan")
+        try:
+            # section (sensor diagnostics race fix): NEVER call
+            # self._current_scan_states() again here -- self._last_gt_obs_state
+            # is the ground-truth frame _observation_obs_state() sampled at
+            # the EXACT SAME instant self._last_obs_state (the noisy result)
+            # was derived from, earlier this same tick. A fresh call here
+            # could observe a DIFFERENT scan if the scan subscription's
+            # callback ran (on another executor thread) between that call
+            # and this one, which would misattribute real robot/obstacle
+            # motion between the two scans to noise perturbation. Both are
+            # guaranteed non-None by the time this runs (see
+            # _assemble_state_vector's call site, always preceded by
+            # _observation_obs_state() this same tick -- including at
+            # reset, see KinodynamicEnvironmentNode's own reset docstring).
+            ground_truth_obs_state = self._last_gt_obs_state
+            noisy_obs_state = self._last_obs_state if self._last_obs_state is not None else ground_truth_obs_state
+            dropout_count, perturb_mean, perturb_max = sd.lidar_perturbation_stats(
+                ground_truth_obs_state.tolist(), noisy_obs_state.tolist(), self._max_range())
+            noise_state = self._sensor_noise_state
+            diagnostics = sd.SensorDiagnostics(
+                step_id=step_id, valid=True, reset_generation=reset_generation, episode_id=episode_id,
+                sim_timestamp_sec=sim_timestamp_sec,
+                gt_x=gt_x, gt_y=gt_y, gt_yaw=gt_yaw, noisy_x=noisy_x, noisy_y=noisy_y, noisy_yaw=noisy_yaw,
+                gt_v_mps=gt_v, gt_yaw_rate_radps=gt_yaw_rate, gt_steering_rad=gt_steering,
+                noisy_v_mps=noisy_v, noisy_yaw_rate_radps=noisy_yaw_rate, noisy_steering_rad=noisy_steering,
+                drift_x_m=noise_state.drift_x if noise_state is not None else 0.0,
+                drift_y_m=noise_state.drift_y if noise_state is not None else 0.0,
+                drift_yaw_rad=noise_state.drift_yaw if noise_state is not None else 0.0,
+                localization_latency_steps=self.profile.sensor_noise.localization_latency_steps,
+                lidar_beam_count=len(ground_truth_obs_state), lidar_dropout_count=dropout_count,
+                lidar_perturbation_mean_m=perturb_mean, lidar_perturbation_max_m=perturb_max,
+                invalid_reason=int(sd.DiagnosticsInvalidReason.NONE),
+            )
+        except Exception as e:
+            self.get_logger().warn(f"[sensor_diagnostics] computation failed: {e}")
+            diagnostics = sd.invalid(step_id, reset_generation, episode_id, sim_timestamp_sec,
+                                      sd.DiagnosticsInvalidReason.COMPUTATION_EXCEPTION)
+        self._sensor_diag_pub.publish(Float32MultiArray(data=sd.encode(diagnostics)))
 
     def _collision_threshold_m(self) -> float:
         return self._active_robot_config.collision_radius_m + self.profile.observation.collision_margin_m
@@ -531,22 +683,56 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
     # --------------------------------------------------------- obstacles
     def _clear_previous_obstacles(self) -> None:
-        obstacle_spawner.delete_entities(self, self.delete_entity_client,
-                                          self._spawned_static_names + self._spawned_dynamic_names)
+        # section (obstacle pool): a pool-prefixed name is NEVER deleted --
+        # it stays spawned for the lifetime of the process and is
+        # re-teleported/parked by the upcoming _spawn_scenario_obstacles
+        # call instead. Filtering by prefix (rather than tracking a
+        # separate "did last episode use the pool" flag) is correct
+        # regardless of whether the PREVIOUS and the UPCOMING episode agree
+        # on pool usage (e.g. a fixed-benchmark episode, which always uses
+        # the legacy path, following a pooled procedural one, or vice
+        # versa) -- only genuinely legacy-spawned entities ever reach
+        # delete_entities.
+        legacy_names = [
+            n for n in (self._spawned_static_names + self._spawned_dynamic_names)
+            if not (n.startswith(obstacle_pool.STATIC_POOL_PREFIX) or n.startswith(obstacle_pool.DYNAMIC_POOL_PREFIX))
+        ]
+        obstacle_spawner.delete_entities(self, self.delete_entity_client, legacy_names)
         self._spawned_static_names = []
         self._spawned_dynamic_names = []
         self._dynamic_obstacles = []
 
     def _spawn_scenario_obstacles(self, scenario: ScenarioSpec, is_fixed: bool) -> None:
-        n_static = len(scenario.static_obstacles)
-        self._spawned_static_names = [f"{obstacle_spawner.STATIC_ENTITY_PREFIX}{i}" for i in range(n_static)]
-        obstacle_spawner.spawn_static_obstacles(
-            self, self.spawn_entity_client, scenario.static_obstacles, self._catalog, self._obstacle_rng,
-        )
+        # section (obstacle pool): only PROCEDURAL (non-fixed) episodes ever
+        # use the pool -- a fixed benchmark always uses the legacy
+        # spawn/delete path, so evaluation geometry is never approximated
+        # by the pool's quantized static size classes (see
+        # obstacle_pool.py's module docstring). use_pool=False also covers
+        # "pool configured but this episode is a fixed benchmark" -- in
+        # that case ensure_spawned still runs (harmless/idempotent if
+        # already done) so any PREVIOUSLY active pool slot gets explicitly
+        # parked below via activate_static([])/activate_dynamic([]),
+        # rather than being left sitting at its last procedural episode's
+        # position while a fixed benchmark runs.
+        use_pool = self._obstacle_pool is not None
+        if use_pool:
+            obstacle_pool.ensure_spawned(self, self.spawn_entity_client, self._obstacle_pool)
+
+        if use_pool and not is_fixed:
+            self._spawned_static_names = obstacle_pool.activate_static(self, self._obstacle_pool,
+                                                                        scenario.static_obstacles)
+        elif use_pool:  # fixed benchmark while the pool is configured -- park every static slot
+            self._spawned_static_names = obstacle_pool.activate_static(self, self._obstacle_pool, [])
+        else:
+            n_static = len(scenario.static_obstacles)
+            self._spawned_static_names = [f"{obstacle_spawner.STATIC_ENTITY_PREFIX}{i}" for i in range(n_static)]
+            obstacle_spawner.spawn_static_obstacles(
+                self, self.spawn_entity_client, scenario.static_obstacles, self._catalog, self._obstacle_rng,
+            )
 
         start_xy, goal_xy = (scenario.start_x, scenario.start_y), (scenario.goal_x, scenario.goal_y)
-        self._spawned_dynamic_names = []
         self._dynamic_obstacles = []
+        resolved_specs = []
         for i, spec in enumerate(scenario.dynamic_obstacles):
             # Fixed benchmark scenarios (section P1-3): NEVER overwrite the
             # YAML-authored (vx, vy) with a seed-derived random pattern --
@@ -575,11 +761,22 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                     half_extent_m=self.profile.scenario.world_size_m / 2.0,
                     seed=(scenario.seed * 131 + i) & 0xFFFFFFFF,
                 )
-            name = f"{obstacle_spawner.DYNAMIC_ENTITY_PREFIX}{i}"
-            obstacle_spawner.spawn_dynamic_obstacle_marker(
-                self, self.spawn_entity_client, i, resolved_spec.radius, resolved_spec.x0, resolved_spec.y0,
-            )
-            self._spawned_dynamic_names.append(name)
+            resolved_specs.append((resolved_spec, pattern, waypoint_state))
+
+        if use_pool and not is_fixed:
+            self._spawned_dynamic_names = obstacle_pool.activate_dynamic(
+                self, self._obstacle_pool, [r[0] for r in resolved_specs])
+        elif use_pool:  # fixed benchmark while the pool is configured -- park every dynamic slot
+            self._spawned_dynamic_names = obstacle_pool.activate_dynamic(self, self._obstacle_pool, [])
+        else:
+            self._spawned_dynamic_names = []
+            for i, (resolved_spec, _pattern, _waypoint_state) in enumerate(resolved_specs):
+                name = f"{obstacle_spawner.DYNAMIC_ENTITY_PREFIX}{i}"
+                obstacle_spawner.spawn_dynamic_obstacle_marker(
+                    self, self.spawn_entity_client, i, resolved_spec.radius, resolved_spec.x0, resolved_spec.y0,
+                )
+                self._spawned_dynamic_names.append(name)
+        for resolved_spec, pattern, waypoint_state in resolved_specs:
             # "spec0" is the IMMUTABLE spawn-time reference (never
             # reassigned) constant-velocity patterns anchor their
             # elapsed-time-based position to (section P0-8); "spec" is the
@@ -857,24 +1054,28 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
     def _resolve_evaluation_contract_override(self) -> None:
         """section item-1 (round 2/3): applies the REQUESTED evaluation
-        profile's ``reward``/``scenario``/``runtime``/``evaluation``
-        sections to THIS live environment_node for the duration of a
-        fixed-benchmark evaluation run -- set by evaluation_node.py (mirrors
-        ``scenario_override_path``'s own file-based-override delivery
-        pattern, see ``evaluation/contract_override.py``'s module docstring)
+        profile's ``reward``/``scenario``/``runtime``/``evaluation``/
+        ``sensor_noise`` sections to THIS live environment_node for the
+        duration of a fixed-benchmark evaluation run -- set by
+        evaluation_node.py (mirrors ``scenario_override_path``'s own
+        file-based-override delivery pattern, see
+        ``evaluation/contract_override.py``'s module docstring)
         BEFORE calling ``/reset``, so every algorithm type (SAC/vanilla-TQC/
         legacy-waypoint-TQC/risk-aware-TQC) evaluated on the same benchmark
         sees the IDENTICAL world boundary/reward/termination/runtime/
-        common-metrics contract, regardless of what its OWN training profile
-        happened to use. Cleared (empty string) restores this node's own
-        LAUNCH-time profile's contract sections -- never silently keeps
-        whatever the last override was.
+        common-metrics/sensor-noise contract, regardless of what its OWN
+        training profile happened to use -- including whether that
+        checkpoint was even trained with sensor_noise enabled at all.
+        Cleared (empty string) restores this node's own LAUNCH-time
+        profile's contract sections -- never silently keeps whatever the
+        last override was.
 
-        Deliberately narrow: ONLY `reward`/`scenario`/`runtime`/`evaluation`
-        are ever replaced (never `action_space`/`features`/`observation`/
-        `robot`/`dynamics`/`risk`/`counterfactual`/`hyperparameters`/
-        `algorithm`, which determine the checkpoint's own network shape/
-        action-decode semantics and must stay exactly what this process
+        Deliberately narrow: ONLY `reward`/`scenario`/`runtime`/`evaluation`/
+        `sensor_noise` are ever replaced (never `action_space`/`features`/
+        `observation`/`robot`/`dynamics`/`risk`/`counterfactual`/
+        `hyperparameters`/`algorithm`, which determine the checkpoint's own
+        network shape/action-decode semantics and must stay exactly what
+        this process
         launched under) -- a deliberately low-risk form of per-episode
         dynamic reconfiguration, not a full node reconstruction.
 
@@ -926,6 +1127,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 self.profile,
                 reward=self._launch_profile.reward, scenario=self._launch_profile.scenario,
                 runtime=self._launch_profile.runtime, evaluation=self._launch_profile.evaluation,
+                sensor_noise=self._launch_profile.sensor_noise,
             )
         candidate_profile.validate()
         for field_name in RUNTIME_FIELDS_FIXED_AT_LAUNCH:
@@ -968,11 +1170,23 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             seed = self._seed_scheduler.next_seed()
         robot_cfg = self._active_robot_config
         max_curvature = robot_cfg.max_curvature
+        # section (obstacle pool): quantize every static obstacle's radius
+        # UP FRONT to a pool-compatible size class so the feasibility
+        # checks inside generate_scenario and the geometry actually
+        # spawned into Gazebo (obstacle_pool.activate_static, called from
+        # _spawn_scenario_obstacles below) are always for the identical
+        # radius -- None (pool disabled) keeps radii continuous, unchanged.
+        static_radius_quantizer = None
+        if self._obstacle_pool is not None:
+            size_classes = self.profile.obstacle_pool.static_size_classes_m
+            static_radius_quantizer = lambda r: obstacle_pool.snap_up_to_class(r, size_classes)  # noqa: E731
         scenario = generate_scenario(
             seed, self.profile.scenario, robot_radius=robot_cfg.collision_radius_m,
             min_turning_radius_m=(1.0 / max_curvature) if max_curvature > 0.0 else None,
             wheelbase_m=robot_cfg.wheelbase_m,
             goal_radius_m=self.profile.reward.goal_threshold_m,
+            start_pose_cfg=self.profile.start_pose,
+            static_radius_quantizer=static_radius_quantizer,
         )
         return scenario, seed, False, {}, {}
 
@@ -1024,6 +1238,17 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         self._filtered_steering_rad = 0.0
         self._filtered_speed_mps = 0.0
         self._last_obs_state = None
+        self._last_gt_obs_state = None
+        # section (sensor noise): reset fresh from the EPISODE seed alone,
+        # unconditionally (unlike domain_randomization above, this is not
+        # gated by is_fixed/domain_randomization.enabled -- it's an
+        # orthogonal axis that may run during a fixed benchmark too, since
+        # it never touches ground truth/common-metrics computation, see
+        # sensor_noise.py's module docstring).
+        self._sensor_noise_state = (
+            sensor_noise.reset_state(seed, self.profile.sensor_noise)
+            if self.profile.sensor_noise.enabled else None
+        )
 
         if is_fixed:
             # Fixed benchmark: apply its OWN dynamics/sensor overrides
@@ -1068,10 +1293,13 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             if self.profile.features.trajectory_l_preview_blend:
                 draw_classification["steering_gain"] = "gazebo_applied"
         self.get_logger().info(
-            f"[reset] episode seed={seed} fixed_benchmark={is_fixed} "
+            f"[reset] reset_generation={self._reset_generation} episode seed={seed} fixed_benchmark={is_fixed} "
             f"static_obstacles={len(scenario.static_obstacles)} dynamic_obstacles={len(scenario.dynamic_obstacles)} "
             f"domain_rand_draw={self._active_domain_rand_draw if self.profile.domain_randomization.enabled else None} "
-            f"domain_rand_classification={draw_classification}")
+            f"domain_rand_classification={draw_classification} "
+            f"start_pose_heading_mode={self.profile.start_pose.heading_mode} "
+            f"heading_sample_attempts={scenario.heading_sample_attempts} "
+            f"sensor_noise_enabled={self.profile.sensor_noise.enabled}")
 
         prev_scan_updates = self.scan_update_count
         prev_odom_updates = self.odom_update_count
@@ -1083,6 +1311,14 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw),
             )
             self._spawn_scenario_obstacles(scenario, is_fixed)
+            if self._obstacle_pool is not None:
+                active_static = sum(1 for s in self._obstacle_pool.static_slots if s.active)
+                active_dynamic = sum(1 for s in self._obstacle_pool.dynamic_slots if s.active)
+                self.get_logger().info(
+                    f"[reset] obstacle_pool active_static={active_static}/{len(self._obstacle_pool.static_slots)} "
+                    f"active_dynamic={active_dynamic}/{len(self._obstacle_pool.dynamic_slots)} "
+                    f"parked_static={len(self._obstacle_pool.static_slots) - active_static} "
+                    f"parked_dynamic={len(self._obstacle_pool.dynamic_slots) - active_dynamic}")
             self.propagate_state(self.profile.runtime.reset_settle_time_sec)
         except GazeboServiceError as e:
             raise RuntimeError(f"reset failed: Gazebo entity placement error: {e}") from e
@@ -1156,8 +1392,17 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 "(section P0-2) -- refusing to start an episode with carried-over momentum"
             )
 
+        # requirement 3: sample the initial (possibly noisy) LiDAR frame
+        # EXACTLY ONCE and fill every slot of the frame stack with that SAME
+        # frame (FrameStack.reset's own warm-start contract), then assemble
+        # the state from what's already in the stack -- calling
+        # _build_state_vector() here instead would sample AND push a
+        # SECOND, DIFFERENT noisy frame on top, both double-consuming the
+        # sensor_noise/domain_randomization RNG streams at reset and
+        # breaking the warm-start invariant that every stacked frame starts
+        # identical (the newest slot would silently diverge from the rest).
         self._frame_stack.reset(self._observation_obs_state())
-        state = self._build_state_vector()
+        state = self._assemble_state_vector()
         self._prev_goal_distance, _ = goal_distance_and_heading(
             self._robot_pose[0], self._robot_pose[1], self._robot_pose[2], scenario.goal_x, scenario.goal_y,
         )
@@ -1452,6 +1697,12 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         self._prev_goal_distance = goal_distance
 
         self._prev_action = action
+        # section (sensor noise): drift is ticked ONCE per REAL /step (using
+        # the real control-tick duration), never at /reset -- an episode's
+        # localization drift starts at exactly zero (see _on_reset) and
+        # only accumulates once physics has actually advanced.
+        if self._sensor_noise_state is not None:
+            sensor_noise.tick_drift(self._sensor_noise_state, self.profile.sensor_noise, self.time_delta)
         state = self._build_state_vector()
         response.state = state.tolist()
         response.reward = reward.total
@@ -1486,7 +1737,11 @@ def main(args=None):
         executor.spin()
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT during spin can already have triggered rclpy's own
+        # shutdown before this finally block runs -- guard against calling
+        # it twice ("rcl_shutdown already called").
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

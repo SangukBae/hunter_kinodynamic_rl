@@ -189,17 +189,32 @@ def command_latency_steps(overrides: dict, time_delta_sec: float) -> int:
 # Fixed-BENCHMARK sensor overrides stay unsupported (section P1-5's
 # disclosed gap) even though a real LiDAR/odometry-noise consumer now
 # exists for the PROCEDURAL domain-randomization path (section P1-10) --
-# benchmarks are for EVALUATION, randomization is TRAIN-ONLY, so wiring a
-# benchmark `sensor:` override into the SAME noise consumer would
-# contradict that boundary. A non-empty `sensor:` override block in a
-# benchmark YAML must still raise, not silently do nothing.
+# THIS module's per-episode-RANDOMIZED noise (drawn from a configured range
+# every episode) is TRAIN-ONLY, so wiring a benchmark scenario's own
+# `sensor:` override into the SAME noise consumer would contradict that
+# boundary and break reproducibility across evaluation runs. A non-empty
+# `sensor:` override block in a benchmark YAML must still raise, not
+# silently do nothing.
+#
+# This is UNRELATED to `config/schema.py`'s ``SensorNoiseConfig``
+# (``env/simulation/sensor_noise.py``) -- that is a SEPARATE, fixed-shape,
+# profile-authored noise model which the requested EVALUATION profile's own
+# `sensor_noise` section legitimately controls (see
+# `evaluation/contract_override.py` / `evaluation/fingerprint.py`'s
+# `EVALUATION_CONTRACT_SECTIONS`) -- so evaluation is not unconditionally
+# "noise-free": a profile that enables `sensor_noise` deliberately makes a
+# benchmark noisy, in a fully reproducible (seeded), per-checkpoint-uniform
+# way. Only THIS module's per-episode-randomized, per-scenario override axis
+# is rejected outright for fixed benchmarks.
 def check_sensor_overrides_supported(overrides: dict) -> None:
     if overrides:
         raise ValueError(
             f"sensor overrides {sorted(overrides)} are not supported for FIXED benchmark scenarios "
-            "(evaluation must stay noise-free/reproducible; sensor noise is a TRAIN-ONLY domain-"
-            "randomization axis, see sample_draw/apply_lidar_noise/apply_odometry_noise) -- remove "
-            "them from this scenario's `sensor:` block."
+            "(this is the TRAIN-ONLY, per-episode-randomized domain-randomization axis -- see "
+            "sample_draw/apply_lidar_noise/apply_odometry_noise; a reproducible, evaluation-profile-"
+            "controlled sensor noise model is available separately via SensorNoiseConfig / the "
+            "evaluation contract's own `sensor_noise` section) -- remove them from this scenario's "
+            "`sensor:` block."
         )
 
 

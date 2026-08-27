@@ -63,7 +63,20 @@ ARCHITECTURE_SECTIONS = (
 # `reward`/`scenario` do -- a checkpoint's own training-time runtime
 # section must NEVER silently leak into evaluation, exactly like
 # world_size_m or the reward function must not.
-EVALUATION_CONTRACT_SECTIONS = ("evaluation", "reward", "scenario", "runtime")
+#
+# `sensor_noise` (round 3, requirement 2): a checkpoint's own TRAINING-time
+# sensor_noise section must equally never silently leak into evaluation --
+# without this, two checkpoints trained under different sensor_noise
+# settings would each keep their own training-time noise model active
+# during a benchmark that never asked for it, which is exactly as unfair as
+# leaking a different reward/scenario/runtime section would be. This is
+# UNRELATED to (and must never be confused with) `env/randomization/
+# domain_randomizer.py`'s own per-episode-randomized TRAIN-ONLY noise (that
+# system's `sensor:` per-scenario overrides are explicitly REJECTED for
+# fixed benchmarks by `check_sensor_overrides_supported` -- evaluation
+# noise, if any, is controlled ONLY by the requested evaluation profile's
+# own `sensor_noise` section, delivered here).
+EVALUATION_CONTRACT_SECTIONS = ("evaluation", "reward", "scenario", "runtime", "sensor_noise")
 
 
 def _canonical_json(obj: Any) -> str:

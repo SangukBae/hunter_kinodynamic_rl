@@ -13,6 +13,7 @@ import pytest
 from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.env.randomization.domain_randomizer import RandomizationDraw
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
+from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
 from hunter_kinodynamic_rl.training.run_logger import RunLogger, run_directory
 from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand
 
@@ -69,6 +70,115 @@ def test_valid_telemetry_reports_real_numbers_not_null(tmp_path):
         "kappa": 0.1, "v_ref": 1.0, "horizon_m": 1.5,
         "risk_score": 0.3, "goal_progress_m": 0.0,
     }]
+
+
+# --------------------------------------------------------- requirement 5
+def test_sensor_diagnostics_omitted_when_not_provided(tmp_path):
+    logger, run_dir = _make_logger(tmp_path)
+    logger.log_step(1, 1, [0.0, 0.5, 0.5], reward=-0.1, telemetry=rt.invalid(step_id=1),
+                     collision=False, target=False)
+    record = _read_last_step_record(run_dir)
+    assert "sensor_diagnostics" not in record
+
+
+def test_sensor_diagnostics_gt_and_noisy_are_logged_separately(tmp_path):
+    logger, run_dir = _make_logger(tmp_path)
+    diag = sd.SensorDiagnostics(
+        step_id=1, valid=True, reset_generation=1, episode_id=42, sim_timestamp_sec=1.0,
+        gt_x=1.0, gt_y=2.0, gt_yaw=0.1, noisy_x=1.05, noisy_y=1.9, noisy_yaw=0.12,
+        gt_v_mps=0.5, gt_yaw_rate_radps=0.0, gt_steering_rad=0.0,
+        noisy_v_mps=0.55, noisy_yaw_rate_radps=0.01, noisy_steering_rad=0.02,
+        drift_x_m=0.05, drift_y_m=-0.1, drift_yaw_rad=0.02,
+        localization_latency_steps=2, lidar_beam_count=80, lidar_dropout_count=1,
+        lidar_perturbation_mean_m=0.03, lidar_perturbation_max_m=0.2,
+    )
+    logger.log_step(1, 1, [0.0, 0.5, 0.5], reward=0.0, telemetry=rt.invalid(step_id=1),
+                     collision=False, target=False, sensor_diagnostics=diag)
+
+    record = _read_last_step_record(run_dir)
+    sd_record = record["sensor_diagnostics"]
+    assert sd_record["valid"] is True
+    assert sd_record["gt_pose"] == {"x": 1.0, "y": 2.0, "yaw": 0.1}
+    assert sd_record["noisy_pose"] == {"x": 1.05, "y": 1.9, "yaw": 0.12}
+    assert sd_record["gt_velocity_mps"] == pytest.approx(0.5)
+    assert sd_record["noisy_velocity_mps"] == pytest.approx(0.55)
+    assert sd_record["localization_drift"] == {"x_m": 0.05, "y_m": -0.1, "yaw_rad": 0.02}
+    assert sd_record["localization_latency_steps"] == 2
+    assert sd_record["lidar_beam_count"] == 80
+    assert sd_record["lidar_dropout_count"] == 1
+    assert sd_record["lidar_perturbation_mean_m"] == pytest.approx(0.03)
+
+
+def test_sensor_diagnostics_timeout_emits_null_gt_noisy_fields_with_reason(tmp_path):
+    """The item-5 requirement: on a poll timeout, GT/noisy fields must be
+    null (never a stale/fabricated value), with invalid_reason recording
+    WHY -- mirrors risk_telemetry's own NaN->null convention."""
+    logger, run_dir = _make_logger(tmp_path)
+    diag = sd.invalid(step_id=3, reset_generation=1, episode_id=42,
+                       reason=sd.DiagnosticsInvalidReason.POLL_TIMEOUT)
+    logger.log_step(3, 1, [0.0, 0.5, 0.5], reward=0.0, telemetry=rt.invalid(step_id=3),
+                     collision=False, target=False, sensor_diagnostics=diag)
+
+    record = _read_last_step_record(run_dir)
+    sd_record = record["sensor_diagnostics"]
+    assert sd_record["valid"] is False
+    assert sd_record["invalid_reason"] == int(sd.DiagnosticsInvalidReason.POLL_TIMEOUT)
+    assert sd_record["gt_pose"] == {"x": None, "y": None, "yaw": None}
+    assert sd_record["noisy_pose"] == {"x": None, "y": None, "yaw": None}
+    assert sd_record["gt_velocity_mps"] is None
+    assert sd_record["noisy_velocity_mps"] is None
+    raw_text = open(f"{run_dir}/logs/steps.jsonl").read()
+    assert "NaN" not in raw_text
+
+
+def test_sensor_diagnostics_invalid_nulls_every_measurement_field_never_zero(tmp_path):
+    """Full item-5 regression: sensor_diagnostics.invalid() defaults
+    drift_*/localization_latency_steps/lidar_beam_count/
+    lidar_dropout_count/lidar_perturbation_{mean,max}_m to a concrete
+    0/0.0 on the dataclass -- previously that leaked straight into the
+    JSONL record, indistinguishable from "the measurement really was
+    zero". Every one of those fields must be null here instead, exactly
+    like the pose/velocity fields already were."""
+    logger, run_dir = _make_logger(tmp_path)
+    diag = sd.invalid(step_id=5, reset_generation=1, episode_id=42, sim_timestamp_sec=12.5,
+                       reason=sd.DiagnosticsInvalidReason.COMPUTATION_EXCEPTION)
+    logger.log_step(5, 1, [0.0, 0.5, 0.5], reward=0.0, telemetry=rt.invalid(step_id=5),
+                     collision=False, target=False, sensor_diagnostics=diag)
+
+    record = _read_last_step_record(run_dir)
+    sd_record = record["sensor_diagnostics"]
+    assert sd_record["valid"] is False
+    assert sd_record["localization_drift"] == {"x_m": None, "y_m": None, "yaw_rad": None}
+    assert sd_record["localization_latency_steps"] is None
+    assert sd_record["lidar_beam_count"] is None
+    assert sd_record["lidar_dropout_count"] is None
+    assert sd_record["lidar_perturbation_mean_m"] is None
+    assert sd_record["lidar_perturbation_max_m"] is None
+    # Traceability fields are always present, valid or not.
+    assert sd_record["schema_version"] == sd.SCHEMA_VERSION
+    assert sd_record["episode_id"] == 42
+    assert sd_record["sim_timestamp_sec"] == pytest.approx(12.5)
+
+
+def test_sensor_diagnostics_valid_record_includes_traceability_fields(tmp_path):
+    logger, run_dir = _make_logger(tmp_path)
+    diag = sd.SensorDiagnostics(
+        step_id=1, valid=True, reset_generation=1, episode_id=42, sim_timestamp_sec=1.0,
+        gt_x=1.0, gt_y=2.0, gt_yaw=0.1, noisy_x=1.05, noisy_y=1.9, noisy_yaw=0.12,
+        gt_v_mps=0.5, gt_yaw_rate_radps=0.0, gt_steering_rad=0.0,
+        noisy_v_mps=0.55, noisy_yaw_rate_radps=0.01, noisy_steering_rad=0.02,
+        drift_x_m=0.05, drift_y_m=-0.1, drift_yaw_rad=0.02,
+        localization_latency_steps=2, lidar_beam_count=80, lidar_dropout_count=1,
+        lidar_perturbation_mean_m=0.03, lidar_perturbation_max_m=0.2,
+    )
+    logger.log_step(1, 1, [0.0, 0.5, 0.5], reward=0.0, telemetry=rt.invalid(step_id=1),
+                     collision=False, target=False, sensor_diagnostics=diag)
+
+    record = _read_last_step_record(run_dir)
+    sd_record = record["sensor_diagnostics"]
+    assert sd_record["schema_version"] == sd.SCHEMA_VERSION
+    assert sd_record["episode_id"] == 42
+    assert sd_record["sim_timestamp_sec"] == pytest.approx(1.0)
 
 
 def test_physical_command_and_stale_flags_are_logged(tmp_path):

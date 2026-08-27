@@ -54,7 +54,7 @@ class _FakeEnv:
         telemetry = self._telemetry_script[idx]
         self._step_i += 1
         done = self._step_i >= len(self._telemetry_script)
-        return [0.0] * 4, 0.0, done, False, False, 10.0, telemetry
+        return [0.0] * 4, 0.0, done, False, False, 10.0, telemetry, None
 
 
 def _scenario() -> BenchmarkScenario:

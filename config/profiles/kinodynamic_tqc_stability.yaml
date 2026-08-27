@@ -1,0 +1,78 @@
+# Example / stability-experiment profile demonstrating the three
+# curriculum-independent features ported from drl_agent (see
+# docs/ARCHITECTURE.md's "Safe start pose / obstacle pool / sensor noise"
+# section):
+#
+#   1. Safe start position + initial-yaw sampling (start_pose)
+#   2. Deterministic Gazebo obstacle entity pool (obstacle_pool)
+#   3. Fixed-shape sensor/localization noise model (sensor_noise)
+#
+# None of drl_agent's automatic curriculum is introduced here -- every
+# value below is a single, constant-for-the-whole-run setting (see each
+# section's own schema docstring in config/schema.py). Every field not
+# mentioned here keeps its schema default, which reproduces the
+# pre-existing (feature-disabled) behaviour exactly -- these three
+# sections are the ONLY thing this profile changes relative to
+# kinodynamic_tqc.yaml.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: false
+  risk_critic: false
+  counterfactual_risk: false
+
+observation:
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+scenario:
+  feasibility_check: ackermann
+  max_obstacles: 4
+
+# 1. Safe start pose: reject a heading that faces a nearby obstacle or the
+# world boundary, biased toward the goal direction, bounded sampling
+# attempts with a deterministic (still clearance-checked) fallback.
+start_pose:
+  heading_mode: goal_biased
+  min_wall_clearance_m: 0.3
+  min_obstacle_clearance_m: 0.5
+  front_safety_distance_m: 0.8
+  front_cone_half_angle_rad: 0.5236  # 30 deg
+  max_sampling_attempts: 50
+  goal_bias_prob: 0.6
+  goal_bias_spread_rad: 0.5
+
+# 2. Deterministic obstacle entity pool: pre-spawn once, teleport/park per
+# episode instead of delete+recreate every /reset. max_static is split
+# round-robin across static_size_classes_m (env/spawning/obstacle_pool.py),
+# so it must be >= scenario.max_obstacles * len(static_size_classes_m)
+# (here 4 * 3 = 12) -- the worst case where every obstacle this episode
+# happens to draw a radius needing the SAME (largest) class must still fit,
+# since escalation can only go up, never down (validated at load time).
+obstacle_pool:
+  enabled: true
+  max_static: 12
+  max_dynamic: 4
+  static_size_classes_m: [0.2, 0.35, 0.5]
+  parking_margin_m: 5.0
+
+# 3. Fixed-shape sensor/localization noise model -- applied only to the
+# AGENT'S observation, never to collision/feasibility/reward/privileged
+# risk-label ground truth (see env/simulation/sensor_noise.py). Composes
+# with domain_randomization if that's also enabled (it isn't here, kept
+# simple for this example).
+sensor_noise:
+  enabled: true
+  lidar_range_noise_std_m: 0.02
+  lidar_bias_m: 0.01
+  lidar_dropout_prob: 0.01
+  localization_xy_noise_std_m: 0.03
+  localization_yaw_noise_std_rad: 0.01
+  localization_drift_theta: 0.5
+  localization_drift_xy_sigma_m: 0.01
+  localization_drift_yaw_sigma_rad: 0.005
+  localization_latency_steps: 1
+  velocity_noise_std_mps: 0.02
+  yaw_rate_noise_std_radps: 0.01
+  steering_noise_std_rad: 0.01

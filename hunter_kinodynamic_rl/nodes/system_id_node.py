@@ -390,7 +390,12 @@ def main():
             _run_one_trial(node, trial, output_dir, target_v_mps, target_steering_rad, step_duration_sec)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT during spin can already have triggered rclpy's own
+        # shutdown before this finally block runs -- calling shutdown()
+        # again would raise "rcl_shutdown already called"; guard it like
+        # every other exit path in this codebase.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

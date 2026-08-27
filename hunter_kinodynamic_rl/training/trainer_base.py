@@ -43,6 +43,7 @@ from hunter_kinodynamic_rl.config.schema import Profile
 from hunter_kinodynamic_rl.env.randomization.domain_randomizer import sample_draw
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
+from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer, RiskTransition
 from hunter_kinodynamic_rl.training.checkpoint_policy import checkpoint_due
@@ -111,6 +112,19 @@ def telemetry_is_new_reset_marker(t: Optional[rt.RiskTelemetry], known_generatio
     )
 
 
+def sensor_diagnostics_matches_step(d: Optional[sd.SensorDiagnostics], expected_step_id: int,
+                                     expected_reset_generation: Optional[int]) -> bool:
+    """requirement 5: the ``sensor_diagnostics`` analogue of
+    ``telemetry_matches_step`` -- same (reset_generation, step_id) pairing
+    rule, on the SEPARATE sensor_diagnostics channel (never risk_telemetry's
+    own cache), so a trainer can never accidentally pair a stale/mismatched
+    diagnostics sample to the wrong episode/step."""
+    return (
+        d is not None and expected_reset_generation is not None
+        and d.step_id == expected_step_id and d.reset_generation == expected_reset_generation
+    )
+
+
 class EnvServiceError(RuntimeError):
     """Raised when environment_node.py's services never come up, or a
     service call's response never arrives, within this client's bounded
@@ -147,12 +161,27 @@ class _RiskTelemetryListener(Node):
         self.latest_telemetry: Optional[rt.RiskTelemetry] = None
         self.create_subscription(Float32MultiArray, "/hunter_kinodynamic_rl/risk_telemetry",
                                   self._on_risk_telemetry, 10)
+        # requirement 5: the SAME isolation rationale above (away from
+        # /clock's extreme publish rate) applies here too -- sharing THIS
+        # node/executor (never the /clock-carrying one) is fine, since the
+        # documented starvation problem was specifically /clock's publish
+        # rate, not general multi-subscription contention between two
+        # per-step-rate topics.
+        self.latest_sensor_diagnostics: Optional[sd.SensorDiagnostics] = None
+        self.create_subscription(Float32MultiArray, "/hunter_kinodynamic_rl/sensor_diagnostics",
+                                  self._on_sensor_diagnostics, 10)
 
     def _on_risk_telemetry(self, msg: Float32MultiArray) -> None:
         try:
             self.latest_telemetry = rt.decode(list(msg.data))
         except ValueError as e:
             self.get_logger().warn(f"[risk_telemetry] decode failed: {e}")
+
+    def _on_sensor_diagnostics(self, msg: Float32MultiArray) -> None:
+        try:
+            self.latest_sensor_diagnostics = sd.decode(list(msg.data))
+        except ValueError as e:
+            self.get_logger().warn(f"[sensor_diagnostics] decode failed: {e}")
 
 
 class EnvironmentClient(Node):
@@ -212,6 +241,11 @@ class EnvironmentClient(Node):
         self.telemetry_timeouts = 0
         self.telemetry_matched_count = 0
         self.reset_marker_timeouts = 0
+        # requirement 5: independent counters from the risk-telemetry ones
+        # above -- the two channels can (and do, e.g. under
+        # COMPUTATION_EXCEPTION on just one of them) diverge in health.
+        self.sensor_diagnostics_timeouts = 0
+        self.sensor_diagnostics_matched_count = 0
 
         # Independent of the risk channel -- real robot pose/velocity/
         # steering for evaluation metrics (section 11/P1-4: never
@@ -460,6 +494,28 @@ class EnvironmentClient(Node):
         return rt.invalid(expected_step_id, reset_generation=self._reset_generation or 0,
                            reason=rt.InvalidReason.POLL_TIMEOUT)
 
+    def _await_matching_sensor_diagnostics(self, expected_step_id: int,
+                                            timeout_sec: Optional[float] = None) -> sd.SensorDiagnostics:
+        """requirement 5: the ``sensor_diagnostics`` analogue of
+        ``_await_matching_telemetry`` -- identical bounded-poll/staleness-
+        rejection shape, on the separate diagnostics cache. Never pairs a
+        stale/mismatched sample to the wrong step: returns an explicit
+        ``invalid(..., reason=POLL_TIMEOUT)`` (never a stale one) if nothing
+        matching arrives within budget, so a caller (e.g. RunLogger.log_step)
+        can log ``null`` GT/noisy values with the reason instead of silently
+        misattributing a leftover sample."""
+        budget = timeout_sec if timeout_sec is not None else self._telemetry_wait_timeout_sec
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            d = self._telemetry_listener.latest_sensor_diagnostics
+            if sensor_diagnostics_matches_step(d, expected_step_id, self._reset_generation):
+                self.sensor_diagnostics_matched_count += 1
+                return d
+            self._spin_telemetry_once(0.02)
+        self.sensor_diagnostics_timeouts += 1
+        return sd.invalid(expected_step_id, reset_generation=self._reset_generation or 0,
+                           reason=sd.DiagnosticsInvalidReason.POLL_TIMEOUT)
+
     @property
     def telemetry_valid_ratio(self) -> float:
         """Fraction of ``step()`` calls whose telemetry actually matched
@@ -471,15 +527,26 @@ class EnvironmentClient(Node):
             return 1.0  # no steps taken yet -- vacuously healthy, never a false alarm
         return self.telemetry_matched_count / total
 
+    @property
+    def sensor_diagnostics_valid_ratio(self) -> float:
+        """requirement 5: the sensor_diagnostics analogue of
+        ``telemetry_valid_ratio`` -- channel health (sync working at all),
+        independent of risk_telemetry's own ratio."""
+        total = self.sensor_diagnostics_matched_count + self.sensor_diagnostics_timeouts
+        if total == 0:
+            return 1.0
+        return self.sensor_diagnostics_matched_count / total
+
     def step(self, action):
         req = Step.Request()
         req.action = [float(a) for a in action]
         result = self._call(self._step_client, req)
         self._step_id += 1
         telemetry = self._await_matching_telemetry(self._step_id)
+        diagnostics = self._await_matching_sensor_diagnostics(self._step_id)
         return (np.asarray(result.state, dtype=np.float32), float(result.reward),
                 bool(result.done), bool(result.target), bool(result.collision),
-                float(result.min_obstacle_dist_m), telemetry)
+                float(result.min_obstacle_dist_m), telemetry, diagnostics)
 
     def destroy_node(self) -> None:
         self._telemetry_executor.remove_node(self._telemetry_listener)
@@ -646,7 +713,7 @@ class TrainerBase:
                 episode_reward = 0.0
                 for _ in range(self.profile.training.episode_length_steps):
                     action = self.agent.select_action(state, deterministic=True)
-                    state, reward, done, target, collision, _min_dist, _telemetry = self.env.step(action)
+                    state, reward, done, target, collision, _min_dist, _telemetry, _diag = self.env.step(action)
                     episode_reward += reward
                     if done:
                         successes += int(target)
@@ -758,7 +825,7 @@ class TrainerBase:
             else:
                 action = self.agent.select_action(state, deterministic=False)
 
-            next_state, reward, done, target, collision, min_dist, telemetry = self.env.step(action)
+            next_state, reward, done, target, collision, min_dist, telemetry, diagnostics = self.env.step(action)
             self.episode_reward += reward
             self.episode_len += 1
 
@@ -791,7 +858,7 @@ class TrainerBase:
                                   measured_velocity_mps=getattr(self.env, "latest_v_mps", None),
                                   measured_yaw_rate_rad_s=getattr(self.env, "latest_yaw_rate_rad_s", None),
                                   measured_steering_rad=getattr(self.env, "latest_center_steering_rad", None),
-                                  predicted_risk=predicted_risk)
+                                  predicted_risk=predicted_risk, sensor_diagnostics=diagnostics)
             state = next_state
 
             # Training/sampling MUST run here -- BEFORE the episode-boundary
@@ -1040,4 +1107,8 @@ class TrainerBase:
     def shutdown(self, failed: bool = False) -> None:
         self.logger.close(failed=failed)
         self.env.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT during training can already have triggered rclpy's own
+        # shutdown before this runs -- guard against calling it twice
+        # ("rcl_shutdown already called").
+        if rclpy.ok():
+            rclpy.shutdown()

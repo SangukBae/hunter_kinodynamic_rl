@@ -59,7 +59,7 @@ class _AlwaysSucceedsEnv:
         done = self._episode_step >= 3
         target = done
         telemetry = rt.invalid(step_id=self._episode_step)
-        return np.zeros(self._state_dim, dtype=np.float32), 1.0, done, target, False, 10.0, telemetry
+        return np.zeros(self._state_dim, dtype=np.float32), 1.0, done, target, False, 10.0, telemetry, None
 
 
 class _AlwaysCollidesEnv(_AlwaysSucceedsEnv):
@@ -69,7 +69,7 @@ class _AlwaysCollidesEnv(_AlwaysSucceedsEnv):
         done = self._episode_step >= 3
         collision = done
         telemetry = rt.invalid(step_id=self._episode_step)
-        return np.zeros(self._state_dim, dtype=np.float32), -1.0, done, False, collision, 10.0, telemetry
+        return np.zeros(self._state_dim, dtype=np.float32), -1.0, done, False, collision, 10.0, telemetry, None
 
 
 class _FakeAgent:

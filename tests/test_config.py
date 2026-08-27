@@ -4,6 +4,16 @@ from hunter_kinodynamic_rl.config.loader import default_config_root, deep_merge,
 from hunter_kinodynamic_rl.config.schema import ConfigError, RuntimeConfig
 
 
+def test_kinodynamic_tqc_stability_example_profile_loads_with_all_three_new_features_enabled():
+    """config/profiles/kinodynamic_tqc_stability.yaml is the shipped example
+    demonstrating start_pose/obstacle_pool/sensor_noise actually enabled
+    together (every other profile leaves them at their disabled defaults)."""
+    profile = load_profile("kinodynamic_tqc_stability")
+    assert profile.start_pose.heading_mode != "legacy_random"
+    assert profile.obstacle_pool.enabled is True
+    assert profile.sensor_noise.enabled is True
+
+
 def test_deep_merge_overrides_nested_keys_only():
     base = {"a": {"x": 1, "y": 2}, "b": 3}
     override = {"a": {"y": 20}}

@@ -929,6 +929,203 @@ def test_observation_noise_never_leaks_into_ground_truth_collision_detection(nod
     assert not np.array_equal(observed, ground_truth_after)
 
 
+# ------------------------------------------- reset frame-stack noise dedup (requirement 3)
+def _stacked_frames(node):
+    """Splits node._frame_stack.stacked() (current-first, concatenated)
+    back into its individual history_len frames, in the same current-first
+    order."""
+    import numpy as np
+    stacked = node._frame_stack.stacked()
+    frame_dim = node._frame_stack.frame_dim
+    return [stacked[i * frame_dim:(i + 1) * frame_dim] for i in range(node._frame_stack.history_len)]
+
+
+def test_reset_fills_the_frame_stack_with_a_single_identical_noisy_frame_domain_randomization(node):
+    """The requirement-3 regression: a NAIVE reset that samples LiDAR noise
+    twice (once to seed the frame stack, once more inside a
+    _build_state_vector() call) would leave the NEWEST slot different from
+    every older slot even though this is t=0 -- FrameStack's own warm-start
+    contract requires every slot to start identical. Domain-randomization
+    LiDAR noise is large/guaranteed-visible here so any double-sampling
+    would show up as a real difference, not by chance agreement."""
+    import numpy as np
+    _stub_gazebo(node)
+    _enable_domain_randomization(node, lidar_range_noise_std_m_range=[5.0, 5.0])
+    node._on_reset(Reset.Request(), Reset.Response())
+
+    frames = _stacked_frames(node)
+    for f in frames[1:]:
+        np.testing.assert_array_equal(frames[0], f)
+
+
+def test_reset_fills_the_frame_stack_with_a_single_identical_noisy_frame_sensor_noise(node):
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+    import numpy as np
+    _stub_gazebo(node)
+    node.profile = dataclasses.replace(node.profile, sensor_noise=SensorNoiseConfig(
+        enabled=True, lidar_range_noise_std_m=5.0))
+    node._on_reset(Reset.Request(), Reset.Response())
+
+    frames = _stacked_frames(node)
+    for f in frames[1:]:
+        np.testing.assert_array_equal(frames[0], f)
+
+
+def test_reset_does_not_advance_the_sensor_noise_rng_a_second_time(node):
+    """Direct RNG-consumption proof (rather than inferring it from frame
+    equality alone): the sensor_noise RNG stream left over after reset must
+    match drawing the LiDAR-noise sample exactly ONCE from a freshly
+    reset_state()'d stream with the same episode seed -- never twice."""
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+    from hunter_kinodynamic_rl.env.simulation import sensor_noise as sn
+    _stub_gazebo(node)
+    node.profile = dataclasses.replace(node.profile, sensor_noise=SensorNoiseConfig(
+        enabled=True, lidar_range_noise_std_m=0.05))
+    node._on_reset(Reset.Request(), Reset.Response())
+
+    rng_state_after_reset = node._sensor_noise_state.rng.get_state()  # already advanced once by reset
+    expected_state = sn.reset_state(node._episode_seed, node.profile.sensor_noise)
+    ground_truth, _ = node._current_scan_states()
+    sn.apply_lidar_noise(expected_state, node.profile.sensor_noise, ground_truth, node._max_range())
+    expected_after_one_draw = expected_state.rng.get_state()
+
+    # numpy RandomState.get_state() returns ('MT19937', keys[624], pos, ...)
+    # -- index 2 is the position counter into the Mersenne Twister buffer,
+    # the simplest direct signal of "how many numbers has this stream
+    # produced so far".
+    assert rng_state_after_reset[2] == expected_after_one_draw[2]
+
+
+# --------------------------------------------------------------- requirement 5
+def _capture_diagnostics(node):
+    from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
+    captured = {}
+    node._sensor_diag_pub.publish = lambda msg: captured.__setitem__("diag", msg)
+    return captured, sd
+
+
+def test_reset_publishes_valid_sensor_diagnostics_at_step_id_zero(node):
+    _stub_gazebo(node)
+    captured, sd = _capture_diagnostics(node)
+    node._on_reset(Reset.Request(), Reset.Response())
+    diag = sd.decode(list(captured["diag"].data))
+    assert diag.valid is True
+    assert diag.step_id == 0
+    assert diag.reset_generation == node._reset_generation
+    assert diag.episode_id == node._episode_seed
+
+
+def test_sensor_diagnostics_gt_and_noisy_differ_when_sensor_noise_enabled(node):
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+    _stub_gazebo(node)
+    node.profile = dataclasses.replace(node.profile, sensor_noise=SensorNoiseConfig(
+        enabled=True, localization_xy_noise_std_m=5.0, lidar_range_noise_std_m=5.0))
+    captured, sd = _capture_diagnostics(node)
+    node._on_reset(Reset.Request(), Reset.Response())
+    diag = sd.decode(list(captured["diag"].data))
+
+    assert diag.gt_x != pytest.approx(diag.noisy_x)  # 5.0m std -- overwhelmingly unlikely to coincide
+    assert diag.lidar_perturbation_mean_m > 0.0
+
+
+def test_sensor_diagnostics_gt_and_noisy_are_identical_when_sensor_noise_disabled(node):
+    _stub_gazebo(node)
+    assert node.profile.sensor_noise.enabled is False
+    captured, sd = _capture_diagnostics(node)
+    node._on_reset(Reset.Request(), Reset.Response())
+    diag = sd.decode(list(captured["diag"].data))
+
+    assert diag.gt_x == pytest.approx(diag.noisy_x)
+    assert diag.gt_y == pytest.approx(diag.noisy_y)
+    assert diag.gt_yaw == pytest.approx(diag.noisy_yaw)
+    assert diag.gt_v_mps == pytest.approx(diag.noisy_v_mps)
+    assert diag.lidar_perturbation_mean_m == pytest.approx(0.0)
+    assert diag.lidar_perturbation_max_m == pytest.approx(0.0)
+    assert diag.drift_x_m == 0.0 and diag.drift_y_m == 0.0 and diag.drift_yaw_rad == 0.0
+
+
+def test_sensor_diagnostics_reports_the_current_ou_drift_state(node):
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+    _stub_gazebo(node)
+    node.profile = dataclasses.replace(node.profile, sensor_noise=SensorNoiseConfig(
+        enabled=True, localization_drift_theta=0.5, localization_drift_xy_sigma_m=1.0))
+    captured, sd = _capture_diagnostics(node)
+    node._on_reset(Reset.Request(), Reset.Response())
+    diag_reset = sd.decode(list(captured["diag"].data))
+    assert diag_reset.drift_x_m == 0.0  # drift starts at exactly zero every episode
+
+    step_req = Step.Request()
+    step_req.action = [0.0, 0.5, 0.0]
+    node._on_step(step_req, Step.Response())
+    diag_step = sd.decode(list(captured["diag"].data))
+    assert diag_step.drift_x_m == pytest.approx(node._sensor_noise_state.drift_x)
+
+
+def test_sensor_diagnostics_step_id_and_reset_generation_align_with_risk_telemetry(node):
+    """The core requirement-5 sync claim: a consumer must be able to pair a
+    risk_telemetry message and a sensor_diagnostics message for the SAME
+    tick purely by (reset_generation, step_id)."""
+    _stub_gazebo(node)
+    risk_captured = {}
+    node._risk_pub.publish = lambda msg: risk_captured.__setitem__("t", msg)
+    diag_captured, sd = _capture_diagnostics(node)
+
+    node._on_reset(Reset.Request(), Reset.Response())
+    step_req = Step.Request()
+    step_req.action = [0.0, 0.5, 0.0]
+    node._on_step(step_req, Step.Response())
+
+    telemetry = rt.decode(list(risk_captured["t"].data))
+    diag = sd.decode(list(diag_captured["diag"].data))
+    assert telemetry.step_id == diag.step_id
+    assert telemetry.reset_generation == diag.reset_generation
+    assert telemetry.episode_id == diag.episode_id
+
+
+def test_sensor_diagnostics_lidar_beam_count_matches_configured_lidar_bins(node):
+    _stub_gazebo(node)
+    captured, sd = _capture_diagnostics(node)
+    node._on_reset(Reset.Request(), Reset.Response())
+    diag = sd.decode(list(captured["diag"].data))
+    assert diag.lidar_beam_count == node.profile.observation.lidar_bins
+
+
+def test_sensor_diagnostics_uses_the_snapshotted_ground_truth_not_a_fresh_scan_query(node):
+    """Regression for the GT/noisy race condition: a scan callback firing
+    (on another executor thread) between _observation_obs_state()'s ground-
+    truth read and _compute_and_publish_sensor_diagnostics's own comparison
+    must NOT change what diagnostics reports -- it must always compare
+    against self._last_gt_obs_state, the EXACT same frame the noisy
+    observation was derived from this tick, never a fresh
+    self._current_scan_states() call. Before this fix, diagnostics called
+    _current_scan_states() again itself, so a newer scan delivered in
+    between would be misattributed to noise perturbation even with
+    sensor_noise fully disabled."""
+    import numpy as np
+
+    _stub_gazebo(node)
+    bins = node.profile.observation.lidar_bins
+    node._last_gt_obs_state = np.full(bins, 3.0, dtype=np.float32)
+    node._last_obs_state = np.full(bins, 3.0, dtype=np.float32)  # no noise applied -> identical to gt
+
+    # A scan callback delivering a NEW, unrelated scan after the snapshot
+    # above was taken but before diagnostics runs -- if diagnostics called
+    # _current_scan_states() again, it would see THIS instead.
+    sneaky_scan = np.full(bins, 9.0, dtype=np.float32)
+    node._current_scan_states = lambda: (sneaky_scan, sneaky_scan)
+
+    captured, sd = _capture_diagnostics(node)
+    node._compute_and_publish_sensor_diagnostics(
+        gt_x=0.0, gt_y=0.0, gt_yaw=0.0, gt_v=0.0, gt_yaw_rate=0.0, gt_steering=0.0,
+        noisy_x=0.0, noisy_y=0.0, noisy_yaw=0.0, noisy_v=0.0, noisy_yaw_rate=0.0, noisy_steering=0.0,
+    )
+    diag = sd.decode(list(captured["diag"].data))
+    assert diag.valid is True
+    assert diag.lidar_perturbation_mean_m == pytest.approx(0.0)
+    assert diag.lidar_perturbation_max_m == pytest.approx(0.0)
+    assert diag.lidar_dropout_count == 0
+
+
 def test_privileged_obstacle_ground_truth_never_leaks_into_the_policy_observation(node):
     """The core P0-5 leak-prevention property: the STATE VECTOR returned to
     the policy (_build_state_vector) must be COMPLETELY INSENSITIVE to the

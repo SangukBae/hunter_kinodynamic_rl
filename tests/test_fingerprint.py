@@ -117,6 +117,19 @@ def test_evaluation_contract_fingerprint_changes_when_runtime_changes():
     assert evaluation_contract_fingerprint(base) != evaluation_contract_fingerprint(edited)
 
 
+def test_evaluation_contract_fingerprint_changes_when_sensor_noise_changes():
+    """requirement 2: sensor_noise is now an EVALUATION-CONTRACT section --
+    editing it must change the evaluation-contract fingerprint, exactly
+    like reward/scenario/runtime/evaluation already do (and must NOT be
+    confused with domain_randomization, which is not part of this
+    contract at all)."""
+    base = load_profile("evaluation_id")
+    edited = dataclasses.replace(
+        base, sensor_noise=dataclasses.replace(base.sensor_noise, enabled=True,
+                                                 localization_xy_noise_std_m=0.05))
+    assert evaluation_contract_fingerprint(base) != evaluation_contract_fingerprint(edited)
+
+
 def test_evaluation_contract_fingerprint_catches_a_same_named_profile_content_edit():
     """The EXPLICIT item-2 (round 2) regression: two profiles with the
     SAME name but DIFFERENT world/reward/runtime/metric content (simulated
@@ -157,3 +170,24 @@ def test_two_different_checkpoints_share_evaluation_contract_fingerprint_via_bui
 
     assert evaluation_contract_fingerprint(effective_a) == evaluation_contract_fingerprint(effective_b)
     assert architecture_fingerprint(effective_a) != architecture_fingerprint(effective_b)
+
+
+def test_build_effective_profile_applies_the_requested_profiles_sensor_noise_not_the_checkpoints_own():
+    """requirement 2, the exact fairness bug: a checkpoint trained WITH
+    sensor_noise enabled, evaluated through a profile that leaves it at the
+    (disabled) default, must be evaluated NOISE-FREE -- and vice versa --
+    never silently keep the checkpoint's own training-time setting."""
+    from hunter_kinodynamic_rl.config.schema import SensorNoiseConfig
+    from hunter_kinodynamic_rl.nodes.evaluation_node import build_effective_profile
+
+    noisy_trained = dataclasses.replace(
+        load_profile("baseline_tqc"),
+        sensor_noise=SensorNoiseConfig(enabled=True, localization_xy_noise_std_m=0.1))
+    manifest = {"profile_name": "baseline_tqc", "resolved_config": dataclasses.asdict(noisy_trained)}
+
+    eval_profile = load_profile("evaluation_id")
+    assert eval_profile.sensor_noise.enabled is False  # the requested profile's own (default) setting
+
+    effective = build_effective_profile(manifest, "evaluation_id")
+    assert effective.sensor_noise == eval_profile.sensor_noise
+    assert effective.sensor_noise.enabled is False

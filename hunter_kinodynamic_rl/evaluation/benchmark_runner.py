@@ -79,7 +79,7 @@ def run_episode(env: EnvironmentClient, agent, profile: Profile, scenario: Bench
     episode_length_steps = profile.evaluation.max_episode_steps
     for step in range(episode_length_steps):
         action = agent.select_action(state, deterministic=True)
-        state, reward, done, target, collision, _min_dist, telemetry = env.step(action)
+        state, reward, done, target, collision, _min_dist, telemetry, _diagnostics = env.step(action)
         total_reward += reward
         last_step_index = step
 

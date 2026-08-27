@@ -32,8 +32,8 @@ the LIVE ``environment_node.py`` this node talks to over ROS is a SEPARATE,
 already-launched process whose own ``self.profile`` was resolved once at
 ITS launch, and does NOT automatically pick up anything this node computes
 locally. Before running the benchmark, ``main()`` therefore also WRITES the
-effective profile's ``reward``/``scenario``/``runtime``/``evaluation``
-sections to a file (``evaluation/contract_override.py``) and pushes it to
+effective profile's ``reward``/``scenario``/``runtime``/``evaluation``/
+``sensor_noise`` sections to a file (``evaluation/contract_override.py``) and pushes it to
 the live environment via ``EnvironmentClient.set_evaluation_contract_override``
 -- exactly like the pre-existing ``scenario_override_path`` mechanism
 already does for exact scenario placement -- then reads back the live
@@ -99,9 +99,10 @@ class RestoreResult:
 def build_effective_profile(manifest: dict, eval_profile_name: str):
     """Reconstruct the checkpoint's OWN training-time architecture from its
     manifest's resolved_config, then layer the requested evaluation
-    profile's evaluation/reward/scenario/runtime sections on top -- never
-    its action_space/features/risk/counterfactual/hyperparameters, which
-    would silently mismatch the checkpoint's actual weights.
+    profile's evaluation/reward/scenario/runtime/sensor_noise sections on
+    top -- never its action_space/features/risk/counterfactual/
+    hyperparameters, which would silently mismatch the checkpoint's actual
+    weights.
 
     This IN-PROCESS ``Profile`` merge is only half of the fairness story
     (section item-1, round 2) -- it drives THIS node's own local
@@ -140,13 +141,25 @@ def build_effective_profile(manifest: dict, eval_profile_name: str):
         # must be layered here too, never left at the checkpoint's own
         # training-time value.
         runtime=eval_overrides.runtime,
+        # requirement 2 (sensor-noise evaluation fairness): sensor_noise is
+        # an EVALUATION-CONTRACT section exactly like the others above --
+        # every checkpoint benchmarked under this profile must see the
+        # SAME sensor/localization noise model the requested profile asks
+        # for (on, off, or a specific magnitude), never silently keep its
+        # own training-time sensor_noise setting. Without this, `profile`
+        # (passed to write_evaluation_contract_override below, and to
+        # evaluation_contract_fingerprint above) would carry the
+        # CHECKPOINT's training-time sensor_noise instead of the requested
+        # evaluation profile's -- both the live environment override and
+        # this run's own recorded fingerprint would then be wrong.
+        sensor_noise=eval_overrides.sensor_noise,
     )
     effective.validate()
     print(f"evaluation architecture restored from training profile {checkpoint_profile_name!r} "
           f"(features.risk_critic={effective.features.risk_critic}, "
           f"features.counterfactual_risk={effective.features.counterfactual_risk}, "
           f"action_space.mode={effective.action_space.mode!r}); "
-          f"benchmark/reward/scenario/runtime taken from requested profile {eval_profile_name!r}")
+          f"benchmark/reward/scenario/runtime/sensor_noise taken from requested profile {eval_profile_name!r}")
     return effective
 
 
@@ -347,8 +360,8 @@ def validate_live_evaluation_contract(env: EnvironmentClient, requested_evaluati
     ``main()`` just pushed to it -- reads back its
     ``evaluation_contract_fingerprint_sha256`` parameter (updated by
     ``environment_node.py::_resolve_evaluation_contract_override`` every
-    time the active ``reward``/``scenario``/``runtime``/``evaluation``
-    sections change) and compares it against the fingerprint of what THIS
+    time the active ``reward``/``scenario``/``runtime``/``evaluation``/
+    ``sensor_noise`` sections change) and compares it against the fingerprint of what THIS
     node's own effective profile requires.
 
     This is a DIFFERENT check from ``validate_live_environment``'s
@@ -381,7 +394,7 @@ def validate_live_evaluation_contract(env: EnvironmentClient, requested_evaluati
             "-- the environment_contract_override was set but does not appear to have been actually "
             "applied (a malformed override file, or a /reset never having run since it was set). "
             "Refusing to evaluate against a live environment that may still be using its own "
-            "launch-time (checkpoint-training) reward/scenario/runtime/evaluation settings."
+            "launch-time (checkpoint-training) reward/scenario/runtime/evaluation/sensor_noise settings."
         )
     return live_evaluation_contract_fingerprint
 
@@ -563,7 +576,7 @@ def main():
         os.makedirs(state.output_dir, exist_ok=True)
 
         # section item-1 (round 2): deliver the effective evaluation
-        # contract (reward/scenario/runtime/evaluation) to the LIVE
+        # contract (reward/scenario/runtime/evaluation/sensor_noise) to the LIVE
         # environment_node -- see evaluation/contract_override.py and
         # environment_node.py::_resolve_evaluation_contract_override. Must
         # happen BEFORE run_benchmark's own scenario placement, and its
@@ -631,7 +644,10 @@ def main():
         run_eval_body_with_contract_restore(env, _body, state)
     finally:
         env.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT can already have triggered rclpy's own shutdown before
+        # this finally block runs -- guard against calling it twice.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def _restore_launch_time_evaluation_contract(

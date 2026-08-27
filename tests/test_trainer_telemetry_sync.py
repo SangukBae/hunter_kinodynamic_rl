@@ -49,10 +49,12 @@ pytest.importorskip("drl_agent_interfaces")  # training.trainer_base imports it 
 
 from hunter_kinodynamic_rl.config.loader import load_profile  # noqa: E402
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt  # noqa: E402
+from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd  # noqa: E402
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler  # noqa: E402
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer  # noqa: E402
 from hunter_kinodynamic_rl.training.trainer_base import (  # noqa: E402
-    EnvironmentClient, EnvServiceError, TrainerBase, telemetry_is_new_reset_marker, telemetry_matches_step,
+    EnvironmentClient, EnvServiceError, TrainerBase, sensor_diagnostics_matches_step,
+    telemetry_is_new_reset_marker, telemetry_matches_step,
 )
 
 # --------------------------------------------------------- pure predicates
@@ -84,6 +86,23 @@ def test_telemetry_matches_step_never_matches_when_generation_unknown():
 
 def test_telemetry_matches_step_none_telemetry_never_matches():
     assert telemetry_matches_step(None, expected_step_id=1, expected_reset_generation=1) is False
+
+
+# -------------------------------------------- requirement 5: sensor_diagnostics
+def test_sensor_diagnostics_matches_step_requires_exact_step_id_and_generation():
+    d = sd.SensorDiagnostics(step_id=5, valid=True, reset_generation=3)
+    assert sensor_diagnostics_matches_step(d, expected_step_id=5, expected_reset_generation=3) is True
+    assert sensor_diagnostics_matches_step(d, expected_step_id=6, expected_reset_generation=3) is False
+    assert sensor_diagnostics_matches_step(d, expected_step_id=5, expected_reset_generation=4) is False
+
+
+def test_sensor_diagnostics_matches_step_never_matches_when_generation_unknown():
+    d = sd.SensorDiagnostics(step_id=1, valid=True, reset_generation=0)
+    assert sensor_diagnostics_matches_step(d, expected_step_id=1, expected_reset_generation=None) is False
+
+
+def test_sensor_diagnostics_matches_step_none_never_matches():
+    assert sensor_diagnostics_matches_step(None, expected_step_id=1, expected_reset_generation=1) is False
 
 
 def test_new_reset_marker_requires_step_id_zero_and_reset_marker_reason():
@@ -369,7 +388,8 @@ class _FakeEnv:
             telemetry = rt.invalid(step_id=self._episode_step, reason=rt.InvalidReason.POLL_TIMEOUT)
         done = self._episode_step >= self._episode_len
         next_state = self._np.zeros(self._state_dim, dtype=self._np.float32)
-        return next_state, 0.0, done, False, False, 10.0, telemetry
+        diagnostics = sd.invalid(step_id=self._episode_step)
+        return next_state, 0.0, done, False, False, 10.0, telemetry, diagnostics
 
 
 class _FakeLogger:

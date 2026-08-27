@@ -139,3 +139,36 @@ reward:
   step_penalty: -0.01
   trajectory_smoothness_weight: 0.0
   control_smoothness_weight: 0.05
+
+# Hierarchical navigation Phase 1 (mission frame / localization / mapping) --
+# consumed only by hunter_kinodynamic_rl/navigation/, never by the existing
+# local-only env/training path. See
+# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 5.7.
+mission:
+  position_tolerance_m: 0.6
+  heading_tolerance_rad: 3.141592653589793
+  require_low_speed_on_goal: true
+  goal_speed_threshold_mps: 0.1
+  reset_memory_on_goal_change: true
+
+localization:
+  backend: gazebo_odom
+  odom_topic: /odometry
+  pose_timeout_sec: 0.5
+  minimum_confidence: 0.5
+  publish_mission_tf: true
+
+mapping:
+  resolution_m: 0.2
+  mission_size_cells: 256
+  rolling_size_cells: 128
+  free_log_odds_delta: -0.4
+  occupied_log_odds_delta: 0.85
+  free_threshold: -0.2
+  occupied_threshold: 0.2
+  log_odds_min: -4.0
+  log_odds_max: 4.0
+  inflation_radius_m: 0.45
+  visit_radius_m: 0.4
+  visited_count_saturation: 1000
+  failure_count_saturation: 100

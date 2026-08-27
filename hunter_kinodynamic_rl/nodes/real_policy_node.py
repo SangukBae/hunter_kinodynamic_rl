@@ -1347,7 +1347,11 @@ def main():
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # A SIGINT during spin can already have triggered rclpy's own
+        # shutdown before this finally block runs -- guard against calling
+        # it twice ("rcl_shutdown already called").
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

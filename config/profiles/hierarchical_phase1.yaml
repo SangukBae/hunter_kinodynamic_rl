@@ -1,0 +1,26 @@
+# Phase 1 verification profile (mission frame / localization / mapping only
+# -- no Global RL, no subgoal hierarchy; see
+# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 5.9). Used by
+# `ros2 run hunter_kinodynamic_rl mission_map_node.py --ros-args -p profile:=hierarchical_phase1`
+# to check mission pose/goal/occupancy/unknown/visited in RViz. Every
+# action_space/hyperparameters/training field below is inherited unchanged
+# from defaults.yaml -- this profile only narrows the mapping grid so a
+# manual Gazebo check renders quickly.
+mapping:
+  resolution_m: 0.2
+  mission_size_cells: 128
+  rolling_size_cells: 64
+  visit_radius_m: 0.4
+
+mission:
+  position_tolerance_m: 0.6
+  heading_tolerance_rad: 3.141592653589793
+  require_low_speed_on_goal: true
+  goal_speed_threshold_mps: 0.1
+
+localization:
+  backend: gazebo_odom
+  odom_topic: /odometry
+  pose_timeout_sec: 0.5
+  minimum_confidence: 0.5
+  publish_mission_tf: true

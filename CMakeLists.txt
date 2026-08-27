@@ -46,6 +46,7 @@ install(
     hunter_kinodynamic_rl/nodes/nav2_mppi_eval_node.py
     hunter_kinodynamic_rl/nodes/real_policy_node.py
     hunter_kinodynamic_rl/nodes/system_id_node.py
+    hunter_kinodynamic_rl/nodes/mission_map_node.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

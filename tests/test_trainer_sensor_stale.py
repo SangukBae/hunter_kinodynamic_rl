@@ -50,7 +50,7 @@ class _FakeEnv:
         done = stale or self._episode_step >= 5
         next_state = np.zeros(self._state_dim, dtype=np.float32)
         telemetry = rt.invalid(step_id=self._episode_step, sensor_stale=stale)
-        return next_state, 0.0, done, False, False, 10.0, telemetry
+        return next_state, 0.0, done, False, False, 10.0, telemetry, None
 
 
 class _FakeAgent:

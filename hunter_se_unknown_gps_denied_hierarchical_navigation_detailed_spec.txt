@@ -1,0 +1,786 @@
+Unknown GPS-Denied Long-Horizon Hunter SE Navigation
+상세 시스템 설계 및 연구 구조 명세서
+====================================================
+
+문서 목적
+--------
+이 문서는 AgileX Hunter SE 기반 자율주행 연구를 다음 목표로 확장했을 때 필요한 전체 시스템 구조를 상세하게 정리한 기술 명세서다.
+
+최종 목표:
+- 사전 global map을 사용하지 않는다.
+- GPS를 사용하지 않는다.
+- 시작 시 사용자가 초기 로봇 좌표계 기준 상대 목표 좌표만 지정한다.
+- 예: Goal=(x=25 m, y=10 m).
+- 로봇은 이동하면서 주변 환경을 스스로 관측한다.
+- 지금까지 관측한 부분만 partial map으로 누적한다.
+- 이미 지나간 공간과 실패한 경로를 visited/topological memory로 유지한다.
+- high-level RL은 장거리 관점에서 다음 탐색 subgoal을 선택한다.
+- low-level RL은 Hunter SE의 Ackermann 동역학과 미래 위험을 고려해 해당 subgoal까지 안전하게 주행한다.
+- unseen unknown environment에서 최종 상대 목표 좌표까지 도달한다.
+
+추천 연구명:
+1. Map-Prior-Free, GPS-Denied Long-Horizon Navigation
+2. Hierarchical Reinforcement Learning for Goal-Directed Navigation in Unknown GPS-Denied Environments with Ackermann Robots
+3. Hierarchical Risk-Aware Reinforcement Learning for Long-Horizon Navigation of Ackermann Robots in Unknown GPS-Denied Environments
+
+
+1. 전체 시스템 구조
+==================
+
+User Goal (robot-start frame)
+        ↓
+Mission Goal Manager
+        ↓
+Localization Interface
+(wheel odom / LiDAR odom / LIO)
+        ↓
+Current Relative Pose
+        ↓
+Online Partial Map
++ Explored/Unknown Map
++ Visited Memory
++ Topological Memory
++ Goal Vector
+        ↓
+Exploration-Aware Global RL
+        ↓
+Robot-Relative Local Subgoal
+        ↓
+Local Kinodynamic Risk-Aware TQC
+        ↓
+[kappa, v_ref, L]
+        ↓
+Ackermann Future Rollout
+        ↓
+Future Risk / Counterfactual Risk
+        ↓
+Pure Pursuit
+        ↓
+Hunter SE
+
+High Level의 질문:
+"미지 환경에서 다음에 어느 방향/구역으로 가야 최종 목표에 접근하는가?"
+
+Low Level의 질문:
+"그 subgoal까지 Hunter SE가 물리적으로 어떻게 안전하게 갈 것인가?"
+
+
+2. '사전 global map 없음'의 정확한 의미
+=====================================
+
+출발 전에 전체 환경의 벽, 복도, 방, junction, dead end, 우회로, 장애물 배치, 최종 route를 policy에 제공하지 않는다.
+
+처음에는 대부분의 공간이 UNKNOWN이다. 로봇은 Ouster LiDAR 등 실제 센서로 관측한 범위만 FREE/OCCUPIED로 바꾼다.
+
+중요한 구분:
+- FREE: 센서로 확인했고 통과 가능한 공간
+- OCCUPIED: 장애물이 확인된 공간
+- UNKNOWN: 아직 관측하지 않은 공간
+
+UNKNOWN을 FREE와 동일하게 취급하면 안 된다. Global RL이 탐색을 배우려면 "비어 있음"과 "아직 모름"을 구분해야 한다.
+
+따라서 이 시스템은 완전 mapless가 아니라:
+No Prior Map + Online Partial Mapping
+구조를 권장한다.
+
+
+3. 좌표계와 Mission Frame
+=========================
+
+사용자가 시작 시 Goal=(25,10)을 입력한다고 가정한다. 이 좌표를 현재 body frame에 계속 붙여두면 안 된다. 로봇이 회전하면 body frame도 회전하기 때문이다.
+
+출발 순간 고정 좌표계를 만든다.
+예: mission_start 또는 odom_start.
+
+출발 순간:
+mission_start origin=(0,0,0)
+Goal=(25,10)
+
+이 목표는 mission 종료까지 mission_start frame에 고정한다.
+
+로봇은 계속 현재 pose (x_robot, y_robot, yaw_robot)를 추정하고, 매 step 또는 global planning cycle마다 final goal을 robot-relative goal vector로 다시 변환한다.
+
+Global/Local policy에는 다음 중 하나를 줄 수 있다.
+- goal distance + bearing
+- robot-relative dx, dy
+- BEV goal heatmap
+- vector + heatmap 조합
+
+
+4. Localization은 필요하지만 LIO-SAM은 필수가 아님
+================================================
+
+핵심 요구는 GPS가 아니라 시작점 기준 상대 pose 추정이다.
+
+LocalizationInterface
+├── Gazebo ground-truth/odom
+├── wheel odometry
+├── wheel odometry + IMU
+├── LiDAR odometry
+└── LiDAR-Inertial Odometry / LIO-SAM
+
+권장 원칙:
+Navigation/RL package를 LIO-SAM 구현에 직접 묶지 않는다. Localization backend는 교체 가능한 interface로 둔다.
+
+방식별 특징:
+- Wheel odometry: 단순하지만 drift/slip에 취약
+- Wheel+IMU: heading 안정성 개선
+- LiDAR odometry: 구조물 많은 실내에서 유리, wheel slip 영향 감소
+- LIO: 장거리 drift 억제에 가장 강력하지만 시스템 복잡도 증가
+
+연구 단계 추천:
+Phase 1: Gazebo odometry로 navigation 구조 검증
+Phase 2: artificial pose noise/drift 추가
+Phase 3: 실차 wheel odom+IMU
+Phase 4: 장거리 drift가 문제일 때 LiDAR odom 또는 LIO-SAM
+
+
+5. Online Partial Map
+====================
+
+Global RL에는 현재 LaserScan 한 장만 주는 것보다, 지금까지 관측한 공간을 누적한 partial map을 사용한다.
+
+초기 추천 BEV representation:
+- 128x128 또는 256x256
+- metric size와 resolution은 config화
+
+채널 예:
+Channel 1: occupied
+Channel 2: free
+Channel 3: unknown
+Channel 4: visited
+Channel 5: goal direction/goal heatmap
+Optional 6: local risk
+Optional 7: local feasibility
+Optional 8: dynamic obstacle likelihood
+
+Rolling Local Map과 Mission Partial Map을 구분할 수 있다.
+- Rolling map: 현재 주변 geometry, local inference에 적합
+- Mission map: 장거리 기억, dead end와 branch structure 유지
+
+Local TQC는 temporal LiDAR를 주 입력으로 유지하고, Global RL은 mission partial map/memory를 사용한다.
+
+
+6. Visited Map
+==============
+
+Visited map의 질문은 "어디가 막혔나?"가 아니라 "어디를 이미 가봤나?"이다.
+
+저장 후보:
+- binary visited
+- visit count
+- time-since-last-visit
+- local failure flag
+- dead-end flag
+
+예:
+A→B→C→D(dead end) 후 C로 복귀했을 때, D branch를 이미 탐색했다는 사실을 Global RL이 알 수 있어야 한다.
+
+첫 구현은 binary 또는 normalized visit count면 충분하다.
+
+
+7. Topological Memory
+=====================
+
+장거리 환경에서는 큰 occupancy map만으로 모든 과거 정보를 기억하는 것이 비효율적일 수 있다. 따라서 local metric map + topological graph 조합을 추천한다.
+
+Node 예:
+- Start
+- Junction
+- Room entrance
+- Intersection
+- Dead end
+
+Node feature:
+- mission-frame pose
+- visit count
+- available/free directions
+- dead-end status
+- local risk
+- local descriptor
+- final-goal direction
+
+Edge:
+- 실제로 이동 가능했던 연결
+- traversal cost/risk를 저장 가능
+
+Node 생성 조건 예:
+- 일정 거리 이동
+- junction 발견
+- heading 큰 변화
+- global subgoal 도달
+- local failure
+- dead end 감지
+
+향후 GNN-based high-level policy로 확장 가능하다.
+
+
+8. Exploration-Aware Global RL
+==============================
+
+Known-map Global Planner는 full map에서 route를 계산하지만, 새 High-Level RL은 현재까지 본 정보만으로 다음 탐색 방향을 선택한다.
+
+입력:
+- occupied/free/unknown partial map
+- visited map
+- current pose/context
+- final goal vector
+- local feasibility/risk
+- optional topological memory
+
+출력:
+- 다음 robot-relative subgoal
+
+Global RL이 배워야 할 행동:
+1. final goal 방향으로 장기 progress
+2. 필요할 때 unknown space 탐색
+3. dead-end 회피
+4. 동일 구간 반복 방문 감소
+5. alternative route 선택
+6. Local Hunter controller가 실제 갈 수 있는 subgoal 선택
+7. 거리와 risk를 함께 고려한 route 선택
+
+
+9. Global Action
+================
+
+추천은 subgoal action이다.
+
+Continuous 예:
+[r_global, theta_global]
+또는 [delta_x, delta_y]
+
+예:
+r_global=5 m
+theta_global=+35 deg
+
+첫 구현에서는 discrete candidate subgoal도 매우 유용하다.
+예: 8방향 x 2거리 = 16 candidate.
+
+장점:
+- 학습 안정성
+- invalid subgoal 제어 쉬움
+- local feasibility mask 적용 쉬움
+
+향후 continuous subgoal policy로 확장 가능하다.
+
+Robot-relative subgoal을 추천하는 이유:
+- map origin에 덜 민감
+- translation invariance 향상
+- local geometry와 직접 연결
+- environment 크기 변화에 일반화하기 쉬움
+
+내부적으로는 선택된 subgoal을 mission frame으로 변환해 memory에 저장한다.
+
+
+10. Multi-Timescale Hierarchy
+=============================
+
+Global RL은 느리게 실행하고 Local RL은 빠르게 실행한다.
+
+예:
+Global: 0.5~2 Hz 또는 event-driven
+Local: 10~20 Hz
+
+Global replanning trigger:
+- subgoal 도달
+- local planner failure
+- path blocked
+- risk threshold 초과
+- 일정 시간 progress 없음
+- 새로운 junction 발견
+
+이렇게 하면 장거리 route reasoning과 빠른 collision avoidance를 분리할 수 있다.
+
+
+11. Local Kinodynamic Risk-Aware TQC
+===================================
+
+Global RL이 subgoal을 선택하면 기존 local 연구 구조를 그대로 활용한다.
+
+입력:
+- Temporal LiDAR
+- robot state
+- current subgoal
+
+출력:
+[kappa, v_ref, L]
+
+실행:
+TQC
+→ trajectory primitive
+→ Ackermann future rollout
+→ future clearance/TTC/stopping/collision risk
+→ counterfactual candidate comparison
+→ Pure Pursuit
+→ Hunter SE
+
+Global은 WHERE, Local은 HOW를 담당한다.
+
+
+12. Global-Local Feasibility Feedback
+====================================
+
+Global planner가 geometrically free한 곳을 선택해도 Hunter SE가 실제로 못 꺾을 수 있다. 따라서 Global RL에 Local feasibility를 feedback하는 것이 좋다.
+
+Candidate subgoal
+→ local planner/short Ackermann check
+→ success likelihood
+→ risk
+→ steering saturation
+→ Global observation/reward
+
+이렇게 하면 High-Level도 단순 "가까운 subgoal"이 아니라 "Hunter가 실제 도달 가능한 subgoal"을 배우게 된다.
+
+
+13. Global Risk Map
+===================
+
+Local TQC의 risk 결과를 상위 planner에 전달할 수 있다.
+
+예:
+Route A: 20 m, high risk
+Route B: 25 m, low risk
+
+High-Level policy가 shortest-only가 아니라 distance-risk tradeoff를 배우도록 할 수 있다.
+
+Map channel 또는 candidate feature로:
+- local predicted risk
+- collision likelihood
+- steering difficulty
+- repeated failure
+등을 제공할 수 있다.
+
+
+14. Global Reward
+=================
+
+Local reward와 Global reward는 분리한다.
+
+개념:
+R_global = R_goal + R_progress + R_exploration - R_revisit - R_deadend - R_localfail - R_risk - R_step
+
+R_goal:
+최종 mission goal 도달 시 큰 보상
+
+R_progress:
+final goal까지의 상대 거리 감소
+
+R_exploration:
+목표 도달에 유용한 새로운 공간 발견
+
+R_revisit:
+불필요한 반복 방문
+
+R_deadend:
+이미 실패한 branch 반복 진입
+
+R_localfail:
+선택한 subgoal을 Local TQC가 도달하지 못함
+
+R_risk:
+고위험 region/subgoal 선택
+
+R_step:
+wandering 및 지나친 mission time 억제
+
+Exploration reward는 goal/progress보다 우선하면 안 된다. 탐색은 목적이 아니라 목표 도달 수단이다.
+
+
+15. Backtracking과 Dead-End
+==========================
+
+Unknown 환경에서는 잘못된 branch를 한 번 탐색하는 것이 정상이다. 따라서 backtracking 자체를 실패로 보면 안 된다.
+
+정상 과정:
+Junction
+→ unknown branch 탐색
+→ dead end 확인
+→ junction 복귀
+→ 다른 branch 선택
+
+핵심은 "같은 실패를 기억하고 반복하지 않는 것"이다.
+
+Visited/topological memory는 이를 위해 사용한다.
+
+
+16. Training Environment
+========================
+
+Local-only 12x12 obstacle arena보다 큰 procedural unknown world가 필요하다.
+
+포함해야 할 구조:
+- rooms
+- corridors
+- junctions
+- loops
+- dead ends
+- open spaces
+- multiple alternative routes
+
+매 episode:
+1. simulator가 full ground-truth world 생성
+2. start/goal 생성
+3. solvability 확인
+4. Hunter spawn
+5. policy에는 local sensor/partial map만 공개
+6. 탐색하면서 partial map 갱신
+
+Simulator의 full map은 다음 용도로만 사용한다.
+- scenario solvability
+- shortest path ground truth
+- SPL
+- benchmark difficulty
+- teacher/aux label
+
+Policy observation에 full map을 직접 제공하면 연구 조건을 위반한다.
+
+
+17. Hierarchical Episode 흐름
+============================
+
+1. Unknown procedural world 생성
+2. Start/relative final goal 설정
+3. mission_start frame 생성
+4. localization 시작
+5. partial/visited memory 초기화
+6. Global RL이 첫 subgoal 선택
+7. Local TQC가 subgoal까지 주행
+8. localization/map/memory 업데이트
+9. Global reward 계산
+10. 다음 subgoal 선택
+11. final goal 도달 또는 timeout/failure까지 반복
+
+
+18. Global/Local Replay 분리
+===========================
+
+두 level은 time scale과 reward가 다르므로 replay buffer를 분리하는 것이 좋다.
+
+Local Replay:
+- temporal local observation
+- [kappa,v_ref,L]
+- local reward
+- next local state
+- risk targets
+- counterfactual targets
+
+Global Replay:
+- partial map/memory state
+- selected subgoal
+- global reward
+- next global state
+- subgoal termination
+- local success/failure
+- progress
+- exploration gain
+
+
+19. Global RL Algorithm 선택
+===========================
+
+Discrete candidate subgoal이면:
+- DQN 계열
+- Distributional DQN
+- PPO discrete
+- Discrete SAC
+
+Continuous [r,theta]이면:
+- SAC
+- TQC
+- TD7
+
+Local은 continuous trajectory action이므로 기존 TQC를 유지하는 것이 자연스럽다.
+
+High/Low level이 같은 algorithm일 필요는 없다.
+
+
+20. Localization Drift와 Loop Closure
+===================================
+
+장거리 상대좌표 navigation에서는 pose drift가 final goal 오차로 직접 이어진다.
+
+Drift source:
+- wheel slip
+- steering calibration
+- scan matching error
+- IMU bias
+- long corridor degeneracy
+
+대응:
+- wheel+IMU fusion
+- LiDAR odometry
+- LIO
+- loop closure
+- pose graph correction
+
+Loop closure는 RL contribution일 필요는 없지만, 큰 환경에서 partial map consistency와 mission-relative goal 정확도를 개선할 수 있다.
+
+
+21. Evaluation Metrics
+======================
+
+Global metrics:
+- Final Goal Success Rate
+- Global SPL
+- Total Route Length
+- Excess Path Ratio
+- Time to Goal
+- Number of Global Subgoals
+- Subgoal Success Rate
+- Revisit Ratio
+- Dead-End Entries
+- Repeated Dead-End Entries
+- Backtracking Distance
+- Explored Area
+- Unnecessary Exploration Ratio
+- Local Planner Failure Count
+- Global Replan Count
+- Localization Drift Sensitivity
+
+Local metrics:
+- Collision Rate
+- Minimum Clearance
+- TTC
+- Steering Saturation
+- Stopping Margin
+- Local Success Rate
+- Unrecoverable State Rate
+- Counterfactual Safety Gain
+
+
+22. Ablation
+============
+
+High-level ablation:
+A. Local only / no memory
+B. Global partial-map RL
+C. + Visited map
+D. + Topological memory
+E. + Local feasibility feedback
+F. + Global risk feedback
+G. Full hierarchical system
+
+Low-level ablation:
+1. Legacy waypoint TQC
+2. trajectory-level TQC
+3. + future risk
+4. + counterfactual risk
+
+이렇게 high-level exploration contribution과 low-level kinodynamic safety contribution을 분리해서 검증한다.
+
+
+23. Simulation → Real 단계
+=========================
+
+Phase 1: Gazebo ground-truth/ideal odometry
+- hierarchical architecture 자체 검증
+
+Phase 2: noisy/drifting odometry
+- localization error robustness 검증
+
+Phase 3: 실제 Hunter wheel odom+IMU
+- 기본 real-world mission test
+
+Phase 4: LiDAR odometry 또는 LIO
+- 장거리 drift 개선
+
+이 순서로 navigation 문제와 localization 문제를 분리해서 분석한다.
+
+
+24. 실제 Hunter Mission 실행
+==========================
+
+1. Hunter SE boot
+2. Ouster/IMU/odometry 시작
+3. Localization backend 시작
+4. mission_start frame 생성
+5. 사용자 relative goal (x,y) 입력
+6. partial map 초기화
+7. visited/topological memory 초기화
+8. Global RL subgoal 선택
+9. Local TQC safe trajectory 생성
+10. Hunter 이동
+11. localization/map/memory 업데이트
+12. 필요 시 global replanning
+13. final goal tolerance 만족까지 반복
+
+Final goal 판정 예:
+distance(robot,goal)<position_tolerance
+필요 시 heading 및 low-speed condition 추가
+
+Tolerance는 localization accuracy에 맞게 config화한다.
+
+
+25. Safety
+==========
+
+Global RL은 직접 collision safety를 보장하는 controller가 아니다. 실제 즉시 안전은 Local TQC + safety guard가 담당한다.
+
+필수 guard:
+- max velocity clamp
+- steering bound
+- NaN/Inf rejection
+- stale LiDAR timeout
+- localization failure detection
+- policy timeout
+- command timeout
+- invalid subgoal rejection
+- proximity emergency stop
+- E-stop compatibility
+
+Localization confidence가 크게 떨어지면 정지 또는 recovery mode가 필요하다.
+
+
+26. 권장 Software Module 구조
+===========================
+
+navigation/
+├── mission/
+│   ├── goal_manager.py
+│   └── mission_frame.py
+├── localization/
+│   ├── interface.py
+│   ├── gazebo_odom.py
+│   ├── wheel_imu.py
+│   ├── lidar_odom.py
+│   └── lio_adapter.py
+├── mapping/
+│   ├── rolling_map.py
+│   ├── partial_map.py
+│   ├── explored_map.py
+│   └── visited_map.py
+├── memory/
+│   ├── topological_graph.py
+│   ├── node_manager.py
+│   └── route_history.py
+├── global_rl/
+│   ├── observation.py
+│   ├── subgoal_sampler.py
+│   ├── agent.py
+│   ├── replay.py
+│   └── reward.py
+├── local_rl/
+│   └── 기존 kinodynamic TQC 모듈
+├── hierarchy/
+│   ├── coordinator.py
+│   ├── subgoal_manager.py
+│   ├── replanning.py
+│   └── failure_recovery.py
+└── evaluation/
+    ├── global_metrics.py
+    └── long_horizon_benchmark.py
+
+
+27. 기존 hunter_kinodynamic_rl에서 유지할 것
+==========================================
+
+그대로 유지:
+- Hunter SE model
+- Ouster LiDAR processing
+- temporal observation
+- TQC
+- [kappa,v_ref,L]
+- trajectory primitive
+- Pure Pursuit
+- Ackermann rollout
+- future risk
+- counterfactual risk
+- risk critic
+- local benchmark
+- domain randomization
+
+새로 추가:
+- Mission Frame
+- Relative Goal Manager
+- Localization Interface
+- Partial/Unknown/Explored Map
+- Visited Map
+- Topological Memory
+- Global RL
+- Global Replay
+- Global Reward
+- Hierarchy Coordinator
+- Long-Horizon Benchmark
+
+
+28. 전체 핵심 Data Flow
+======================
+
+User Relative Goal
+        ↓
+Mission Goal Manager
+        ↓
+Localization
+        ↓
+Current Relative Pose
+        ↓
+LiDAR → Partial/Explored/Unknown Map
+        ↓
+Visited Map + Topological Memory
+        ↓
+Goal Vector
+        ↓
+Exploration-Aware Global RL
+        ↓
+Robot-Relative Subgoal
+        ↓
+Temporal LiDAR + Vehicle State
+        ↓
+Local Kinodynamic TQC
+        ↓
+[kappa,v_ref,L]
+        ↓
+Ackermann Trajectory
+        ↓
+Future Risk + Counterfactual Risk
+        ↓
+Pure Pursuit
+        ↓
+Hunter SE
+        ↓
+New Observation
+        ↓
+Localization / Map / Memory Update
+        ↓
+Global Replanning
+
+
+29. 핵심 연구 정의
+=================
+
+추천 최종 연구 정의:
+"Hierarchical Risk-Aware Reinforcement Learning for Goal-Directed Long-Horizon Navigation of Ackermann Robots in Unknown GPS-Denied Environments"
+
+조건:
+- No prior global map
+- No GPS
+- Relative coordinate goal at mission start
+- Online localization
+- Online partial mapping
+- Explicit UNKNOWN representation
+- Visited/topological memory
+- Exploration-aware high-level RL
+- Kinodynamic risk-aware low-level TQC
+- Ackermann trajectory-level action
+- Real Hunter SE validation
+
+
+30. 최종 철학
+=============
+
+이 시스템은 세 질문을 분리하면서 연결한다.
+
+1. Where am I?
+→ Localization
+
+2. Where should I go next?
+→ Exploration-Aware Global RL
+
+3. How should Hunter SE physically get there safely?
+→ Local Kinodynamic Counterfactual TQC
+
+최종 목표는:
+"사전 지도가 없는 GPS-denied 환경에서 시작 시 주어진 상대 목표 좌표만으로, 로봇이 스스로 주변 공간을 관측·기억하고, high-level RL로 다음 탐색 subgoal을 선택하며, low-level kinodynamic risk-aware TQC로 Hunter SE의 물리 제약을 만족하는 안전한 trajectory를 생성해 장거리 목표까지 자율적으로 도달하는 것"이다.
+
+이 계층 분리가 전체 연구와 소프트웨어 아키텍처의 핵심이다.

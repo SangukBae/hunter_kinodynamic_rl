@@ -110,6 +110,37 @@ ros2 run hunter_kinodynamic_rl evaluation_node.py --ros-args \
 | `smoke_test` | Fast end-to-end implementation check, not a research config |
 | `evaluation_{id,ood_geometry,ood_dynamics,dynamic}` | Fixed-benchmark evaluation (`config/benchmarks/`) -- also the scenario set the Nav2-MPPI classical baseline (`evaluation/nav2_mppi_runner.py`) runs against |
 | `real_hunter_safe` | Real-robot inference profile (`nodes/real_policy_node.py`) -- conservative speed/lookahead + mandatory `env/safety/action_guard.py` |
+| `hierarchical_phase1` | Phase 1 hierarchical-navigation verification profile (mission frame / localization / mapping only, see below) |
+
+## Hierarchical navigation (Phase 1: mission frame / localization / mapping)
+
+Opt-in, separate from the local-only kinodynamic-TQC path above -- see
+`docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md` and
+`hunter_se_unknown_gps_denied_hierarchical_navigation_detailed_spec.txt` for
+the full multi-phase design. Phase 1 implements only the foundation: a fixed
+mission-start frame + relative final goal (`navigation/mission/`), a
+pluggable localization backend protocol (`navigation/localization/`), and an
+online LiDAR partial map with explicit UNKNOWN/FREE/OCCUPIED/
+OBSERVED_UNCERTAIN/visited/failure channels (`navigation/mapping/`; see
+`partial_map.py`'s module docstring for why there are four map states, not
+three). No Global RL / subgoal hierarchy yet. Live-verified against two real
+Gazebo runs, including a teleported non-zero start pose/yaw to confirm the
+mission-frame rotation math against a real Gazebo odometry quaternion, not
+just synthetic unit tests
+(`docs/verification/2026-08-28_hierarchical_navigation_phase1_review_fixes.md`).
+
+```bash
+ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=true
+ros2 run hunter_kinodynamic_rl mission_map_node.py --ros-args \
+  -p profile:=hierarchical_phase1 -p goal_x:=5.0 -p goal_y:=0.0
+```
+
+Publishes `/mission_map`, `/rolling_map`, `/visited_map`, `/inflated_map`
+(`nav_msgs/OccupancyGrid`) and `/mission_goal` (`geometry_msgs/PointStamped`,
+frame `mission`), plus the `odom -> mission` TF -- add all five to RViz to
+watch the partial map grow as the robot explores. Read-only w.r.t. the
+simulation: never publishes `/cmd_vel` and never touches
+`drl_agent_interfaces`.
 
 ## System identification (real Hunter SE)
 
@@ -142,6 +173,16 @@ evidence, including what's live-verified vs. unit-tested-only and what
 remains genuinely open (Nav2-MPPI goal-reaching is unresolved; no real
 Hunter SE hardware trial has been run, no hardware available in this
 development environment).
+
+**2026-08-27 defect-fix pass** (start-pose wall clearance, sensor-noise
+evaluation fairness, reset initial-frame noise duplication, obstacle-pool
+active/parked/retry/exact-class consistency, a new GT-vs-noisy observation
+diagnostics side channel, exact discrete-time OU localization drift): see
+**`docs/verification/2026-08-27_start_pose_noise_pool_diagnostics_ou.md`**
+for command-level evidence -- 1162 tests green under `colcon test` (0
+errors/failures/skipped), plus a live Gazebo session (40 resets, a full
+200-step training run, an interrupted+resumed run, two fixed-benchmark
+evaluation runs differing only in `sensor_noise`).
 
 **2026-08-26 defect-fix pass** (Gazebo physics-step reality-check, system-ID
 stale-data handling, checkpoint-prune safety, evaluation-contract restore

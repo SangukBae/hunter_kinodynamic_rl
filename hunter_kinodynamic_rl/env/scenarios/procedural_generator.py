@@ -24,12 +24,26 @@ specs this module produces into the running simulation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
-from hunter_kinodynamic_rl.config.schema import ScenarioConfig
+from hunter_kinodynamic_rl.config.schema import ScenarioConfig, StartPoseConfig
 from hunter_kinodynamic_rl.env.scenarios.ackermann_feasibility import is_ackermann_feasible
+from hunter_kinodynamic_rl.env.scenarios.safe_start import sample_start_yaw
+
+# The exact (min, max) static-obstacle radius range generate_scenario draws
+# from below -- exposed as a module constant (rather than a buried literal)
+# so config/schema.py's ObstaclePoolConfig cross-validation can check its
+# own static_size_classes_m actually covers it (a pool class list that
+# tops out below this max would leave some episodes' largest obstacles
+# with no pool slot big enough to spawn safely).
+STATIC_OBSTACLE_RADIUS_RANGE_M = (0.15, 0.5)
+# Every DynamicObstacleSpec generate_scenario places uses this exact,
+# fixed radius (never drawn from a range) -- exposed so obstacle-pool code
+# doesn't need its own duplicated magic number for the dynamic marker's
+# baked-in pool geometry.
+DYNAMIC_OBSTACLE_RADIUS_M = 0.3
 
 
 @dataclass(frozen=True)
@@ -66,6 +80,12 @@ class ScenarioSpec:
     goal_y: float
     static_obstacles: List[StaticObstacle] = field(default_factory=list)
     dynamic_obstacles: List[DynamicObstacleSpec] = field(default_factory=list)
+    # Diagnostic only (never read by any feasibility/physics logic) --
+    # number of sample_start_yaw attempts this scenario's heading actually
+    # needed, for reset-time structured logging. None for
+    # heading_mode="legacy_random" (no sampling loop ever runs) or for a
+    # fixed-benchmark ScenarioSpec (benchmark_loader.py never sets this).
+    heading_sample_attempts: Optional[int] = None
 
 
 class SeedSplitError(ValueError):
@@ -133,7 +153,7 @@ def _place_dynamic_obstacles(
     to the un-inset range."""
     half = cfg.world_size_m / 2.0
     margin = cfg.dynamic_obstacle_min_clearance_m
-    radius = 0.3
+    radius = DYNAMIC_OBSTACLE_RADIUS_M
     inset_half = half - radius
     if inset_half <= 0.0:
         raise RuntimeError(
@@ -201,7 +221,9 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
                        max_attempts: int = 50,
                        min_turning_radius_m: Optional[float] = None,
                        wheelbase_m: Optional[float] = None,
-                       goal_radius_m: float = 0.42) -> ScenarioSpec:
+                       goal_radius_m: float = 0.42,
+                       start_pose_cfg: Optional[StartPoseConfig] = None,
+                       static_radius_quantizer: Optional[Callable[[float], float]] = None) -> ScenarioSpec:
     """Retries with a fresh sub-draw until a feasible layout is found, or
     raises after ``max_attempts`` (a max_obstacles set absurdly high for
     world_size_m is a config error, not something to silently degrade).
@@ -213,6 +235,43 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
     ``robot_radius`` that leaves no usable inset area (>= half the world
     extent) is a config error, raised immediately rather than silently
     degrading to the un-inset range.
+
+    The START position specifically is inset FURTHER, by
+    ``start_pose_cfg.min_wall_clearance_m`` on top of ``robot_radius`` (goal
+    sampling is unaffected) -- ``min_wall_clearance_m=0.0`` (the field
+    default, and every pre-existing profile) makes this identical to the
+    robot_radius-only inset above. A combination that leaves no usable start
+    region raises immediately, the same way the robot_radius-only case does.
+    ``safe_start.sample_start_yaw``'s own front-safety-distance projection
+    (for every ``heading_mode`` other than ``legacy_random``) separately
+    enforces the same ``robot_radius + min_wall_clearance_m`` margin against
+    the wall the robot would be facing, not just the position it starts at.
+
+    ``start_pose_cfg`` (default ``None`` -> ``StartPoseConfig()``, whose own
+    default ``heading_mode="legacy_random"`` reproduces the pre-existing
+    behaviour exactly -- see that class's docstring) controls how
+    ``start_yaw`` is chosen. Any OTHER ``heading_mode`` changes this
+    function's internal draw order: the heading is sampled by
+    :func:`~hunter_kinodynamic_rl.env.scenarios.safe_start.sample_start_yaw`
+    AFTER static obstacles are placed for this attempt (never before, unlike
+    ``legacy_random``), so it can reject a candidate heading that points
+    into a nearby obstacle or straight at the world boundary within a
+    bounded number of attempts, falling back to a deterministic (still
+    clearance-checked) sweep if every random attempt is rejected. If even
+    the deterministic fallback finds no safe heading for this attempt's
+    ``(start_x, start_y)``, the WHOLE scenario attempt is redrawn (mirroring
+    every other infeasibility path in this function) -- ``generate_scenario``
+    only ever raises once its own ``max_attempts`` budget is exhausted,
+    never silently accepts an unsafe heading.
+
+    ``static_radius_quantizer`` (default ``None`` -- radii stay continuous,
+    unchanged behaviour), when given, is applied to EVERY static obstacle's
+    drawn radius before any clearance/feasibility check runs -- used by
+    ``environment_node.py`` when ``obstacle_pool.enabled`` to snap each
+    radius to a pool-compatible size class UP FRONT, so the feasibility
+    checks below and the physical geometry actually spawned into Gazebo are
+    always for the exact same radius (see env/spawning/obstacle_pool.py's
+    module docstring).
 
     An attempt is only accepted once it ALSO placed at least
     ``cfg.min_obstacles`` obstacles: the per-obstacle clearance rejection
@@ -232,6 +291,7 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
     ``wheelbase_m`` is a caller bug -- this raises immediately rather than
     silently falling back to the weaker grid-only check (no silent no-op
     config flag)."""
+    start_pose_cfg = start_pose_cfg or StartPoseConfig()
     if cfg.feasibility_check == "ackermann" and (
         min_turning_radius_m is None or min_turning_radius_m <= 0.0
         or wheelbase_m is None or wheelbase_m <= 0.0
@@ -252,10 +312,31 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             f"world_size_m={cfg.world_size_m} world (half_extent={half}) -- world_size_m is too small "
             "for this robot's footprint"
         )
+    # requirement 1 (start-pose wall clearance): the START position itself
+    # must additionally clear the wall by start_pose_cfg.min_wall_clearance_m
+    # on top of robot_radius -- previously only robot_radius was inset here,
+    # so a start point could be sampled with the robot's footprint already
+    # inside the configured clearance margin. min_wall_clearance_m=0.0 (the
+    # default, and every pre-existing profile) makes start_inset_half ==
+    # inset_half exactly, so this is byte-identical for those profiles
+    # (see test_legacy_random_heading_mode_matches_pre_existing_rng_draw_order).
+    # Goal sampling deliberately keeps using the un-widened inset_half above
+    # -- only the start position carries a wall-clearance requirement.
+    start_inset_half = half - (robot_radius + start_pose_cfg.min_wall_clearance_m)
+    if start_inset_half <= 0.0:
+        raise RuntimeError(
+            f"generate_scenario: robot_radius={robot_radius} + "
+            f"start_pose.min_wall_clearance_m={start_pose_cfg.min_wall_clearance_m} leaves no inset room "
+            f"in a world_size_m={cfg.world_size_m} world (half_extent={half}) -- world_size_m is too "
+            "small for this robot's footprint plus the configured start-pose wall clearance"
+        )
 
     for _attempt in range(max_attempts):
-        start_x, start_y = rng.uniform(-inset_half, inset_half, size=2)
-        start_yaw = rng.uniform(-np.pi, np.pi)
+        start_x, start_y = rng.uniform(-start_inset_half, start_inset_half, size=2)
+        legacy_heading = start_pose_cfg.heading_mode == "legacy_random"
+        heading_sample_attempts: Optional[int] = None
+        if legacy_heading:
+            start_yaw = rng.uniform(-np.pi, np.pi)
         for _ in range(20):
             goal_x, goal_y = rng.uniform(-inset_half, inset_half, size=2)
             if np.hypot(goal_x - start_x, goal_y - start_y) >= min_start_goal_distance_m:
@@ -263,8 +344,11 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
 
         num_obstacles = rng.randint(cfg.min_obstacles, cfg.max_obstacles + 1)
         obstacles: List[StaticObstacle] = []
+        obstacle_clearance_m = start_pose_cfg.min_obstacle_clearance_m
         for _ in range(num_obstacles):
-            radius = float(rng.uniform(0.15, 0.5))
+            radius = float(rng.uniform(*STATIC_OBSTACLE_RADIUS_RANGE_M))
+            if static_radius_quantizer is not None:
+                radius = float(static_radius_quantizer(radius))
             # section item-7: same radius-inclusive-footprint fix as
             # dynamic obstacles below -- the CENTER must be inset by the
             # obstacle's own radius, not drawn over the full
@@ -275,9 +359,9 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             # degenerate low>high range if it weren't.
             obstacle_inset_half = max(half - radius, 0.0)
             ox, oy = rng.uniform(-obstacle_inset_half, obstacle_inset_half, size=2)
-            if np.hypot(ox - start_x, oy - start_y) < robot_radius + radius + 0.5:
+            if np.hypot(ox - start_x, oy - start_y) < robot_radius + radius + obstacle_clearance_m:
                 continue
-            if np.hypot(ox - goal_x, oy - goal_y) < robot_radius + radius + 0.5:
+            if np.hypot(ox - goal_x, oy - goal_y) < robot_radius + radius + obstacle_clearance_m:
                 continue
             obstacles.append(StaticObstacle(x=float(ox), y=float(oy), radius=radius))
 
@@ -285,6 +369,23 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             continue
         if not is_reachable((start_x, start_y), (goal_x, goal_y), obstacles, cfg.world_size_m, robot_radius):
             continue
+
+        if not legacy_heading:
+            # section (safe start/yaw): obstacles for THIS attempt are now
+            # known -- sample a heading that clears them (and the world
+            # boundary) within a bounded number of attempts, with a
+            # deterministic, still clearance-checked fallback. None means
+            # even the fallback found no safe heading for this
+            # (start_x, start_y) -- redraw the WHOLE scenario attempt,
+            # exactly like every other infeasibility path in this loop
+            # (never silently accept an unsafe heading).
+            sampled = sample_start_yaw(
+                rng, start_pose_cfg, start_x, start_y, goal_x, goal_y, obstacles, half, robot_radius,
+            )
+            if sampled is None:
+                continue
+            start_yaw, heading_sample_attempts = sampled
+
         if cfg.feasibility_check == "ackermann" and not is_ackermann_feasible(
             start_x, start_y, start_yaw, goal_x, goal_y, goal_radius_m,
             obstacles, cfg.world_size_m, robot_radius, min_turning_radius_m, wheelbase_m,
@@ -330,6 +431,7 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             seed=seed, start_x=float(start_x), start_y=float(start_y), start_yaw=float(start_yaw),
             goal_x=float(goal_x), goal_y=float(goal_y),
             static_obstacles=obstacles, dynamic_obstacles=dynamic_obstacles,
+            heading_sample_attempts=heading_sample_attempts,
         )
 
     raise RuntimeError(
