@@ -25,7 +25,7 @@ from hunter_kinodynamic_rl.nodes.real_policy_node import (  # noqa: E402
     CheckpointProfileMismatchError, RealPolicyNode, UnsafeDeploymentOverrideError, build_effective_profile,
     _safety_limits_from_profile,
 )
-from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack  # noqa: E402
+from hunter_kinodynamic_rl.navigation.local_rl.controller import LocalPolicyController  # noqa: E402
 from hunter_kinodynamic_rl.trajectory.pure_pursuit_adapter import VehicleCommand  # noqa: E402
 
 
@@ -419,10 +419,7 @@ def _full_bare_node(**overrides) -> RealPolicyNode:
     node.goal_x = 3.0
     node.goal_y = 1.0
     node._latest_steering_rad = 0.0
-    node._prev_action_01 = [0.0, 0.0, 0.0]
-    history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
-    node._frame_stack = FrameStack(profile.observation.lidar_bins, history_len)
-    node._frame_stack_ready = False
+    node._local_controller = LocalPolicyController(profile)
     node._safety_limits = _safety_limits_from_profile(profile)
     node._inference_timeouts = 0
     node._inference_errors = 0
@@ -514,7 +511,7 @@ def test_nan_action_publishes_safe_stop_without_reaching_trajectory_executor():
     published = node._cmd_pub.published[-1]
     assert published.linear.x == pytest.approx(STOP_COMMAND.speed_mps)
     # a rejected action must never be adopted as prev_action for the NEXT tick
-    assert node._prev_action_01 == [0.0, 0.0, 0.0]
+    assert node._local_controller.prev_action == [0.0, 0.0, 0.0]
 
 
 def test_wrong_shape_action_publishes_safe_stop():
@@ -534,7 +531,7 @@ def test_unexpected_exception_in_pipeline_still_publishes_safe_stop():
     inference) must still result in a published safe stop, never a
     silently-skipped tick."""
     node = _full_bare_node()
-    node._frame_stack = None  # guaranteed AttributeError deep in the pipeline
+    node._local_controller = None  # guaranteed AttributeError deep in the pipeline
     node._on_control_tick()
     assert len(node._cmd_pub.published) == 1
     published = node._cmd_pub.published[0]

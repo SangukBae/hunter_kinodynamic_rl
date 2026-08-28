@@ -1,7 +1,9 @@
 import pytest
 
 from hunter_kinodynamic_rl.config.loader import load_profile
-from hunter_kinodynamic_rl.config.schema import ConfigError, LocalizationConfig, MappingConfig, MissionConfig
+from hunter_kinodynamic_rl.config.schema import (
+    ConfigError, HierarchyConfig, LocalizationConfig, MappingConfig, MissionConfig,
+)
 
 
 def test_mission_config_defaults_are_valid():
@@ -79,3 +81,57 @@ def test_unrelated_existing_profile_still_loads_with_navigation_defaults():
     assert profile.mission.position_tolerance_m == pytest.approx(0.6)
     assert profile.mapping.resolution_m == pytest.approx(0.2)
     assert profile.localization.backend == "gazebo_odom"
+
+
+# ------------------------------------------------------------ HierarchyConfig (Phase 2)
+
+def test_hierarchy_config_defaults_are_valid():
+    HierarchyConfig().validate()
+
+
+def test_hierarchy_config_rejects_non_positive_subgoal_position_tolerance():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(subgoal_position_tolerance_m=0.0).validate()
+
+
+def test_hierarchy_config_rejects_heading_tolerance_above_pi():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(subgoal_heading_tolerance_rad=4.0).validate()
+
+
+def test_hierarchy_config_rejects_non_positive_timeout_steps():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(local_option_timeout_steps=0).validate()
+
+
+def test_hierarchy_config_rejects_negative_no_progress_delta():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(no_progress_min_delta_m=-0.1).validate()
+
+
+def test_hierarchy_config_rejects_out_of_range_localization_confidence():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(localization_min_confidence=1.5).validate()
+
+
+def test_hierarchy_config_rejects_negative_max_retries():
+    with pytest.raises(ConfigError):
+        HierarchyConfig(max_retries_per_subgoal=-1).validate()
+
+
+def test_hierarchy_config_accepts_none_mission_timeouts_but_rejects_non_positive_when_set():
+    HierarchyConfig(mission_timeout_steps=None, mission_timeout_sec=None).validate()
+    with pytest.raises(ConfigError):
+        HierarchyConfig(mission_timeout_steps=0).validate()
+    with pytest.raises(ConfigError):
+        HierarchyConfig(mission_timeout_sec=0.0).validate()
+
+
+def test_unrelated_existing_profile_still_loads_with_hierarchy_defaults():
+    """Same opt-in guarantee as mission/localization/mapping: an unrelated
+    pre-existing profile must load fine and simply carry HierarchyConfig's
+    defaults, never requiring a YAML edit."""
+    profile = load_profile("smoke_test")
+    assert profile.hierarchy.subgoal_position_tolerance_m == pytest.approx(0.5)
+    assert profile.hierarchy.local_option_timeout_steps == 200
+    assert profile.hierarchy.mission_timeout_steps is None

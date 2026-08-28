@@ -1,0 +1,43 @@
+# Phase 3 verification profile (long-horizon procedural world generator --
+# see docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 7). No
+# Global RL, no live environment_node integration yet (Phase 3's own scope
+# boundary) -- this profile exists so `long_horizon_world`/`wall_segment_pool`
+# validate cleanly end to end and can be loaded by a standalone
+# generation/spawn-spec script (see
+# tests/test_long_horizon_generator.py / tests/test_wall_segment_spawner.py
+# for the pure-Python generation path this profile's numbers mirror).
+# Every action_space/hyperparameters/training field below is inherited
+# unchanged from defaults.yaml.
+long_horizon_world:
+  enabled: true
+  size_m: 40.0
+  resolution_m: 0.25
+  wall_thickness_m: 0.2
+  wall_height_m: 1.0
+  corridor_width_min_m: 2.0
+  corridor_width_max_m: 4.0
+  room_count_range: [4, 10]
+  dead_end_count_range: [1, 5]
+  loop_count_range: [1, 4]
+  alternative_route_min_count: 1
+  start_goal_geodesic_min_m: 20.0
+  require_ackermann_feasibility: true
+  generation_attempt_limit: 100
+  train_seed_range: [0, 9999]
+  validation_seed_range: [10000, 11999]
+  test_seed_range: [12000, 13999]
+
+# Sized against config/schema.py's validate_wall_pool_capacity (round 2 of
+# code review -- see docs/verification/2026-08-28_hierarchical_navigation_phase3.md):
+# - largest class (13.4) >= max_possible_pitch_m(size_m=40) = 40/3 = 13.33.
+# - for THIS profile's actual long_horizon_world settings above,
+#   env.scenarios.long_horizon_generator.max_possible_wall_segment_counts_by_class
+#   gives {3.0: 80, 4.0: 80, 13.4: 60} -- every class needs <= 80 slots in
+#   the worst case, so max_segments must be >= 80 * 3 classes = 240 (each
+#   class gets max_segments // len(length_classes_m) = 240 // 3 = 80 slots
+#   via WallSegmentPool's round-robin allocation).
+wall_segment_pool:
+  enabled: true
+  max_segments: 240
+  length_classes_m: [3.0, 4.0, 13.4]
+  parking_margin_m: 5.0

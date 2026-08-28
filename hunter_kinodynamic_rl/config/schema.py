@@ -1203,6 +1203,207 @@ class MappingConfig:
 
 
 @dataclass
+class HierarchyConfig:
+    """Phase 2 hierarchical local/global goal separation
+    (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 6).
+    Consumed only by ``navigation/hierarchy`` + ``navigation/local_rl`` --
+    the existing local-only env/training path never reads this section, so
+    it is opt-in by construction, matching ``mission``/``localization``/
+    ``mapping`` (Phase 1)."""
+
+    subgoal_position_tolerance_m: float = 0.5
+    subgoal_heading_tolerance_rad: float = math.pi
+    subgoal_require_low_speed_on_reach: bool = False
+    subgoal_goal_speed_threshold_mps: float = 0.15
+    # replanning.py's local-option-failure/timeout thresholds (plan section 6.5).
+    local_option_timeout_steps: int = 200
+    no_progress_window_steps: int = 40
+    no_progress_min_delta_m: float = 0.1
+    consecutive_emergency_stop_limit: int = 5
+    local_risk_threshold: float = 0.8
+    localization_min_confidence: float = 0.5
+    # failure_recovery.py's retry budget before giving up on a subgoal and
+    # advancing to the next candidate in the sequence.
+    max_retries_per_subgoal: int = 1
+    # Mission-level (not per-subgoal) wall clock/step budget -- None disables
+    # the check (a coordinator with no mission_timeout configured never sets
+    # mission_timed_out on its own).
+    mission_timeout_steps: Optional[int] = None
+    mission_timeout_sec: Optional[float] = None
+
+    def validate(self) -> None:
+        if self.subgoal_position_tolerance_m <= 0.0:
+            raise ConfigError("hierarchy.subgoal_position_tolerance_m must be > 0")
+        if not (0.0 <= self.subgoal_heading_tolerance_rad <= math.pi):
+            raise ConfigError("hierarchy.subgoal_heading_tolerance_rad must be in [0, pi]")
+        if self.subgoal_goal_speed_threshold_mps < 0.0:
+            raise ConfigError("hierarchy.subgoal_goal_speed_threshold_mps must be >= 0")
+        if self.local_option_timeout_steps <= 0:
+            raise ConfigError("hierarchy.local_option_timeout_steps must be > 0")
+        if self.no_progress_window_steps <= 0:
+            raise ConfigError("hierarchy.no_progress_window_steps must be > 0")
+        if self.no_progress_min_delta_m < 0.0:
+            raise ConfigError("hierarchy.no_progress_min_delta_m must be >= 0")
+        if self.consecutive_emergency_stop_limit <= 0:
+            raise ConfigError("hierarchy.consecutive_emergency_stop_limit must be > 0")
+        if self.local_risk_threshold <= 0.0:
+            raise ConfigError("hierarchy.local_risk_threshold must be > 0")
+        if not (0.0 <= self.localization_min_confidence <= 1.0):
+            raise ConfigError("hierarchy.localization_min_confidence must be in [0, 1]")
+        if self.max_retries_per_subgoal < 0:
+            raise ConfigError("hierarchy.max_retries_per_subgoal must be >= 0")
+        if self.mission_timeout_steps is not None and self.mission_timeout_steps <= 0:
+            raise ConfigError("hierarchy.mission_timeout_steps must be > 0 when set")
+        if self.mission_timeout_sec is not None and self.mission_timeout_sec <= 0.0:
+            raise ConfigError("hierarchy.mission_timeout_sec must be > 0 when set")
+
+
+@dataclass
+class LongHorizonWorldConfig:
+    """Phase 3 long-horizon procedural world (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    section 7) -- room/corridor/junction/loop/dead-end grid-lattice maze,
+    seed-deterministic, train/validation/test seed pools kept separate from
+    (and independent of) ``scenario``'s own pools (the existing arena/circle
+    obstacle procedural generator this section does NOT replace -- see
+    ``env/scenarios/long_horizon_generator.py``'s module docstring).
+    Consumed only by ``env/scenarios/long_horizon_generator.py`` +
+    ``env/scenarios/long_horizon_solvability.py`` -- the existing
+    ``scenario``-based procedural arena and the Phase 1/2 navigation stack
+    never read this section, so it is opt-in by construction (default
+    ``enabled=False``), matching ``mission``/``localization``/``mapping``/
+    ``hierarchy``.
+
+    ``alternative_route_min_count`` is guaranteed by construction: every
+    edge added on top of the maze's spanning tree (the graph's cyclomatic
+    number, i.e. ``loop_count``) creates at least one cycle, hence at least
+    one alternative route between any two nodes on that cycle -- so
+    ``validate()`` requires ``loop_count_range[0] >= alternative_route_min_count``
+    rather than the generator having to separately search for and count
+    alternative routes at generation time."""
+
+    enabled: bool = False
+    size_m: float = 40.0
+    resolution_m: float = 0.25
+    wall_thickness_m: float = 0.2
+    wall_height_m: float = 1.0
+    corridor_width_min_m: float = 2.0
+    corridor_width_max_m: float = 4.0
+    room_count_range: List[int] = field(default_factory=lambda: [4, 10])
+    dead_end_count_range: List[int] = field(default_factory=lambda: [1, 5])
+    loop_count_range: List[int] = field(default_factory=lambda: [1, 4])
+    alternative_route_min_count: int = 1
+    start_goal_geodesic_min_m: float = 20.0
+    require_ackermann_feasibility: bool = True
+    generation_attempt_limit: int = 100
+    train_seed_range: List[int] = field(default_factory=lambda: [0, 9999])
+    validation_seed_range: List[int] = field(default_factory=lambda: [10000, 11999])
+    test_seed_range: List[int] = field(default_factory=lambda: [12000, 13999])
+    goal_radius_m: float = 0.5
+    start_yaw_sampling_attempts: int = 50
+    start_yaw_front_safety_distance_m: float = 0.6
+
+    def validate(self) -> None:
+        if self.size_m <= 0.0:
+            raise ConfigError("long_horizon_world.size_m must be > 0")
+        if self.resolution_m <= 0.0:
+            raise ConfigError("long_horizon_world.resolution_m must be > 0")
+        if self.wall_thickness_m <= 0.0:
+            raise ConfigError("long_horizon_world.wall_thickness_m must be > 0")
+        if self.wall_height_m <= 0.0:
+            raise ConfigError("long_horizon_world.wall_height_m must be > 0")
+        if self.corridor_width_min_m <= 0.0 or self.corridor_width_max_m < self.corridor_width_min_m:
+            raise ConfigError(
+                "long_horizon_world.{corridor_width_min_m,corridor_width_max_m} must satisfy "
+                "0 < min <= max"
+            )
+        # env/scenarios/long_horizon_generator.py floors its lattice to a
+        # minimum of grid_n=3 cells per side -- a size_m too small to fit
+        # even that at the widest configured corridor is a config error,
+        # caught here at load time rather than as a generation_attempt_limit
+        # exhaustion deep inside a training run.
+        if self.size_m < 3.0 * (self.corridor_width_max_m + self.wall_thickness_m):
+            raise ConfigError(
+                f"long_horizon_world.size_m ({self.size_m}) must be >= 3 * (corridor_width_max_m + "
+                f"wall_thickness_m) ({3.0 * (self.corridor_width_max_m + self.wall_thickness_m)}) -- "
+                "otherwise even a minimal 3x3 lattice cannot fit the widest configured corridor"
+            )
+        for name in ("room_count_range", "dead_end_count_range", "loop_count_range"):
+            r = getattr(self, name)
+            if len(r) != 2 or r[0] < 0 or r[1] < r[0]:
+                raise ConfigError(f"long_horizon_world.{name} must be [lo, hi] with 0<=lo<=hi, got {r}")
+        if self.alternative_route_min_count < 0:
+            raise ConfigError("long_horizon_world.alternative_route_min_count must be >= 0")
+        if self.loop_count_range[0] < self.alternative_route_min_count:
+            raise ConfigError(
+                "long_horizon_world.loop_count_range[0] "
+                f"({self.loop_count_range[0]}) must be >= alternative_route_min_count "
+                f"({self.alternative_route_min_count}) -- every loop edge guarantees at least one "
+                "alternative route, so the minimum drawable loop_count must already cover the "
+                "minimum required alternative-route count"
+            )
+        if self.start_goal_geodesic_min_m < 0.0:
+            raise ConfigError("long_horizon_world.start_goal_geodesic_min_m must be >= 0")
+        if self.generation_attempt_limit <= 0:
+            raise ConfigError("long_horizon_world.generation_attempt_limit must be > 0")
+        if self.goal_radius_m <= 0.0:
+            raise ConfigError("long_horizon_world.goal_radius_m must be > 0")
+        if self.start_yaw_sampling_attempts < 1:
+            raise ConfigError("long_horizon_world.start_yaw_sampling_attempts must be >= 1")
+        if self.start_yaw_front_safety_distance_m <= 0.0:
+            raise ConfigError("long_horizon_world.start_yaw_front_safety_distance_m must be > 0")
+        ranges = [self.train_seed_range, self.validation_seed_range, self.test_seed_range]
+        for r in ranges:
+            if len(r) != 2 or r[0] > r[1]:
+                raise ConfigError(f"long_horizon_world seed range must be [lo, hi] with lo<=hi, got {r}")
+        lo_hi = sorted(ranges, key=lambda r: r[0])
+        for a, b in zip(lo_hi, lo_hi[1:]):
+            if a[1] >= b[0]:
+                raise ConfigError(
+                    "long_horizon_world train/validation/test seed ranges must not overlap: "
+                    f"{a} overlaps {b}"
+                )
+
+
+@dataclass
+class WallSegmentPoolConfig:
+    """Deterministic Gazebo wall-segment ENTITY POOL (opt-in), mirroring
+    ``ObstaclePoolConfig``'s "pre-spawn once, teleport per episode" design
+    (see ``env/spawning/wall_segment_spawner.py``'s module docstring) --
+    only meaningful when ``long_horizon_world.enabled``. Only LENGTH is
+    quantized (to the nearest ``length_classes_m`` class, rounded UP, at
+    ACTIVATION time -- never at generation time, unlike
+    ``ObstaclePoolConfig.static_size_classes_m``): thickness/height are a
+    single fixed value per world (``LongHorizonWorldConfig.wall_thickness_m``/
+    ``wall_height_m``), so only segment length needs a discrete class set for
+    a fixed-geometry SDF pool slot to be reusable across differently-shaped
+    mazes without a respawn. Disabled by default -- byte-identical to
+    pre-existing behaviour."""
+
+    enabled: bool = False
+    max_segments: int = 400
+    length_classes_m: List[float] = field(default_factory=lambda: [1.0, 2.0, 3.0, 4.0, 5.0])
+    parking_margin_m: float = 5.0
+
+    def validate(self) -> None:
+        if self.max_segments < 0:
+            raise ConfigError("wall_segment_pool.max_segments must be >= 0")
+        # code review: an enabled pool with max_segments=0 previously
+        # validated cleanly and only failed loudly much later, at runtime,
+        # inside activate_walls (the first time a real world with >= 1 wall
+        # segment tried to use it) -- caught here instead, at load time.
+        if self.enabled and self.max_segments <= 0:
+            raise ConfigError("wall_segment_pool.max_segments must be > 0 when enabled")
+        if self.enabled and not self.length_classes_m:
+            raise ConfigError("wall_segment_pool.length_classes_m must be non-empty when enabled")
+        if any(c <= 0.0 for c in self.length_classes_m):
+            raise ConfigError("wall_segment_pool.length_classes_m entries must be > 0")
+        if list(self.length_classes_m) != sorted(self.length_classes_m):
+            raise ConfigError("wall_segment_pool.length_classes_m must be sorted ascending")
+        if self.parking_margin_m <= 0.0:
+            raise ConfigError("wall_segment_pool.parking_margin_m must be > 0")
+
+
+@dataclass
 class Profile:
     """The fully-resolved config for one run -- what a training/eval node
     actually consumes."""
@@ -1231,6 +1432,9 @@ class Profile:
     mission: MissionConfig = field(default_factory=MissionConfig)
     localization: LocalizationConfig = field(default_factory=LocalizationConfig)
     mapping: MappingConfig = field(default_factory=MappingConfig)
+    hierarchy: HierarchyConfig = field(default_factory=HierarchyConfig)
+    long_horizon_world: LongHorizonWorldConfig = field(default_factory=LongHorizonWorldConfig)
+    wall_segment_pool: WallSegmentPoolConfig = field(default_factory=WallSegmentPoolConfig)
 
     def validate(self) -> None:
         for section in (
@@ -1239,7 +1443,8 @@ class Profile:
             self.hyperparameters, self.sac_hyperparameters, self.algorithm, self.scenario, self.start_pose,
             self.obstacle_pool, self.sensor_noise, self.training,
             self.evaluation, self.reward, self.domain_randomization, self.runtime,
-            self.mission, self.localization, self.mapping,
+            self.mission, self.localization, self.mapping, self.hierarchy,
+            self.long_horizon_world, self.wall_segment_pool,
         ):
             section.validate()
         # Cross-section consistency checks that no single section can do alone.
@@ -1309,6 +1514,17 @@ class Profile:
         # scenario section into one Profile before calling validate().
         if self.obstacle_pool.enabled and not self.evaluation.benchmark:
             validate_procedural_pool_capacity(self.obstacle_pool, self.scenario)
+        # Phase 3: a wall-segment pool with nothing to pool (no long-horizon
+        # world enabled) is a config bug, not a meaningful no-op -- mirrors
+        # obstacle_pool's own "opt-in extension of a specific generator"
+        # relationship, made an explicit error rather than a silent no-op.
+        if self.wall_segment_pool.enabled and not self.long_horizon_world.enabled:
+            raise ConfigError(
+                "wall_segment_pool.enabled=true requires long_horizon_world.enabled=true "
+                "(nothing to pool otherwise)"
+            )
+        if self.wall_segment_pool.enabled:
+            validate_wall_pool_capacity(self.wall_segment_pool, self.long_horizon_world)
 
 
 def validate_procedural_pool_capacity(obstacle_pool: "ObstaclePoolConfig", scenario: "ScenarioConfig") -> None:
@@ -1361,4 +1577,64 @@ def validate_procedural_pool_capacity(obstacle_pool: "ObstaclePoolConfig", scena
             f"({obstacle_pool.static_size_classes_m[-1]}) must be >= the largest radius "
             f"generate_scenario can draw ({max_drawable_radius}) -- otherwise some episodes' "
             "static obstacles would have no pool slot large enough to spawn them safely"
+        )
+
+
+def validate_wall_pool_capacity(
+    wall_segment_pool: "WallSegmentPoolConfig", long_horizon_world: "LongHorizonWorldConfig",
+) -> None:
+    """The pool's largest length class must cover the longest wall segment
+    ``long_horizon_generator`` can ever produce -- a full, unbroken lattice
+    edge, i.e. the maze's own cell pitch. The generator floors
+    ``grid_n = size_m // (corridor_width_max_m + wall_thickness_m)`` (see
+    that module's docstring), so the worst case (smallest usable grid,
+    ``grid_n=3``) puts an upper bound of ``size_m / 3`` on pitch --
+    :func:`~hunter_kinodynamic_rl.env.scenarios.long_horizon_generator.max_possible_pitch_m`
+    computes this exactly (shared with the generator itself, so this bound
+    can never silently drift out of sync with the generator's own grid-size
+    formula).
+
+    code review, round 2: also requires EVERY configured length class to
+    have enough slots for the worst-case count of segments that could
+    specifically need THAT class -- a single-total check (an earlier
+    version of this function) is NOT sufficient:
+    ``wall_segment_spawner.activate_walls`` requires a free slot in a
+    segment's OWN snapped length class (never escalates to a larger one on
+    exhaustion), and a real reproduction found a profile whose grand TOTAL
+    capacity was never exceeded still failing at runtime because ONE
+    specific class ran out long before the pool as a whole did (a
+    ``max_segments=100`` pool split evenly across 10 classes gives only 10
+    slots/class, but one class alone needed 24-33 for the generated
+    world). Uses
+    :func:`~hunter_kinodynamic_rl.env.scenarios.long_horizon_generator.max_possible_wall_segment_counts_by_class`
+    -- see that function's own docstring for the exact derivation -- and
+    ``WallSegmentPool``'s own round-robin slot allocation
+    (``classes[i % len(classes)]``, see ``env/spawning/wall_segment_spawner.py``)
+    to compute each class's GUARANTEED minimum slot count
+    (``max_segments // len(length_classes_m)``, the same
+    worst-populated-class reasoning ``validate_procedural_pool_capacity``
+    already uses for ``ObstaclePoolConfig``)."""
+    from hunter_kinodynamic_rl.env.scenarios.long_horizon_generator import (
+        max_possible_pitch_m, max_possible_wall_segment_counts_by_class,
+    )
+
+    max_pitch = max_possible_pitch_m(long_horizon_world)
+    if wall_segment_pool.length_classes_m[-1] < max_pitch - 1e-9:
+        raise ConfigError(
+            f"wall_segment_pool.length_classes_m's largest class "
+            f"({wall_segment_pool.length_classes_m[-1]}) must be >= the longest wall segment "
+            f"long_horizon_generator can produce ({max_pitch:.3f}, the worst-case maze cell pitch) "
+            "-- increase the largest length class"
+        )
+    min_slots_per_class = wall_segment_pool.max_segments // len(wall_segment_pool.length_classes_m)
+    counts_by_class = max_possible_wall_segment_counts_by_class(long_horizon_world, wall_segment_pool.length_classes_m)
+    worst_class, worst_needed = max(counts_by_class.items(), key=lambda kv: kv[1])
+    if min_slots_per_class < worst_needed:
+        raise ConfigError(
+            f"wall_segment_pool.max_segments ({wall_segment_pool.max_segments}) split across "
+            f"{len(wall_segment_pool.length_classes_m)} length_classes_m gives only "
+            f"{min_slots_per_class} guaranteed slots per class, but length class {worst_class} could "
+            f"need up to {worst_needed} segments in the worst case -- set wall_segment_pool.max_segments "
+            f">= {worst_needed * len(wall_segment_pool.length_classes_m)} "
+            f"({worst_needed} * len(length_classes_m)), or use fewer length_classes_m"
         )

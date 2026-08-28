@@ -131,16 +131,12 @@ from std_msgs.msg import Bool, Float32MultiArray
 
 from hunter_kinodynamic_rl.config.loader import load_profile, profile_from_dict
 from hunter_kinodynamic_rl.config.schema import Profile, RobotConfig
-from hunter_kinodynamic_rl.env.observation.observation_builder import (
-    RobotState, build_observation, build_robot_state_vector,
-)
-from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLimits, guard
+from hunter_kinodynamic_rl.env.observation.observation_builder import RobotState
+from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLimits
+from hunter_kinodynamic_rl.navigation.local_rl.controller import LocalPolicyController
 from hunter_kinodynamic_rl.rl.algorithms.kinodynamic_tqc.agent import Agent as RiskAgent
 from hunter_kinodynamic_rl.rl.algorithms.tqc.agent import Agent as VanillaAgent
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
-from hunter_kinodynamic_rl.sensing.scan_processor import front_and_full_state
-from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack
-from hunter_kinodynamic_rl.trajectory import trajectory_executor
 from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
 
 
@@ -863,9 +859,14 @@ class RealPolicyNode(Node):
             self.get_logger().info(
                 f"loaded checkpoint components: {result['loaded']} (skipped: {result['skipped']})")
 
-        self._frame_stack = FrameStack(self.profile.observation.lidar_bins, history_len)
-        self._frame_stack_ready = False
-        self._prev_action_01 = [0.0, 0.0, 0.0]
+        # section (Phase 2 -- plan section 6.2): observation build / action
+        # decode+guard is delegated to LocalPolicyController, the SAME
+        # ROS-independent contract a hierarchy coordinator drives -- this
+        # node just supplies sensor I/O, timing, and the actual inference
+        # call. It owns the frame-stack + previous-action state internally
+        # (what `self._frame_stack`/`self._frame_stack_ready`/
+        # `self._prev_action_01` used to be on this node directly).
+        self._local_controller = LocalPolicyController(self.profile)
 
         self._latest_scan = None  # (ranges, angle_min, angle_increment)
         self._latest_scan_time = None
@@ -1059,19 +1060,6 @@ class RealPolicyNode(Node):
             return
         self._latest_steering_rad = 0.5 * (left + right)
 
-    def _nearest_obstacle_dist_m(self) -> float:
-        if self._latest_scan is None:
-            return float("inf")
-        ranges, angle_min, angle_increment = self._latest_scan
-        _obs_state, environment_state = front_and_full_state(
-            ranges, angle_min, angle_increment, self.profile.observation.lidar_bins,
-            self.profile.observation.lidar_max_range_m, self.profile.observation.front_sector_width_rad,
-        )
-        # No world-boundary term here (unlike environment_node.py's sim-arena
-        # collision check, env/simulation/environment_node.py) -- there is no
-        # bounded virtual arena on real hardware / an open Gazebo world.
-        return float(environment_state.min()) if environment_state.size else float("inf")
-
     def _publish(self, command) -> None:
         """The ONE call site that actually reaches cmd_vel_topic -- dry_run
         (and therefore replay_mode, which forces it) short-circuits here,
@@ -1255,28 +1243,20 @@ class RealPolicyNode(Node):
         # see this module's docstring for the documented responsibility
         # boundary between the two.
         try:
-            obs_cfg = self.profile.observation
             ranges, angle_min, angle_increment = self._latest_scan
-            obs_state, _environment_state = front_and_full_state(
-                ranges, angle_min, angle_increment, obs_cfg.lidar_bins,
-                obs_cfg.lidar_max_range_m, obs_cfg.front_sector_width_rad,
-            )
-            if not self._frame_stack_ready:
-                self._frame_stack.reset(obs_state)
-                self._frame_stack_ready = True
-            else:
-                self._frame_stack.push(obs_state)
-            lidar_frame = self._frame_stack.stacked()
-
             x, y, yaw, v, yaw_rate = self._latest_odom
             robot_state = RobotState(x=x, y=y, yaw=yaw, v=v, yaw_rate=yaw_rate, steering=self._latest_steering_rad)
-            robot_state_vector = build_robot_state_vector(
-                robot_state, self.goal_x, self.goal_y, self._prev_action_01,
-                robot_state_dim=self.profile.observation.robot_state_dim,
+            # Phase 2 (plan section 6.3/6.9): this node has no hierarchy
+            # coordinator of its own yet -- self.goal_x/self.goal_y IS the
+            # only goal it has ever tracked, playing the role of the
+            # "active subgoal" LocalPolicyController's contract expects.
+            # Never a final-mission-goal leak: there is no separate final
+            # goal on this node to leak FROM.
+            local_obs = self._local_controller.build_observation(
+                ranges, angle_min, angle_increment, robot_state, self.goal_x, self.goal_y,
             )
-            observation = build_observation(lidar_frame, robot_state_vector)
 
-            action = self._infer_with_timeout(observation)
+            action = self._infer_with_timeout(local_obs.observation)
             if action is None:
                 self._publish(STOP_COMMAND)
                 self._last_command_time = now
@@ -1289,11 +1269,12 @@ class RealPolicyNode(Node):
             # `sanitize_command` (which only catches it on the FINAL
             # VehicleCommand, one layer too late to also protect
             # trajectory_executor.execute itself).
-            action_arr = np.asarray(action, dtype=np.float64).reshape(-1)
-            if action_arr.shape[0] != ACTION_DIM or not np.all(np.isfinite(action_arr)):
+            action_arr = LocalPolicyController.validate_action(action)
+            if action_arr is None:
+                raw = np.asarray(action, dtype=np.float64).reshape(-1)
                 self.get_logger().error(
-                    f"[real_policy] invalid action from policy (shape={action_arr.shape}, "
-                    f"finite={bool(np.all(np.isfinite(action_arr)))}) -- publishing a safe stop"
+                    f"[real_policy] invalid action from policy (shape={raw.shape}, "
+                    f"finite={bool(np.all(np.isfinite(raw)))}) -- publishing a safe stop"
                 )
                 self._publish(STOP_COMMAND)
                 self._last_command_time = now
@@ -1303,21 +1284,13 @@ class RealPolicyNode(Node):
             # its own prev_action ("_01" in build_robot_state_vector's parameter
             # name is just a naming artifact, not a value-range requirement --
             # see tests/test_env_modules.py, which passes negative values).
-            self._prev_action_01 = [float(a) for a in action_arr]
+            self._local_controller.commit_action(action_arr)
 
-            command = trajectory_executor.execute(
-                action_arr, self.profile.action_space, self.profile.trajectory, self.profile.robot,
-                dynamics_cfg=self.profile.dynamics if self.profile.features.trajectory_l_preview_blend else None,
-                current_steering_rad=(
-                    self._latest_steering_rad if self.profile.features.trajectory_l_preview_blend else None
-                ),
-            )
-            nearest_obstacle_dist = self._nearest_obstacle_dist_m()
-            safe_command = guard(
-                command, self.profile.robot, self._safety_limits,
+            command, safe_command = self._local_controller.decode_and_guard(
+                action_arr, current_steering_rad=self._latest_steering_rad,
+                safety_limits=self._safety_limits, nearest_obstacle_dist_m=local_obs.nearest_obstacle_dist_m,
                 last_sensor_time_sec=self._latest_scan_time, last_command_time_sec=self._last_command_time or now,
-                now_sec=now, nearest_obstacle_distance_m=nearest_obstacle_dist,
-                last_odom_time_sec=self._latest_odom_time,
+                now_sec=now, last_odom_time_sec=self._latest_odom_time,
             )
         except Exception as e:  # noqa: BLE001 -- last-resort fail-safe, see docstring above
             self.get_logger().error(f"[real_policy] control tick raised {e!r} -- publishing a safe stop")
@@ -1335,7 +1308,7 @@ class RealPolicyNode(Node):
         diag = Float32MultiArray()
         diag.data = [
             float(action_arr[0]), float(action_arr[1]), float(action_arr[2]),
-            self.goal_x, self.goal_y, float(nearest_obstacle_dist), 1.0 if emergency_stop else 0.0,
+            self.goal_x, self.goal_y, float(local_obs.nearest_obstacle_dist_m), 1.0 if emergency_stop else 0.0,
         ]
         self._diag_pub.publish(diag)
 

@@ -350,6 +350,25 @@ tests/test_visited_map.py
 
 ## 6. Phase 2: Local policy와 hierarchy 분리
 
+> **구현 상태: 완료 (2026-08-28).** `LocalPolicyController`(local_rl),
+> `SubgoalManager`/`replanning`/`failure_recovery`/`HierarchyCoordinator`
+> (hierarchy), opt-in `HierarchyConfig`를 구현했고 `real_policy_node.py`의
+> observation/decode/guard 파이프라인을 `LocalPolicyController` 위임으로
+> 리팩터링했다(동작 불변, 기존 테스트로 검증). 코드 리뷰 4라운드를 거쳐
+> start_mission()의 stale subgoal 정리, degraded localization에서의
+> success 오판 방지, degraded localization 중 physical motion 완전 차단
+> (queue에 다음 candidate가 있어도 즉시 activate하지 않음), non-finite/malformed
+> localization confidence의 안전한 degraded 처리, 최초 subgoal activation의
+> confidence gate, validate_action()의 "never raises" 계약을 모두 코드로
+> 고정했다. Round 3 기준 Docker 전체 회귀 테스트 1,475개가 오류·실패·skip
+> 없이 통과했고, Round 4 후에는 영향 범위 targeted test 59개와 18개 profile
+> config validation이 통과했다. 상세 근거는
+> `docs/verification/2026-08-28_hierarchical_navigation_phase2.md`를 참조한다.
+> Global RL(Phase 4)이 아직 없으므로 subgoal sequence는 외부 큐/heuristic으로
+> 주입하고, `subgoal_endpoint_blocked`/`is_valid`는 caller가 공급하는
+> boolean/callback으로 남겨 두었다 (PartialMap 연동은 Phase 3/4에서 실제 map이
+> 생기는 시점에 연결).
+
 ### 6.1 목표
 
 - 최종 mission goal과 현재 local subgoal을 분리한다.
@@ -505,6 +524,48 @@ tests/test_hierarchical_interface.py
 ---
 
 ## 7. Phase 3: Long-horizon procedural world
+
+> **구현 상태: 완료 확정 (2026-08-28).** `long_horizon_world`/`long_horizon_generator`/
+> `long_horizon_solvability`/`long_horizon_curriculum`/`wall_segment_spawner`를
+> 구현했다. Seed 기반 deterministic room/corridor/junction/loop/dead-end
+> lattice maze generator, occupancy와 항상 일치하는 wall segment 목록,
+> Dijkstra 기반 shortest path/geodesic 검증, grid 기반 Ackermann feasibility
+> 검사, train/validation/test seed pool 분리, opt-in `LongHorizonWorldConfig`/
+> `WallSegmentPoolConfig`를 포함한다. Global RL은 추가하지 않았다(범위 밖).
+> `environment_node.py`에는 아직 연결하지 않았으며 (Phase 4/5에서 실제
+> long-horizon episode가 필요할 때 연결 예정), live Gazebo 검증은
+> 수행하지 않았다(세션 시작 시 실행 중인 Gazebo 인스턴스가 없었음).
+>
+> **Round 2 (code review, same date).** 리뷰에서 실제 결함 5건을 발견해
+> 모두 수정했다: (1) `wall_segment_spawner.py`가 module scope에서
+> `ros_gz_interfaces`까지 끌고 들어와 ROS 없는 bare host에서 import 자체가
+> 실패하던 문제 (순수 `_snap_length_up_to_class` 재구현 + `ensure_spawned()`
+> 내부 lazy import로 수정), (2) `generate_long_horizon_world()`가
+> train/validation/test seed pool 분리를 강제하지 않던 문제 (`mode` 파라미터 +
+> `LongHorizonSeedScheduler` 추가), (3) `LongHorizonWorld`가 `frozen=True`임에도
+> `occupancy`/`wall_segments`/`topology_metadata`를 실제로는 in-place 수정 가능하던
+> 문제 (`__post_init__`에서 read-only copy/tuple/`MappingProxyType`로 정규화), (4)
+> `wall_segment_pool.max_segments=0`이 validate를 통과하고 worst-case segment 수를
+> 검증하지 않던 문제 (`max_possible_wall_segment_count` 추가 + 스키마 검증 강화),
+> (5) "독립 검증" 문서 표현 과장 (hand-computed 정확값 fixture 테스트 추가).
+> Round 2 이후 Docker 전체 회귀 테스트 **1590개가 오류·실패·skip 없이 통과**했고,
+> 19/19 profile이 유효하다.
+>
+> **Round 3 (code review, same date).** Round 2의 wall pool capacity 수정이
+> 여전히 불충분함을 재현: `validate_wall_pool_capacity`는 총 segment 수만
+> 검증했지만 `activate_walls()`는 class별 정확히 맞는 free slot을 요구해,
+> validate를 통과한 profile이 실제로는 `no free slot in the length class`로
+> 런타임에 실패했다. `max_possible_wall_segment_counts_by_class`를 추가해
+> class별 worst-case 수요를 계산하고, `max_segments // len(length_classes_m)`
+> (round-robin 배분의 class별 최소 보장 슬롯 수)가 이를 감당하는지 검증하도록
+> 수정했다 (`hierarchical_phase3.yaml`도 재조정: `length_classes_m: [3.0, 4.0,
+> 13.4]`, `max_segments: 240`). 또한 `LongHorizonWorld.__post_init__`의 nested
+> immutability가 top-level `MappingProxyType`만 적용해 실제로는 generator가
+> `room_cells`를 tuple로 넣어줄 때만 보호되던 문제를 `_deep_freeze` 재귀
+> helper로 수정했다 (외부 caller가 nested list/dict를 넘겨도 동일하게 보호됨).
+> Round 3 이후 Docker 전체 회귀 테스트 **1597개가 오류·실패·skip 없이 통과**했고,
+> 19/19 profile이 유효하다. 상세 근거는
+> `docs/verification/2026-08-28_hierarchical_navigation_phase3.md`를 참조한다.
 
 ### 7.1 목표
 

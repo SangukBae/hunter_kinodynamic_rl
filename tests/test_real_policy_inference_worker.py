@@ -33,7 +33,7 @@ from hunter_kinodynamic_rl.nodes.real_policy_node import (  # noqa: E402
 from hunter_kinodynamic_rl.rl.algorithms.tqc.agent import Agent as VanillaAgent  # noqa: E402
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager  # noqa: E402
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer  # noqa: E402
-from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack  # noqa: E402
+from hunter_kinodynamic_rl.navigation.local_rl.controller import LocalPolicyController  # noqa: E402
 from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM  # noqa: E402
 
 
@@ -187,10 +187,7 @@ def test_on_control_tick_dispatches_to_a_real_process_mode_worker_end_to_end(tmp
         node.goal_x = 1.0
         node.goal_y = 0.5
         node._latest_steering_rad = 0.0
-        node._prev_action_01 = [0.0, 0.0, 0.0]
-        history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
-        node._frame_stack = FrameStack(profile.observation.lidar_bins, history_len)
-        node._frame_stack_ready = False
+        node._local_controller = LocalPolicyController(profile)
         node._safety_limits = _safety_limits_from_profile(profile)
         node._inference_timeouts = 0
         node._inference_errors = 0
