@@ -2,9 +2,10 @@
 
 Every piece of `drl_agent` code reused in `hunter_kinodynamic_rl`, how it was
 reused, and why. Per the project brief: `drl_agent` is treated as a read-only
-reference implementation -- nothing in this file corresponds to an edit made
-to `drl_agent` itself; `git status` on `ros2_ws/src/drl_agent/` stays clean
-throughout this package's development.
+reference implementation -- nothing in this file requires an edit to
+`drl_agent` itself. Repository cleanliness must be checked at the workspace
+level when a release is made; this provenance map does not infer it from the
+state of another package.
 
 `hunter_kinodynamic_rl` does **not** declare a runtime/package.xml dependency
 on `drl_agent` -- everything below is either (a) a verbatim copy, hash-pinned
@@ -53,7 +54,7 @@ still listed here as "verbatim" means one side drifted and both
 | `env/spawning/obstacle_spawner.py`, `env/spawning/obstacle_catalog.py` | `drl_agent/env/spawning/obstacle_catalog_spawner.py` | Same idea (bounded SpawnEntity/DeleteEntity calls, `drl_obstacle_assets` catalog lookup by closest radius), independent implementation matching this package's own scenario/spec types. |
 | `rl/algorithms/tqc/agent.py` | `drl_agent/rl/algorithms/tqc/agent.py` + `update.py` | **NOT** a copy. Clean-room reimplementation of the vanilla TQC update rule (target-quantile truncation formula, entropy auto-tuning, actor loss form) with none of `drl_agent`'s aux_prediction / action_risk_head / temporal-fusion machinery — that machinery is `drl_agent`'s OWN research feature set (a risk-map-sector aux head), not what this package's risk framework builds on (dynamics-grounded clearance/TTC/counterfactual instead). The underlying `Critic`/`Actor` networks it calls into are the verbatim copy above, so the vanilla numerics (target formula, quantile huber loss) are checked directly by `tests/test_tqc_parity.py`; the training-loop control flow is checked by `tests/test_tqc_networks.py`. |
 | `rl/algorithms/kinodynamic_tqc/agent.py` | `drl_agent`'s Action-Risk Head (`rl/networks/action_risk_head.py`) gradient rule | New network (`rl/networks/risk_critic.py`), but reuses the same "freeze critic params, don't detach the output" gradient pattern documented in `action_risk_head.py`'s docstring, so `d(risk)/d(action)` reaches the actor without an extra optimizer step on the risk critic's own weights. |
-| `rl/replay/buffer.py`, `rl/replay/schema.py` | `drl_agent/rl/replay/buffer.py` (`LAP`) | Deliberately SIMPLER: uniform sampling, no LAP/PER, no risk-balanced stratified sampling. `drl_agent`'s buffer solves a different problem (priority replay for an already-mature training loop); this package's contribution is the training OBJECTIVE (risk-aware actor/critic), not the sampling scheme, so a plain, fully-tested buffer with `risk_target` as a native v1 field is the right complexity level. A risk-balanced sampler can be layered on later behind the same `sample()` signature. |
+| `rl/replay/buffer.py`, `rl/replay/schema.py` | `drl_agent/rl/replay/buffer.py` (`LAP`) | Deliberately SIMPLER: uniform sampling, no LAP/PER, no risk-balanced stratified sampling. The current Local on-disk schema is v4 and explicitly versions risk validity, fixed-width counterfactual candidates, actor-candidate identity, steering saturation and progress fields; v3 has a narrow migration and unknown versions fail loudly. A risk-balanced sampler can be layered on later behind the same `sample()` signature. |
 | `rl/checkpointing/manager.py` | `drl_agent/rl/checkpointing/{manager.py,tqc_io.py}` | Simplified to a generic `{name: component}` dict contract instead of `drl_agent`'s TQC-specific field list, so it works unchanged for both the vanilla and risk-aware agent (which adds one extra component). Checkpoint COMPLETENESS goal (actor/critic/target/optimizers/entropy coef/step/seed/config snapshot) is the same as `drl_agent`'s (section 39). |
 | `config/schema.py`, `config/loader.py`, `config/validation.py` | `drl_agent/config/{loader.py,validation.py}` + `drl_experiments/profiles/*/profile.yaml` layering | Same LAYERED-YAML-with-validation idea (robot/training defaults -> profile overrides -> fail-fast dataclass validation), reimplemented with Python dataclasses instead of `drl_agent`'s dict-based validator, because this package's config surface (kinodynamic action space, risk, counterfactual) has no `drl_agent` equivalent to copy from. |
 
@@ -65,7 +66,7 @@ still listed here as "verbatim" means one side drifted and both
 packages (`ros_gz_interfaces`, `tf2_ros`, `geometry_msgs`, `nav_msgs`,
 `sensor_msgs`, `rcl_interfaces`).
 
-## Independent (no drl_agent equivalent)
+## Independent Local implementation (no drl_agent equivalent)
 
 `trajectory/action_space.py`, `trajectory/trajectory_primitive.py`,
 `trajectory/trajectory_sampler.py`, `dynamics/stopping_model.py`,
@@ -74,5 +75,25 @@ packages (`ros_gz_interfaces`, `tf2_ros`, `geometry_msgs`, `nav_msgs`,
 `counterfactual_sampler.py`, `unrecoverable_state.py`, `labels.py`),
 `robot/{interface,limits,hunter_se}.py`, `env/scenarios/` (procedural
 generator + fixed benchmarks), `env/randomization/` (domain randomization).
-These implement the three core research contributions (section 67/68) and
-have no `drl_agent` precedent to draw from.
+These implement the package's current Local kinodynamic/risk research basis and
+have no `drl_agent` precedent to draw from. The roadmap's residual-dynamics
+ensemble, multi-task risk ensemble and uncertainty-gated direct
+counterfactual target are not listed as source modules because they are not
+implemented yet.
+
+## Independent hierarchical implementation (no drl_agent equivalent)
+
+| Area | Package-owned modules and role |
+|---|---|
+| Mission/localization | `navigation/mission/`, `navigation/localization/` -- fixed mission frame, backend contract, odometry/wheel-IMU/LiDAR-odom adapters and covariance/confidence surfaces. |
+| Online mapping | `navigation/mapping/` -- partial/rolling/visited maps and ray tracing with explicit unknown/free/occupied/observed-uncertain semantics. |
+| Long-horizon worlds | `env/scenarios/long_horizon_{world,generator,curriculum,solvability}.py` -- procedural 24-40 m curriculum worlds and bounded solvability checks. |
+| Global policy | `navigation/global_rl/` -- candidate generation/masking, map/scalar/candidate observation, masked Dueling DDQN, SMDP replay schema v3, reward and feasibility predictor. |
+| Hierarchy/local bridge | `navigation/hierarchy/`, `navigation/local_rl/` -- subgoal lifecycle/replanning/recovery, immutable frozen-Local feasibility snapshots, live option execution and telemetry. |
+| Experience memory | `navigation/memory/` -- nodes, route history, dead-end detection and topological edges with traversal/success/failure/time/risk statistics. |
+| Hierarchical training/evaluation | `training/train_hierarchical_dqn.py`, `training/hierarchical_preflight.py`, `evaluation/{long_horizon_benchmark,ablation_suite,global_checkpoint_validation,localization_sweep,rosbag_dry_run,live_evidence_runner}.py` -- strict training, checkpoint, formal artifact and safe replay contracts. |
+| ROS surfaces | `nodes/{mission_map_node,hierarchical_environment_node,hierarchical_train_node,hierarchical_navigation_node}.py` and hierarchical launch files -- mapping, live training, deployment/dry-run and orchestration entry points. |
+
+The hierarchy reuses the frozen Local checkpoint as a component, but its Global
+policy, memory, mapping and evaluation contracts are package-native; there is
+no `drl_agent` Global-RL implementation being copied or adapted here.

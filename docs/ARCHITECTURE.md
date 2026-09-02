@@ -1,5 +1,10 @@
 # Architecture
 
+This document separates the **implemented architecture** from the **target
+research architecture**. Forward-looking priorities and delivery phases are
+defined in `RESEARCH_ROADMAP.md`; implementation readiness is defined only by
+`CURRENT_STATUS.md`.
+
 ## Data flow
 
 ```
@@ -49,12 +54,81 @@ Training-time-only pieces (never touch the real-robot path):
   generation with train/validation/test seed separation (never used at
   inference).
 
-At inference (sim OR real), the policy only ever sees LiDAR history + robot
-state + goal (`env/observation/observation_builder.py`'s output) and its own
-risk critic's forward pass (`rl/networks/risk_critic.py`, trained
-beforehand) -- never a `DynamicObstacle` list directly. This is enforced by
-construction: nothing in `env/simulation/environment_node.py`'s `_on_step`
+At inference (sim OR real), the actor sees only LiDAR history + robot state +
+goal (`env/observation/observation_builder.py`'s output) -- never a
+`DynamicObstacle` list directly. Normal Local/real action selection calls the
+actor alone. The trained `RiskCritic` can be queried separately through
+`predict_risk()` for diagnostics or frozen-Local Global feasibility feedback;
+its scalar output is not appended to the actor observation. This is enforced
+by construction: nothing in `env/simulation/environment_node.py`'s `_on_step`
 handler hands obstacle ground truth to `select_action`.
+
+## Target Local research architecture (not yet fully implemented)
+
+The target Local method retains the current observation, TQC actor and
+`[kappa, v_ref, L]` action contract. It extends the rollout/risk branch without
+replacing the policy stack:
+
+```text
+LiDAR history + robot state + Local subgoal
+                    |
+                    v
+            Local TQC Actor
+                    |
+                    v
+             [kappa, v_ref, L]
+                    |
+            structured candidates
+                    |
+                    v
+       Nominal Hunter dynamics rollout
+                    +
+       Learned residual dynamics ensemble
+                    |
+                    v
+          multiple future trajectories
+                    |
+       +------------+-------------+
+       |            |             |
+    progress   multi-task risk   feasibility
+                    |
+                    v
+         risk mean + uncertainty
+                    |
+                    v
+       progress-preserving, uncertainty-gated
+       counterfactual policy-improvement target
+```
+
+The residual model learns only the nominal model error:
+
+$$
+x_{t+1}=f_{Hunter}(x_t,u_t)+g_{\phi_k}(x_t,u_t,h_t),
+\quad k=1,\ldots,K.
+$$
+
+Its first target should be vehicle response residuals
+`[delta_v, delta_yaw_rate, delta_steering]`, not a black-box global-pose
+predictor. All ensemble members roll out the same action; disagreement is a
+dynamics-uncertainty signal that must be calibrated against held-out rollout
+error before deployment.
+
+The target risk interface is multi-task rather than an early scalar collapse:
+
+$$
+f_\psi(s,a)=[P_{collision},P_{unrecoverable},\hat d_{min},
+\widehat{TTC},\hat m_{stop}].
+$$
+
+An ensemble supplies a conservative decision statistic
+$R^+(s,a)=\mu_R(s,a)+\beta\sigma_R(s,a)$. The factor vector, aggregation rule,
+mean, uncertainty and validity must remain available in telemetry/replay even
+when the actor consumes only $R^+$. `TTC` retains an explicit censored/no-hit
+indicator; undefined factors are masked, never zero-filled.
+
+This section is a target contract. The current code has nominal dynamics and a
+scalar `RiskCritic`; no residual ensemble, risk ensemble or multi-task head is
+implemented yet.
 
 ## Module ownership (who calls what)
 
@@ -77,10 +151,69 @@ handler hands obstacle ground truth to `select_action`.
   reward, procedural/fixed scenarios, domain randomization, obstacle
   spawning, safety guard, and the environment node itself.
 - `sensing/` -- raw scan -> fixed-width bins, temporal frame stacking.
+- `navigation/` -- package-native hierarchy: mission frame, localization,
+  online partial maps, long-horizon worlds, masked Global DDQN/SMDP replay,
+  topological memory, frozen-Local execution and feasibility evaluation.
 - `training/` / `evaluation/` -- the training loop and benchmark runner,
   both talking to a running `environment_node.py` over the
   `drl_agent_interfaces` service contract exactly like `drl_agent`'s own
   trainers do.
+
+## Hierarchical data flow and coordinate contract
+
+The optional hierarchy adds a slow Global option policy around the Local
+controller without changing the Local action definition:
+
+```text
+relative final goal fixed in mission frame
+        + online partial/visited map
+        + optional topology/failure memory
+        + frozen-Local candidate capability
+                         |
+                         v
+masked Global DQN -> robot-relative candidate subgoal
+                         |
+                         v
+Local TQC observation -> [kappa, v_ref, L] -> guard -> Hunter SE
+                         |
+                         v
+option termination -> SMDP transition with gamma^(local_steps)
+```
+
+Mission map cells, final goal, topology nodes and route history live in the
+fixed mission frame. A Global action is robot-relative only at selection;
+its endpoint is transformed into the mission frame before it is queued or
+stored.
+
+The Local observation has one non-negotiable rule: `RobotState` pose and
+active-subgoal coordinates passed to `build_robot_state_vector()` must be in
+the same frame. A robot-relative subgoal therefore requires a robot-frame
+pose `(0, 0, 0)` with real velocity/yaw-rate/steering, or both robot and goal
+must remain in one odom frame. Mixing robot-relative goal coordinates with
+odom/world robot position changes both distance and heading.
+
+**Current implementation status:** the audited hierarchical executor,
+navigation node, environment node and frozen-Local feasibility evaluator now
+share `LocalPolicyController.robot_relative_state()` and have non-zero,
+rotated-pose regression coverage. This closes the code-level frame defect; it
+does not retroactively validate checkpoints produced before the fix. See
+`CURRENT_STATUS.md`.
+
+The frozen-Local candidate evaluator must also be observationally pure. All
+candidates in one Global decision share one immutable LiDAR-history,
+vehicle-state and previous-action snapshot; changing candidate order must not
+push frames into the Local temporal stack or alter the next real control
+observation. Timeout/error/non-finite evaluations are identified in artifact
+telemetry and must be interpreted as unknown. The current candidate tensor,
+however, zero-fills `predicted_action_risk` and `progress_preserving` on that
+fallback and has no per-candidate validity column. Therefore the Global network
+can still see a numerical zero even though the artifact distinguishes it from
+known low risk. Adding an explicit validity/unknown mask is a target schema
+change; until then, formal capability results require zero raw action/risk
+fallback counts and complete reason reporting. The legacy `fallback_rate`
+mixes a per-decision query denominator with some per-candidate failure counts,
+so it is not a bounded probability and must not be used as the acceptance
+metric.
 
 ## Extension points (section 61)
 
@@ -88,7 +221,8 @@ handler hands obstacle ground truth to `select_action`.
 |---|---|---|
 | New robot (Scout, F1TENTH, ...) | New `robot/<name>.py` + `config/robot/<name>.yaml` | `dynamics/`, `trajectory/`, `risk/`, `rl/` |
 | New trajectory primitive (clothoid, spline) | `trajectory/trajectory_primitive.py`'s `make_primitive()` | `action_space.py`'s action CONTRACT, `risk/` |
-| New risk model (CVaR, reachability) | `rl/networks/risk_critic.py`'s `forward()` contract stays `(state, action) -> risk`; swap the body | `rl/algorithms/kinodynamic_tqc/agent.py`'s gradient rule |
+| New risk model (ensemble, multi-task, CVaR) | version the `(state, action) -> factor distribution + validity` contract, replay and telemetry together | observation/action contract and nominal task reward |
+| Residual dynamics | add `dynamics/residual_*` behind a rollout-model interface and preserve nominal-only mode | trajectory action/decode and system-ID raw evidence |
 | New RL algorithm | New `rl/algorithms/<name>/agent.py` implementing `select_action`/`train_step`/`checkpoint_components` | `trajectory/`, `risk/`, `env/` |
 | New sensor | New `sensing/<name>_processor.py` producing the same fixed-width bin array | `env/observation/observation_builder.py`'s concatenation contract |
 
@@ -217,6 +351,93 @@ Two independent, disableable pieces (`counterfactual.enabled`):
 `tests/test_kinodynamic_tqc.py::test_counterfactual_margin_reweights_actor_penalty`
 verifies a large stored margin produces a larger penalty magnitude than a
 zero margin, all else equal.
+
+This is deliberately described as **model-based counterfactual action
+evaluation**, not causal counterfactual inference. The method does not clone
+the single lowest-risk candidate into the actor. Its implemented contribution
+is candidate-augmented risk supervision plus a safer-margin-reweighted,
+risk-critic-mediated actor penalty. A paper equation must match that actual
+gradient path.
+
+The risk critic is not a redundant copy of deterministic rollout. It provides
+a differentiable risk gradient to the actor and can amortize repeated candidate
+evaluation; its research value additionally depends on learning tracking,
+actuator and localization mismatch that the nominal rollout omits. These claims
+require separate calibration/error/latency comparison against exact rollout.
+
+### Target constrained policy-improvement objective
+
+The next research stage must remain a separate, disableable objective rather
+than silently changing the implemented gradient path above. For
+$a=\pi_\theta(s)$ and structured candidate set $\mathcal C(s,a)$, select
+
+$$
+a_{cf}=\arg\min_{a'\in\mathcal C(s,a)}R^+(s,a')
+$$
+
+subject to
+
+$$
+P(s,a')\ge\rho P(s,a),\qquad F(s,a')=1,\qquad
+U(s,a')\le\epsilon_u.
+$$
+
+Only activate the target when the conservative risk improvement exceeds
+$\Delta_R$ and progress is preserved. The planned actor objective is
+
+$$
+\mathcal L_\pi=\mathcal L_{TQC}
++\lambda_rR^+(s,\pi_\theta(s))
++\lambda_{cf}w(s)\|\pi_\theta(s)-\operatorname{sg}(a_{cf})\|^2.
+$$
+
+High-uncertainty candidates are never imitation targets. They trigger an
+explicit abstention path (slowdown/stop/guard) and optional uncertainty-buffer
+collection. The implementation must log which constraint rejected each
+candidate and compare this objective against the current candidate supervision
+and margin weighting; otherwise the two algorithms cannot be distinguished in
+an ablation.
+
+## Target Global capability and memory contracts
+
+The Global policy should consume a distribution over what the frozen Local can
+execute, not one opaque risk scalar. For every candidate $c_i$:
+
+$$
+C_i=[P_{success},E[R],U[R],E[progress],E[T_{execute}],
+P_{stop},P_{unrecoverable}].
+$$
+
+`FrozenLocalFeasibilityEvaluator`'s immutable per-decision temporal snapshot is
+the required starting invariant. A future capability evaluator expands its
+output schema but must preserve candidate-order invariance, bounded execution,
+validity/reason fields and no mutation of the actual Local controller.
+
+The existing map-CNN/scalar-MLP/candidate-MLP masked Dueling DDQN remains
+appropriate. It is interpreted as a candidate-conditioned value estimator:
+
+$$
+Q(s,c_i)=MLP([Encoder_{map}(M),Encoder_{memory}(H),
+Encoder_{candidate}(C_i),z_{state}]).
+$$
+
+`TopologicalGraph` already stores traversal/success/failure counts, path
+length, elapsed time, mean/max risk, last direction and blocked state on each
+edge. The current Global observation consumes only a compressed subset of that
+memory (for example repeated-dead-end and branch-visit features); it does not
+directly encode the full edge distribution. The next schema should expose and
+extend those stored statistics with uncertainty and recency, for example
+
+$$
+e_{ij}=[N_{visit},N_{success},N_{fail},\bar R,\bar T,\bar U,t_{last}],
+$$
+
+with a smoothed success posterior rather than a zero-sample point estimate.
+Pose covariance $\Sigma_x$ is then sampled or propagated through each candidate
+rollout so narrow passages become riskier as localization uncertainty grows.
+The uncertainty/recency posterior, edge-conditioned observation and covariance
+propagation are planned schema changes and require new fingerprints/checkpoints;
+the existing Global checkpoints cannot be relabeled as capability-aware results.
 
 ## Exact fixed-benchmark replay
 
@@ -391,7 +612,11 @@ so it needs no dedicated checkpoint state at all: resuming a trainer
 (which persists only `SeedScheduler.episode_index`) automatically
 regenerates the identical noise-RNG seed for every subsequent episode.
 
-## Not yet done (see docs/DELIVERY_REPORT.md for the full list)
+## Not yet done
+
+For the authoritative current list, see `CURRENT_STATUS.md`. The items below
+are architecture-level external gaps, while that document also records current
+training-readiness defects in the hierarchical implementation.
 
 - Real Hunter SE hardware trials (no hardware available in this
   environment) -- `nodes/real_policy_node.py` and
@@ -401,3 +626,9 @@ regenerates the identical noise-RNG seed for every subsequent episode.
   code-complete and only PARTIALLY live-verified -- see that module's
   docstring for the exact status (no live attempt reached a full
   goal-reaching episode; a low-effective-velocity issue is unresolved).
+- Multi-task/ensemble risk prediction and held-out uncertainty calibration.
+- Learned residual Hunter dynamics and residual-ensemble rollout.
+- Progress/feasibility/uncertainty-constrained direct counterfactual actor
+  target (the currently implemented objective is documented separately above).
+- Global Local-capability distribution, experience posterior per topological
+  edge, and pose-covariance propagation into candidate risk.

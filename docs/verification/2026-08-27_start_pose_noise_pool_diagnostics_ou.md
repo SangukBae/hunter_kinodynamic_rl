@@ -1,6 +1,9 @@
 # 2026-08-27: safe start pose / sensor-noise fairness / reset-noise dedup /
 # obstacle-pool consistency / GT-vs-noisy diagnostics / exact discrete OU
 
+> **Historical verification artifact.** 당시 source/명령/결과를 보존한다. 최신
+> 상태는 [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md)를 따른다.
+
 Six requirements fixed in one pass (numbered as requested):
 1. start-pose wall clearance (`robot_radius + start_pose.min_wall_clearance_m`)
 2. sensor-noise evaluation fairness (fingerprint + contract override)

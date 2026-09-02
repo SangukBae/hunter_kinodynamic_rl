@@ -458,6 +458,75 @@ class HierarchyCoordinator:
             result, robot_pose_mission, now_step=now_step, now_time_sec=now_time_sec, is_valid=subgoal_is_valid,
         )
 
+    # ---------------------------------------------------------- executor-level forced termination
+    def force_terminate_active_subgoal(
+        self, status: SubgoalStatus, reason: str, robot_pose_mission: Optional[PoseXYYaw] = None, *,
+        now_step: int, now_time_sec: float, is_valid: Optional[SubgoalValidityCheck] = None,
+    ) -> SubgoalResult:
+        """Unconditionally finishes the currently ACTIVE subgoal with an
+        explicit terminal ``status``/``reason``, for conditions an executor
+        detects OUTSIDE any ``record_local_tick`` call -- i.e. conditions
+        ``evaluate_replanning`` (which only runs INSIDE ``record_local_tick``)
+        can never see on its own: stale/invalid localization or scan before
+        a tick is even attempted, a policy-inference timeout, a malformed
+        (NaN/Inf/wrong-shape) raw action, or the executor's own
+        ``max_local_steps`` control-loop budget exhausting with none of
+        ``record_local_tick``'s own triggers having fired yet.
+
+        Every ``run_option()`` implementation MUST call this (never just
+        return/break silently) whenever it aborts an ACTIVE subgoal for one
+        of these reasons -- code review: an activated subgoal that a caller
+        simply walks away from (loop budget exhausted, sensor never
+        recovered) previously left ``last_subgoal_result=None`` forever,
+        which every downstream consumer (mission-timeout bookkeeping, the
+        benchmark's attempt/success counters, Global replay's
+        ``failure_reason``) silently mis-happened. This method guarantees a
+        real, non-``None`` :class:`SubgoalResult` exists after ANY
+        activated subgoal ends, no matter which of the six ways it ends.
+
+        Raises if no subgoal is currently ACTIVE (a caller bug -- there is
+        nothing to terminate; check :attr:`stop_required` first, exactly
+        like :meth:`record_local_tick`'s own contract).
+
+        ``status=SubgoalStatus.CANCELLED_BY_REPLAN`` with
+        ``reason="localization_confidence_degraded"`` is handled exactly
+        like the equivalent path inside :meth:`record_local_tick`: it sets
+        :attr:`localization_degraded` (so :attr:`stop_required` stays
+        sticky True and no recovery/advance is attempted -- GPS-denied
+        safety, see that property's docstring) instead of running the
+        normal recovery decision. Every other status/reason runs the SAME
+        :meth:`_apply_recovery` decision ``record_local_tick``'s own
+        replanning-trigger path uses, so an executor-detected timeout is
+        treated identically to a coordinator-detected one (retry/advance/
+        abort by the SAME :class:`~hunter_kinodynamic_rl.navigation.hierarchy.failure_recovery.FailureRecoveryPolicy`)."""
+        if not self._subgoal_manager.active:
+            raise RuntimeError(
+                "HierarchyCoordinator.force_terminate_active_subgoal() called while no subgoal is ACTIVE"
+            )
+        result = self._subgoal_manager.finish(status, reason, now_step=now_step, now_time_sec=now_time_sec)
+        self._last_subgoal_result = result
+        if status == SubgoalStatus.REACHED:
+            self._subgoal_reached = True
+            return result
+        self._subgoal_failed = True
+        if status == SubgoalStatus.CANCELLED_BY_REPLAN and reason == "localization_confidence_degraded":
+            self._localization_degraded = True
+            return result
+        pose_for_recovery = robot_pose_mission if robot_pose_mission is not None else self._last_pose
+        if pose_for_recovery is not None:
+            self._apply_recovery(
+                result, pose_for_recovery, now_step=now_step, now_time_sec=now_time_sec, is_valid=is_valid,
+            )
+        else:
+            # No pose was ever recorded for this subgoal (it never
+            # completed a single tick -- e.g. localization/scan was already
+            # stale on option entry) -- there is nothing valid to re-plan
+            # from; abort rather than guess a start-pose/cached-pose
+            # fallback (code review: never synthesize a candidate from a
+            # fallback pose for a subgoal that never got a real reading).
+            self._mission_failed = True
+        return result
+
     def _check_mission_timeout(self, now_step: int, now_time_sec: float) -> bool:
         cfg = self._config
         if cfg.mission_timeout_steps is not None and (now_step - self._mission_start_step) >= cfg.mission_timeout_steps:

@@ -47,6 +47,14 @@ install(
     hunter_kinodynamic_rl/nodes/real_policy_node.py
     hunter_kinodynamic_rl/nodes/system_id_node.py
     hunter_kinodynamic_rl/nodes/mission_map_node.py
+    hunter_kinodynamic_rl/nodes/hierarchical_environment_node.py
+    hunter_kinodynamic_rl/nodes/hierarchical_train_node.py
+    hunter_kinodynamic_rl/nodes/hierarchical_navigation_node.py
+    hunter_kinodynamic_rl/evaluation/run_live_hierarchical_benchmark.py
+    hunter_kinodynamic_rl/evaluation/run_live_ablation_suite.py
+    hunter_kinodynamic_rl/evaluation/live_evidence_runner.py
+    hunter_kinodynamic_rl/training/preflight.py
+    hunter_kinodynamic_rl/training/hierarchical_preflight.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

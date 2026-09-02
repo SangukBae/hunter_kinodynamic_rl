@@ -23,6 +23,7 @@ specs this module produces into the running simulation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -86,6 +87,33 @@ class ScenarioSpec:
     # heading_mode="legacy_random" (no sampling loop ever runs) or for a
     # fixed-benchmark ScenarioSpec (benchmark_loader.py never sets this).
     heading_sample_attempts: Optional[int] = None
+    # item 3 (evaluation-only privileged metadata -- plan section 6.6's
+    # "즉시 도달 불가능한 subgoal도 학습/평가 분포에 포함" negative-episode
+    # requirement): whether this attempt was CHOSEN (by
+    # scenario.goal_infeasible_fraction) to deliberately construct a
+    # blocked/unreachable goal, and whether the constructed geometry was
+    # actually VERIFIED infeasible (is_reachable()/is_ackermann_feasible()
+    # both explicitly re-checked as False -- see
+    # _build_goal_blocking_ring's caller in generate_scenario) before this
+    # ScenarioSpec is returned. These two fields are always equal in
+    # practice: generate_scenario NEVER returns a "chosen infeasible but
+    # not actually verified infeasible" spec -- an attempt whose barrier
+    # construction doesn't verify is redrawn (continue), never returned
+    # with a false realized_infeasible. Kept as two separate fields (not
+    # collapsed into one) purely so a caller/analysis script can still
+    # tell "was this negative-episode selection even attempted" apart from
+    # "did it actually succeed", without re-deriving that from
+    # infeasibility_kind. NEVER read by observation_builder.py or
+    # reward_calculator.py -- these are reporting/analysis fields only
+    # (mirrors heading_sample_attempts' own "diagnostic only" contract
+    # above); see tests/test_procedural_generator.py's own leakage guard.
+    intended_infeasible: bool = False
+    realized_infeasible: bool = False
+    # "goal_encircled_blocked" (the only kind this generator currently
+    # constructs -- a solid ring of obstacles fully surrounding the goal
+    # point, verified grid-BFS-unreachable from start) or None (feasible,
+    # or infeasible-fraction not selected this attempt).
+    infeasibility_kind: Optional[str] = None
 
 
 class SeedSplitError(ValueError):
@@ -182,6 +210,93 @@ def _place_dynamic_obstacles(
         else:
             return None  # exhausted attempts for this one obstacle -- fail this scenario attempt
     return placed
+
+
+#: Static radius the goal-encircling ring uses for every one of its
+#: obstacles -- comfortably mid-range within STATIC_OBSTACLE_RADIUS_RANGE_M
+#: so it also passes any pool-catalog size-class check ordinary static
+#: obstacles pass.
+_INFEASIBLE_RING_OBSTACLE_RADIUS_M = 0.35
+
+
+def _build_goal_blocking_ring(
+    rng: np.random.RandomState, start_xy: Tuple[float, float], goal_xy: Tuple[float, float],
+    half: float, robot_radius: float, clearance_m: float,
+) -> Optional[List[StaticObstacle]]:
+    """item 3: a REAL, decision-verified-infeasible goal, not merely a
+    skipped feasibility check (code review finding: the previous
+    ``force_infeasible_ok`` path only skipped ``is_reachable``/
+    ``is_ackermann_feasible`` for the drawn goal -- the SAME sparse,
+    typically-still-connected obstacle layout every other attempt gets, so
+    almost every "infeasible" episode was, geometrically, still perfectly
+    solvable; a 500-seed sample of this profile's negative episodes found
+    ZERO actually grid-unreachable outcomes).
+
+    Constructs a solid ring of obstacles fully surrounding ``goal_xy`` --
+    ring radius ``R`` chosen so the goal point itself stays clear (``R >
+    ring obstacle radius + robot_radius``, i.e. the goal cell is never
+    itself occupied -- a genuinely UNREACHABLE goal, not a degenerate
+    "goal spawned inside an obstacle" one) while staying well short of
+    ``start_xy`` (``R`` is capped at a fraction of ``dist(start, goal)``,
+    so the ring can never also swallow the start position). Adjacent ring
+    obstacles are spaced tightly enough (relative to their own
+    grid-inflated ``radius + robot_radius`` footprint, well under
+    ``is_reachable``'s fixed 0.25 m grid resolution) that no rasterized
+    gap survives anywhere around the circumference.
+
+    Returns ``None`` (never a partial/unverified ring) if no ring radius
+    satisfies BOTH constraints for this ``(start_xy, goal_xy)`` pair (goal
+    too close to start for any ring that also clears the goal cell, or the
+    ring would extend past the world boundary) -- the caller
+    (``generate_scenario``) treats that exactly like every other
+    infeasibility-construction failure: redraw the whole scenario attempt
+    from the same ``rng`` stream, never silently fall back to the
+    skip-the-check behaviour this replaces."""
+    sx, sy = start_xy
+    gx, gy = goal_xy
+    dist = math.hypot(gx - sx, gy - sy)
+    r_obs = _INFEASIBLE_RING_OBSTACLE_RADIUS_M
+    # Lower bound: goal cell itself must stay free of every ring obstacle's
+    # own (radius + robot_radius)-inflated footprint, plus a small margin
+    # so floating-point/grid-quantization can never flip it.
+    r_min = r_obs + robot_radius + 0.05
+    # Upper bound: the ring must stay comfortably clear of the START point
+    # too (never also encircling/blocking the robot's own spawn) and
+    # inside the world boundary. The CLOSEST point on a circle of radius R
+    # centered at goal to an external point `dist` away is exactly
+    # `dist - R` (the circle/segment intersection toward that point) --
+    # the true tight bound, not `0.5 * dist` (needlessly halves the usable
+    # ring-radius range and made short-distance goals, e.g. near
+    # goal_distance_range_m's lower end, geometrically impossible to ring
+    # at all). A modest fixed margin (not the full scattered-obstacle
+    # clearance_m design margin -- this is a solid barrier, not a
+    # navigable-around obstacle) keeps floating-point/grid-quantization
+    # from ever flipping the start cell itself.
+    r_max = min(
+        dist - (r_obs + robot_radius + max(0.1, 0.2 * clearance_m)),
+        half - (r_obs + max(abs(gx), abs(gy))) if half > 0.0 else 0.0,
+    )
+    if not (r_min < r_max):
+        return None
+    ring_radius_m = float(rng.uniform(r_min, r_max))
+
+    # Adjacent centers spaced at well under half of one obstacle's own
+    # grid-inflated reach -- comfortably tighter than is_reachable's fixed
+    # 0.25 m grid resolution, so the rasterized ring is always solid.
+    arc_spacing_m = max(0.10, 0.5 * (r_obs + robot_radius))
+    circumference_m = 2.0 * math.pi * ring_radius_m
+    n_ring = max(8, int(math.ceil(circumference_m / arc_spacing_m)))
+
+    ring: List[StaticObstacle] = []
+    phase = float(rng.uniform(0.0, 2.0 * math.pi))
+    for i in range(n_ring):
+        theta = phase + (2.0 * math.pi * i) / n_ring
+        cx = gx + ring_radius_m * math.cos(theta)
+        cy = gy + ring_radius_m * math.sin(theta)
+        if abs(cx) > half or abs(cy) > half:
+            return None  # a ring point fell outside the world -- construction failed for this attempt
+        ring.append(StaticObstacle(x=float(cx), y=float(cy), radius=r_obs))
+    return ring
 
 
 def _to_cell(x: float, y: float, world_size_m: float, n: int) -> Tuple[int, int]:
@@ -302,6 +417,14 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             f"wheelbase_m={wheelbase_m}) -- derive both from the active RobotConfig "
             "(min_turning_radius_m = 1 / robot.max_curvature); refusing to silently degrade to grid_bfs"
         )
+    band_mode = cfg.goal_sampling_mode == "robot_relative_band"
+    if band_mode and start_pose_cfg.heading_mode != "legacy_random":
+        raise RuntimeError(
+            "generate_scenario: scenario.goal_sampling_mode='robot_relative_band' requires "
+            f"start_pose.heading_mode='legacy_random' (got {start_pose_cfg.heading_mode!r}) -- every other "
+            "heading_mode samples start_yaw AFTER the goal would need to be placed relative to it; refusing "
+            "to silently reorder the scenario draw sequence"
+        )
 
     rng = np.random.RandomState(seed)
     half = cfg.world_size_m / 2.0
@@ -337,10 +460,37 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
         heading_sample_attempts: Optional[int] = None
         if legacy_heading:
             start_yaw = rng.uniform(-np.pi, np.pi)
-        for _ in range(20):
-            goal_x, goal_y = rng.uniform(-inset_half, inset_half, size=2)
-            if np.hypot(goal_x - start_x, goal_y - start_y) >= min_start_goal_distance_m:
-                break
+
+        force_infeasible_ok = False
+        if band_mode:
+            # section 6.6 (arbitrary short-range subgoal training): goal is
+            # drawn relative to start_yaw (already known -- band_mode
+            # requires legacy_heading, checked above), not uniformly over
+            # the world. A candidate outside the inset world bounds is
+            # rejected and redrawn within this same bounded inner loop
+            # (mirroring the uniform_world loop's own 20-attempt budget);
+            # exhausting it redraws the WHOLE scenario attempt, same as
+            # every other infeasibility path in this function.
+            found_goal = False
+            for _ in range(20):
+                lo_deg, hi_deg = cfg.goal_direction_sectors_deg[rng.randint(len(cfg.goal_direction_sectors_deg))]
+                offset_rad = np.deg2rad(rng.uniform(lo_deg, hi_deg))
+                distance = rng.uniform(*cfg.goal_distance_range_m)
+                candidate_x = start_x + distance * np.cos(start_yaw + offset_rad)
+                candidate_y = start_y + distance * np.sin(start_yaw + offset_rad)
+                if -inset_half <= candidate_x <= inset_half and -inset_half <= candidate_y <= inset_half:
+                    goal_x, goal_y = candidate_x, candidate_y
+                    found_goal = True
+                    break
+            if not found_goal:
+                continue
+            force_infeasible_ok = bool(cfg.goal_infeasible_fraction > 0.0
+                                        and rng.random() < cfg.goal_infeasible_fraction)
+        else:
+            for _ in range(20):
+                goal_x, goal_y = rng.uniform(-inset_half, inset_half, size=2)
+                if np.hypot(goal_x - start_x, goal_y - start_y) >= min_start_goal_distance_m:
+                    break
 
         num_obstacles = rng.randint(cfg.min_obstacles, cfg.max_obstacles + 1)
         obstacles: List[StaticObstacle] = []
@@ -367,7 +517,35 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
 
         if len(obstacles) < cfg.min_obstacles:
             continue
-        if not is_reachable((start_x, start_y), (goal_x, goal_y), obstacles, cfg.world_size_m, robot_radius):
+
+        # item 3: force_infeasible_ok used to just SKIP the reachability
+        # check below for the drawn goal -- the exact same sparse, usually-
+        # still-connected obstacle layout every other attempt gets, so
+        # almost none of these were actually unreachable (a 500-seed sample
+        # found zero). Now it constructs a solid ring of obstacles fully
+        # surrounding the goal and VERIFIES (never assumes) the result is
+        # genuinely grid-unreachable before accepting it -- see
+        # _build_goal_blocking_ring's own docstring. A construction/
+        # verification failure redraws the whole attempt, same as every
+        # other infeasibility path in this function; it never falls back to
+        # returning an unverified "infeasible" episode.
+        infeasibility_kind: Optional[str] = None
+        if force_infeasible_ok:
+            ring = _build_goal_blocking_ring(
+                rng, (start_x, start_y), (goal_x, goal_y), half, robot_radius, obstacle_clearance_m,
+            )
+            if ring is None:
+                continue
+            obstacles = obstacles + ring
+            if is_reachable((start_x, start_y), (goal_x, goal_y), obstacles, cfg.world_size_m, robot_radius):
+                continue
+            if cfg.feasibility_check == "ackermann" and is_ackermann_feasible(
+                start_x, start_y, start_yaw, goal_x, goal_y, goal_radius_m,
+                obstacles, cfg.world_size_m, robot_radius, min_turning_radius_m, wheelbase_m,
+            ):
+                continue
+            infeasibility_kind = "goal_encircled_blocked"
+        elif not is_reachable((start_x, start_y), (goal_x, goal_y), obstacles, cfg.world_size_m, robot_radius):
             continue
 
         if not legacy_heading:
@@ -386,7 +564,7 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
                 continue
             start_yaw, heading_sample_attempts = sampled
 
-        if cfg.feasibility_check == "ackermann" and not is_ackermann_feasible(
+        if not force_infeasible_ok and cfg.feasibility_check == "ackermann" and not is_ackermann_feasible(
             start_x, start_y, start_yaw, goal_x, goal_y, goal_radius_m,
             obstacles, cfg.world_size_m, robot_radius, min_turning_radius_m, wheelbase_m,
         ):
@@ -414,7 +592,7 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
         # opts back into the pre-item-7 behavior (dynamic obstacles excluded
         # from the initial feasibility check) for a caller that explicitly
         # wants a scenario allowed to start already partially blocked.
-        if cfg.dynamic_obstacle_initial_feasibility_check and dynamic_obstacles:
+        if not force_infeasible_ok and cfg.dynamic_obstacle_initial_feasibility_check and dynamic_obstacles:
             combined_obstacles = obstacles + [
                 StaticObstacle(x=d.x0, y=d.y0, radius=d.radius) for d in dynamic_obstacles
             ]
@@ -432,6 +610,8 @@ def generate_scenario(seed: int, cfg: ScenarioConfig, robot_radius: float = 0.3,
             goal_x=float(goal_x), goal_y=float(goal_y),
             static_obstacles=obstacles, dynamic_obstacles=dynamic_obstacles,
             heading_sample_attempts=heading_sample_attempts,
+            intended_infeasible=force_infeasible_ok, realized_infeasible=(infeasibility_kind is not None),
+            infeasibility_kind=infeasibility_kind,
         )
 
     raise RuntimeError(

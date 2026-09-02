@@ -1,5 +1,8 @@
 # Delivery Report
 
+> **Historical artifact.** 이 문서는 작성 당시 source와 실행 증거를 보존한다.
+> 최신 구현·연구 준비 상태는 [`CURRENT_STATUS.md`](CURRENT_STATUS.md)를 따른다.
+
 Round-4 code-review remediation for `hunter_kinodynamic_rl` -- 16 items
 (P0-1..9, P1-10..13, P2-14, P2-15, this Final-2 report). This document is
 the honest record of what was done, what was verified LIVE against Gazebo

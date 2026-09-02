@@ -1,5 +1,8 @@
 # Final Completion Report — P0-1 through P2-11 Comprehensive Re-Specification
 
+> **Historical artifact; the title is not the current package verdict.** 최신
+> 구현·연구 준비 상태는 [`CURRENT_STATUS.md`](CURRENT_STATUS.md)를 따른다.
+
 This report covers the full governing instruction re-specifying and
 tightening `hunter_kinodynamic_rl`'s requirements beyond the prior
 "round-4" work (`docs/DELIVERY_REPORT.md`, a separate, earlier effort — not

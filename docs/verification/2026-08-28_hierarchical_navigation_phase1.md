@@ -1,5 +1,8 @@
 # 2026-08-28: Hierarchical navigation Phase 1 (mission frame / localization / mapping)
 
+> **Historical verification artifact.** 당시 source/명령/결과를 보존한다. 최신
+> 상태는 [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md)를 따른다.
+
 > **Superseded in part** by `2026-08-28_hierarchical_navigation_phase1_review_fixes.md`
 > -- a code review found this initial pass had never actually been run
 > against a live Gazebo instance and several defects that would have kept

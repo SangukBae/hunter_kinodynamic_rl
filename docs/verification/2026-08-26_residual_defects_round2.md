@@ -1,5 +1,8 @@
 # 2026-08-26 (round 2): residual-defect fix verification
 
+> **Historical verification artifact.** 당시 source/명령/결과를 보존한다. 최신
+> 상태는 [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md)를 따른다.
+
 Addendum to `2026-08-26_item1-4_fixes.md`. That report's item-1/item-2/item-3/item-4
 fixes were real but each had a residual gap the report's own live/unit
 evidence did not actually exercise. This pass closes those gaps, adds one

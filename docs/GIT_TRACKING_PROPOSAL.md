@@ -1,6 +1,20 @@
-# Git-tracking proposal for `hunter_kinodynamic_rl/` (staged, not committed)
+# Git-tracking proposal for `hunter_kinodynamic_rl/` (historical)
 
-**Status: applied at the staging level only, as of round 5.** This
+> **Historical artifact, not current Git instructions.** The staged state
+> described below was true for round 5. At the 2026-09-02 documentation audit,
+> `git diff --cached --shortstat` is empty, `HEAD` is
+> `4d2cbf2 Complete hierarchical navigation phases 2 and 3`, and this package
+> again has modified and untracked files. Review the live `git status` and
+> diffs afresh before staging or committing; do not assume the old 197-file
+> staging set still exists.
+
+> **2026-09-02 release update:** the package source/config/tests/docs were
+> reviewed, generated `runtime/` artifacts remained ignored, and the verified
+> corrected baseline was committed and annotated as
+> `hunter-kinodynamic-rl-r0-20260902`. The proposal below remains historical;
+> it is not a request to restage or recreate that release.
+
+**Historical round-5 status: applied at the staging level only.** This
 proposal's exact plan (the `.gitignore` line below, then `git add
 ros2_ws/src/hunter_kinodynamic_rl`) has now been executed so that
 `git diff --cached` / `git status` can actually show reviewable content

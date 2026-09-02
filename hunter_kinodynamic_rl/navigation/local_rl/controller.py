@@ -17,6 +17,7 @@ observation is structurally impossible from this module's own API.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -30,8 +31,23 @@ from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLi
 from hunter_kinodynamic_rl.sensing.scan_processor import front_and_full_state
 from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack
 from hunter_kinodynamic_rl.trajectory import trajectory_executor
-from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
+from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM, LegacyWaypointCommand, TrajectoryCommand, decode_action
 from hunter_kinodynamic_rl.trajectory.pure_pursuit_adapter import VehicleCommand
+from hunter_kinodynamic_rl.trajectory.trajectory_primitive import ConstantCurvatureArc
+
+
+@dataclass(frozen=True)
+class LocalTemporalContext:
+    """Immutable snapshot of :class:`LocalPolicyController`'s own temporal
+    state -- the already-stacked LiDAR frame history and the last committed
+    action -- for a caller (Global candidate feasibility scoring) that needs
+    to read the REAL control loop's current context WITHOUT being able to
+    mutate it (defect-fix item 6: candidate-order-dependent contamination).
+    Both fields are plain copies, never a view into the controller's own
+    mutable buffers -- see :meth:`LocalPolicyController.snapshot_temporal_context`."""
+
+    lidar_frame: np.ndarray
+    prev_action: Tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -76,11 +92,38 @@ class LocalPolicyController:
         self, ranges, angle_min: float, angle_increment: float, robot_state: RobotState,
         subgoal_x: float, subgoal_y: float,
     ) -> LocalObservationResult:
-        """``subgoal_x``/``subgoal_y`` MUST be the active subgoal (mission
-        frame converted to whatever frame ``robot_state``/goal math already
-        uses elsewhere in this package -- robot/odom frame, matching
-        ``build_robot_state_vector``'s existing goal_x/goal_y convention),
-        never the final mission goal."""
+        """``subgoal_x``/``subgoal_y`` MUST be the active subgoal, and
+        ``robot_state``'s pose (x, y, yaw) MUST be expressed in the SAME
+        frame as that subgoal -- ``build_robot_state_vector``'s
+        ``goal_distance_and_heading`` call has no independent way to detect
+        a frame mismatch, so passing mismatched frames silently produces a
+        wrong distance/heading with no error (defect-fix item 1: this is
+        exactly the historical bug -- a robot-frame subgoal paired with an
+        odom/mission-frame pose). Exactly two contracts are valid anywhere
+        in this package:
+
+        1. **Robot-relative subgoal** (every hierarchical-navigation call
+           site: ``nodes/hierarchical_navigation_node.py``,
+           ``nodes/hierarchical_environment_node.py``,
+           ``navigation/local_rl/live_gazebo_executor.py``,
+           ``navigation/hierarchy/local_feasibility_evaluator.py``) --
+           ``subgoal_x``/``subgoal_y`` come from
+           ``MissionFrame.mission_to_robot(...)``, and ``robot_state``'s
+           pose MUST be the origin ``(0, 0, 0)`` (velocities/yaw-rate/
+           steering stay real measurements) -- see
+           :meth:`robot_relative_state`, which every one of those call
+           sites uses to construct it so this can never drift back into a
+           mismatched pair.
+        2. **Single shared frame** (the non-hierarchical standalone path:
+           ``env/simulation/environment_node.py``,
+           ``nodes/real_policy_node.py``) -- ``robot_state``'s pose AND the
+           goal are both given in the same odom/world frame (there is no
+           separate "final goal" to convert; the node's own tracked goal
+           already IS the active subgoal in that frame).
+
+        Never mix the two: a non-origin ``robot_state`` pose paired with a
+        robot-relative subgoal (or vice versa) is the defect this docstring
+        exists to prevent from recurring."""
         obs_cfg = self.profile.observation
         obs_state, environment_state = front_and_full_state(
             ranges, angle_min, angle_increment, obs_cfg.lidar_bins,
@@ -102,6 +145,38 @@ class LocalPolicyController:
         return LocalObservationResult(
             observation=observation, obs_state=obs_state, environment_state=environment_state,
             nearest_obstacle_dist_m=nearest,
+        )
+
+    @staticmethod
+    def robot_relative_state(v: float, yaw_rate: float, steering: float) -> RobotState:
+        """Canonical constructor for the "robot-relative subgoal" contract
+        documented on :meth:`build_observation` (defect-fix item 1) --
+        pose is pinned to the origin ``(0, 0, 0)`` since the subgoal handed
+        to ``build_observation`` alongside it is already expressed in the
+        robot's own frame; only real measurements (speed, yaw rate,
+        steering) are carried through. Every hierarchical-navigation call
+        site MUST build its ``RobotState`` through this helper rather than
+        re-constructing one from a live odom/mission pose directly -- that
+        re-construction is exactly how the historical frame-mismatch bug
+        was introduced independently at four call sites."""
+        return RobotState(x=0.0, y=0.0, yaw=0.0, v=v, yaw_rate=yaw_rate, steering=steering)
+
+    def snapshot_temporal_context(self) -> Optional[LocalTemporalContext]:
+        """Immutable copy of this controller's CURRENT LiDAR frame-stack
+        window and previous action -- for a caller (Global candidate
+        feasibility scoring, ``navigation.hierarchy.local_feasibility_evaluator``)
+        that needs the REAL control loop's up-to-date temporal state
+        without holding a reference into its mutable buffers and without
+        being able to push into/reset them (defect-fix item 6). Returns
+        ``None`` before the frame stack has been seeded by a first
+        ``build_observation`` call this episode/mission -- callers must
+        treat that exactly like any other "no evaluation possible yet"
+        fallback, never substitute a fabricated all-zero frame."""
+        if not self._frame_stack_ready:
+            return None
+        return LocalTemporalContext(
+            lidar_frame=self._frame_stack.stacked().copy(),
+            prev_action=(float(self.prev_action[0]), float(self.prev_action[1]), float(self.prev_action[2])),
         )
 
     @staticmethod
@@ -164,6 +239,26 @@ class LocalPolicyController:
             last_odom_time_sec=last_odom_time_sec,
         )
         return command, safe_command
+
+    def terminal_point_robot_frame(self, action_arr: np.ndarray) -> Tuple[float, float]:
+        """Decodes ``action_arr`` (``decode_action``, mode-dispatched --
+        never re-implements curvature/waypoint math) into the (x, y)
+        terminal point the action steers toward, in the ROBOT's own frame
+        (x forward, y left) -- used by
+        ``navigation.local_rl.feasibility_evaluator`` to judge whether a
+        local action conditioned on a Global candidate still progresses
+        toward it (requirement E's "progress-preserving" feature), never
+        by the control loop itself (``decode_and_guard`` already owns the
+        real command path via ``trajectory_executor.execute``)."""
+        command = decode_action(action_arr, self.profile.action_space, self.profile.robot)
+        if isinstance(command, TrajectoryCommand):
+            point = ConstantCurvatureArc(
+                kappa=command.kappa, v_ref=command.v_ref, horizon_m=command.horizon_m,
+            ).point_at(command.horizon_m)
+            return point.x, point.y
+        if isinstance(command, LegacyWaypointCommand):
+            return command.r * math.cos(command.theta), command.r * math.sin(command.theta)
+        raise ValueError(f"terminal_point_robot_frame: unsupported decoded command type {type(command)!r}")
 
     def commit_action(self, action_arr: np.ndarray) -> None:
         """Stores the just-decoded action as ``prev_action`` for the NEXT

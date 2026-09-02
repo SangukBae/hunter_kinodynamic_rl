@@ -1,5 +1,12 @@
 # Benchmark
 
+This document defines evaluation datasets, artifact contracts and metrics. It
+does not declare the current implementation complete; current readiness and
+known blockers are tracked in `CURRENT_STATUS.md`. The research questions and
+planned L0–L8/G0–G8 ladder are defined in `RESEARCH_ROADMAP.md` and
+`RESEARCH_PROTOCOL.md`; this file defines how those comparisons are executed
+and recorded.
+
 ## Fixed scenario sets
 
 `config/benchmarks/{id,ood_geometry,ood_dynamics,dynamic}/*.yaml` -- loaded
@@ -16,17 +23,41 @@ dynamics: {}      # OOD-dynamics overrides (friction_scale, steering_delay_sec, 
 sensor: {}        # sensor-noise overrides
 ```
 
-Two example scenarios ship under `id/`, one each under `ood_geometry/`,
-`ood_dynamics/`, `dynamic/` -- enough to validate the loader
-(`tests/test_env_modules.py` doesn't cover `benchmark_loader.py` directly
-yet; add more scenarios and a loader test before using this for a real
-paper result).
+The current engineering fixture contains 5 ID, 4 OOD-geometry, 1
+OOD-dynamics and 4 dynamic scenarios. `tests/test_benchmark_scenario_coverage.py`
+loads the files directly, checks minimum ID/OOD-geometry/dynamic counts and
+verifies start/goal clearance and grid reachability for those three sets. The
+single OOD-dynamics case and the overall fixture size are still insufficient
+for a paper claim;
+freeze a larger versioned manifest under the protocol below before formal use.
+
+## Research benchmark matrix (target)
+
+The current four benchmark directories are engineering fixtures, not a paper
+dataset. Before formal Local uncertainty/residual results, freeze a larger
+manifest with these orthogonal condition groups:
+
+| Group | Purpose | Minimum controlled axes |
+|---|---|---|
+| ID-static | in-distribution navigation and calibration | seen parameter ranges, unseen test seeds |
+| OOD-geometry | structural generalization | held-out layout family, corridor width, nonholonomic traps |
+| OOD-dynamics | model mismatch and residual uncertainty | friction, payload, steering delay/rate/offset, acceleration/braking, command latency |
+| OOD-sensor | observation robustness | LiDAR noise/dropout/frame loss, odometry noise/yaw bias |
+| OOD-localization | covariance/risk propagation | injected pose error and accumulated drift, not confidence-only change |
+| Dynamic | moving-obstacle robustness | speed, crossing direction, occlusion and encounter timing |
+| Real | sim-to-real evidence | open, corridor and dead-end/loop sites with repeated missions |
+
+One-axis OOD sweeps establish attribution; a separately named combined-stress
+set measures robustness. Training randomization ranges, validation calibration
+ranges and test-only OOD ranges must be stored in the result artifact. A held-
+out seed from the same topology generator is not by itself an OOD-layout claim.
 
 ## Running a benchmark
 
 ```bash
 ros2 run hunter_kinodynamic_rl evaluation_node.py --ros-args \
-  -p profile:=evaluation_ood_geometry -p checkpoint_dir:=<run_dir>/models -p checkpoint_name:=ckpt
+  -p profile:=evaluation_ood_geometry \
+  -p checkpoint_dir:=<run_dir>/checkpoints -p checkpoint_name:=final
 ```
 
 Writes `episodes.csv`, `episodes.jsonl`, and `summary.json` (via
@@ -228,3 +259,135 @@ Every distance is meters, every duration is seconds (simulation time unless
 explicitly a step count), every angle is radians, every velocity is m/s --
 consistent with `CLAUDE.md`'s "DRL State/Action Space" unit conventions
 used throughout the rest of this package.
+
+## Hierarchical Local benchmark contract
+
+The arbitrary-subgoal Local benchmark uses an immutable test-pool manifest and
+records checkpoint generation/SHA, architecture fingerprint, Local training
+contract, package provenance and per-episode termination. Promotion must verify
+the artifact against the actual source generation rather than trust caller-
+supplied identity strings.
+
+Feasible and intentionally infeasible episodes have different denominators.
+An infeasible goal that merely exhausts the episode budget is a timeout, not an
+explicit policy rejection. Unless the policy/environment exposes a real reject
+signal, report observable conditional metrics instead:
+
+- `infeasible_scenario_count`
+- `infeasible_false_success_rate`
+- `infeasible_collision_rate`
+- `infeasible_high_risk_rate`
+- a precisely defined collision-free/safe-termination rate
+
+Every infeasible-only rate uses `infeasible_scenario_count` as its denominator
+and carries a valid count. A formal artifact requires exact one-to-one equality
+between manifest and episode `(scenario_id, seed)` pairs, no duplicate scenario
+IDs, test mode only, matching summary counts and a supported schema version.
+
+**Current status:** the audited implementation now uses schema v2 conditional
+metrics (`feasible_subgoal_success_rate` and infeasible-only false-success,
+collision, high-risk and safe-termination rates), preserves `None` for a zero
+denominator, and rejects the obsolete rejection-rate schema during promotion.
+This closes the code-level metric defect but does not constitute a completed
+formal benchmark; see `CURRENT_STATUS.md`.
+
+## Hierarchical A/B and A–G formal contract
+
+`formal` means all of the following, not merely a JSON label:
+
+- test split and one immutable manifest with at least 20 scenarios;
+- complete results for every requested scenario and ablation;
+- trained, strict-compatible Global checkpoints rather than heuristics;
+- the exact promoted Local generation used by Global training;
+- no smoke-only option/local-step budget overrides;
+- strict resolved-config, observation/replay schema, RNG, SHA and Local-identity
+  checks;
+- package SHA/dirty/diff provenance and manifest content hash;
+- per-scenario episode rows, not summaries alone.
+
+Missing B–G checkpoints may be reported as skipped in a smoke suite. A formal
+A–G suite with any requested label missing is incomplete and must not be marked
+formal.
+
+The current frozen-Local evaluator records timeout/error/non-finite fallback
+reasons in artifact telemetry, but its candidate feature tensor still
+zero-fills `predicted_action_risk` and `progress_preserving` when evaluation is
+invalid. That zero is not evidence of low risk. Until the observation schema
+has an explicit per-candidate validity/unknown mask, a formal E/F/G claim must
+require zero raw action/risk fallback counts, report every fallback reason,
+and include a sensitivity analysis if any affected decision is retained for
+diagnosis. Do not gate on the emitted legacy `fallback_rate`: its denominator
+is per decision while some numerator fields are per candidate, so it is not a
+bounded probability. Any nonzero formal fallback makes the artifact incomplete.
+
+## Long-horizon datasets
+
+The 24–40 m procedural worlds are engineering and ablation environments. A
+strong long-horizon paper claim additionally requires 50–100 m routes, a held-
+out layout generator or real floor plans, multiple consecutive dead ends and
+loops, nonholonomic traps and missions long enough for localization drift to
+accumulate. The simulator's full map remains evaluation-only for solvability,
+shortest feasible path and difficulty labels.
+
+## Local research ablation artifact
+
+Every Local L0–L8 row records, in addition to the existing navigation metrics:
+
+- exact action contract and path primitive (`(v, steering)`, `[kappa,v]`,
+  `[kappa,v,L]`, constant-curvature/spline/Bezier);
+- risk output schema, factor aggregation and ensemble member identities;
+- nominal/residual model generation, training-data hash and calibrator hash;
+- counterfactual candidate generator, candidate budget, constraints
+  `(rho, Delta_R, epsilon_u)` and target/abstention activation counts;
+- raw, nominal, guarded and published command streams;
+- inference latency for actor, candidate rollout, risk ensemble and full tick.
+
+Compare all learned rows on identical scenario IDs and paired condition draws.
+Do not use a larger rollout/candidate budget only for the proposed method
+without reporting the compute-matched result.
+
+## Risk and dynamics model metrics
+
+Navigation return is not a model-validation metric. A formal risk artifact
+reports, per factor and condition:
+
+- AUROC/AUPRC and false-negative rate for collision/unrecoverable events;
+- Brier score, ECE, reliability bins and sample count;
+- clearance, TTC and stopping-margin error with explicit TTC censoring;
+- ensemble spread versus actual error, selective risk versus retained coverage,
+  and OOD detection AUROC where an OOD detector claim is made;
+- calibration before/after a validation-only calibrator;
+- mean, tail and worst-case inference latency.
+
+A formal residual-dynamics artifact reports one-step response error, open-loop
+multi-step pose/heading/endpoint error versus horizon, and downstream risk-
+factor error for `nominal`, `single residual` and `residual ensemble` models.
+Split system-ID data by complete run/rosbag so adjacent samples from one
+trajectory cannot leak across train and test.
+
+## Safety and risk reporting
+
+Keep these command stages separate in every result:
+
+1. raw policy action;
+2. nominal decoded vehicle command;
+3. guarded command;
+4. actually published command.
+
+Report guard intervention rate, proposed high-risk-action rate, emergency-stop
+recovery and raw-vs-guarded collision/risk. Risk-critic evaluation additionally
+reports AUROC, AUPRC, Brier score, ECE, reliability diagram, false-negative rate
+and latency/error against exact rollout. Ensemble methods additionally report
+uncertainty-error correlation, selective-risk/coverage curves and calibration
+under every registered OOD axis.
+
+The guard-attribution table contains four conditions: Raw Actor, Raw Actor +
+Counterfactual learning, Actor + Guard, and Counterfactual Actor + Guard.
+Hardware never disables the mandatory guard; raw hardware safety is evaluated
+from proposal telemetry or replay. A collision reduction accompanied only by a
+higher unconditional stop rate is reported as conservative stopping, not
+policy improvement.
+
+`time_to_goal` includes successful episodes only. Failed episodes contribute to
+`time_to_termination`, never to time-to-goal. All optional metrics carry valid
+counts so unavailable data is distinct from a real zero.

@@ -1,5 +1,8 @@
 # 2026-08-28: Phase 2 -- Local goal / hierarchy separation
 
+> **Historical verification artifact.** 당시 source/명령/결과를 보존한다. 최신
+> 상태는 [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md)를 따른다.
+
 Implements `docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md` section 6
 against `hunter_se_unknown_gps_denied_hierarchical_navigation_detailed_spec.txt`,
 on top of the completed Phase 1 delivery (mission frame, localization,

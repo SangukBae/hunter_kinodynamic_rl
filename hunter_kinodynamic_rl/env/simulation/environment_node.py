@@ -57,7 +57,9 @@ from hunter_kinodynamic_rl.env.rewards.reward_calculator import compute_reward, 
 from hunter_kinodynamic_rl.evaluation.contract_override import (
     apply_evaluation_contract, load_evaluation_contract_override,
 )
-from hunter_kinodynamic_rl.evaluation.fingerprint import architecture_fingerprint, evaluation_contract_fingerprint
+from hunter_kinodynamic_rl.evaluation.fingerprint import (
+    architecture_fingerprint, evaluation_contract_fingerprint, local_training_contract_fingerprint,
+)
 from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLimits, guard
 from hunter_kinodynamic_rl.env.scenarios.benchmark_loader import load_scenario_file
 from hunter_kinodynamic_rl.env.scenarios.procedural_generator import (
@@ -206,6 +208,21 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # never re-set later, unlike evaluation_contract_fingerprint_sha256
         # below.
         self.declare_parameter("architecture_fingerprint_sha256", architecture_fingerprint(self.profile))
+        # defect-fix item 3 (Local benchmark artifact integrity): the same
+        # "computed once at launch, exposed for remote verification"
+        # pattern as architecture_fingerprint_sha256 above, but for the
+        # scenario/subgoal-DISTRIBUTION contract instead of network
+        # architecture -- evaluation.local_subgoal_benchmark's
+        # verify_environment_server_identity() reads this via
+        # EnvironmentClient.get_remote_parameter() to refuse starting a
+        # Local benchmark against a live server whose actually-loaded
+        # scenario config (goal distance/direction/infeasible-fraction/
+        # feasibility-check) doesn't match the profile the benchmark
+        # script itself requested -- a same-NAMED profile whose YAML was
+        # edited after this process launched would otherwise silently
+        # benchmark against the wrong distribution.
+        self.declare_parameter(
+            "local_training_contract_fingerprint_sha256", local_training_contract_fingerprint(self.profile))
         # section item-2 (round 2): unlike architecture_fingerprint_sha256,
         # this one DOES change -- it reflects whichever evaluation-contract
         # sections are ACTUALLY active right now (the launch-time profile's

@@ -11,6 +11,7 @@ import dataclasses
 from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint, architecture_fingerprint_from_resolved_config, evaluation_contract_fingerprint,
+    local_training_contract_fingerprint, local_training_contract_fingerprint_from_resolved_config,
 )
 
 
@@ -64,6 +65,22 @@ def test_architecture_fingerprint_ignores_evaluation_contract_changes():
         scenario=dataclasses.replace(base.scenario, world_size_m=base.scenario.world_size_m + 5.0),
     )
     assert architecture_fingerprint(base) == architecture_fingerprint(edited)
+
+
+def test_local_training_contract_detects_distribution_change_architecture_ignores():
+    base = load_profile("kinodynamic_tqc_arbitrary_subgoal")
+    edited = dataclasses.replace(
+        base,
+        scenario=dataclasses.replace(
+            base.scenario,
+            goal_direction_sectors_deg=[[-90.0, 90.0]],
+            goal_infeasible_fraction=0.0,
+        ),
+    )
+    assert architecture_fingerprint(base) == architecture_fingerprint(edited)
+    assert local_training_contract_fingerprint(base) != local_training_contract_fingerprint(edited)
+    assert local_training_contract_fingerprint(base) == \
+        local_training_contract_fingerprint_from_resolved_config(dataclasses.asdict(base))
 
 
 def test_architecture_fingerprint_ignores_runtime_and_training_loop_changes():

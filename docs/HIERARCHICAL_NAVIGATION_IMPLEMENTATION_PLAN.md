@@ -140,7 +140,7 @@ Phase 1~3은 Global RL 없이도 독립적으로 검증해야 한다. Phase 4에
 
 ## 5. Phase 1: Mission frame, localization, mapping 기반
 
-> **구현 상태: 완료 (2026-08-28).** Mission frame, relative final goal, timestamp-synchronized
+> **당시 구성요소 구현 기록 (2026-08-28; 최신 판정은 section 18).** Mission frame, relative final goal, timestamp-synchronized
 > localization, online partial/rolling/visited/inflated map과 ROS/RViz adapter를 구현했다.
 > Docker 전체 회귀 테스트 1,379개가 오류·실패·skip 없이 통과했고, Gazebo에서
 > 기본 start pose와 비영점 start pose/yaw 두 경우의 scan 수신, map 누적, goal 고정,
@@ -350,7 +350,7 @@ tests/test_visited_map.py
 
 ## 6. Phase 2: Local policy와 hierarchy 분리
 
-> **구현 상태: 완료 (2026-08-28).** `LocalPolicyController`(local_rl),
+> **당시 구성요소 구현 기록 (2026-08-28; 최신 판정은 section 18).** `LocalPolicyController`(local_rl),
 > `SubgoalManager`/`replanning`/`failure_recovery`/`HierarchyCoordinator`
 > (hierarchy), opt-in `HierarchyConfig`를 구현했고 `real_policy_node.py`의
 > observation/decode/guard 파이프라인을 `LocalPolicyController` 위임으로
@@ -368,6 +368,36 @@ tests/test_visited_map.py
 > 주입하고, `subgoal_endpoint_blocked`/`is_valid`는 caller가 공급하는
 > boolean/callback으로 남겨 두었다 (PartialMap 연동은 Phase 3/4에서 실제 map이
 > 생기는 시점에 연결).
+>
+> **2026-08-31 갱신 (6.6/6.9 arbitrary subgoal checkpoint, 진행 중).**
+> `config/schema.py`의 `ScenarioConfig`에 `goal_sampling_mode="robot_relative_band"`
+> (기본값 `"uniform_world"`, 다른 모든 profile은 byte-identical 유지),
+> `goal_distance_range_m`(기본 2-6m), `goal_direction_sectors_deg`(전방/좌/우),
+> `goal_infeasible_fraction`(blocked/unreachable subgoal 비율)을 추가하고
+> `env/scenarios/procedural_generator.generate_scenario`에 구현했다(RNG 순서는
+> band mode에서만 분기, `start_pose.heading_mode="legacy_random"` 아니면 fail-fast).
+> `kinodynamic_tqc_counterfactual.yaml`(Ablation F: 전체 기능)과 동일한 architecture/
+> action/risk 계약을 사용하는 `kinodynamic_tqc_arbitrary_subgoal.yaml` profile을
+> 추가했다(`world_size_m=16`, `training.max_timesteps=150000` -- 세션 1회 학습에
+> 맞춘 예산, 기존 2,000,000 baseline보다 적음). `tests/test_arbitrary_subgoal_sampling.py`
+> (23 tests: 거리/섹터 범위, seed 결정성, 기본 모드 byte-identical, heading_mode
+> fail-fast, infeasible_fraction 효과)를 추가했다. 실제 live Gazebo 학습을
+> `runtime/experiments/20260831_005836_kinodynamic_tqc_arbitrary_subgoal_seed0/`에서
+> 시작해 live Gazebo에서 실제로 학습을 진행했다. **최종 상태: global_step=10274,
+> training_steps=7274 (gradient update 수) -- 150,000 목표의 약 6.8%에서 Phase 3/4
+> live wiring 검증을 위해 의도적으로 중단했다 (Gazebo를 다른 검증 단계에 넘겨주기
+> 위함, 세션 시간 제약).** "best"/"latest" checkpoint를
+> `runtime/experiments/local_frozen`(symlink) 경유로 저장했고
+> `hierarchical_phase4.yaml`의 `local_checkpoint_dir`/`name`이 이를 가리킨다.
+> **6.9의 마지막 완료 기준("arbitrary subgoal checkpoint가 local benchmark를
+> 통과한다")은 이 checkpoint 수준에서 NOT MET이다** -- live 20-scenario unseen
+> benchmark(ablation A, 이 checkpoint가 final goal을 직접 추종)에서
+> subgoal_success_rate=0.0, local_planner_failure_count 평균 3.45/mission으로,
+> 아직 subgoal을 안정적으로 달성하지 못한다(예상된 결과: 7274 gradient step은
+> TQC치고 극히 초기 단계). 학습/배선 자체는 실제 Gazebo에서 검증됐고 episode reward가
+> 개선 추세(예: -100대에서 -34.7까지, 600-step 무충돌 episode 발생)를 보였으므로
+> "코드가 작동하지 않는다"가 아니라 "더 많은 학습이 필요하다"는 결론이다 -- 세션
+> 최종 보고서 참조.
 
 ### 6.1 목표
 
@@ -525,7 +555,7 @@ tests/test_hierarchical_interface.py
 
 ## 7. Phase 3: Long-horizon procedural world
 
-> **구현 상태: 완료 확정 (2026-08-28).** `long_horizon_world`/`long_horizon_generator`/
+> **당시 구성요소 구현 기록 (2026-08-28; 최신 판정은 section 18).** `long_horizon_world`/`long_horizon_generator`/
 > `long_horizon_solvability`/`long_horizon_curriculum`/`wall_segment_spawner`를
 > 구현했다. Seed 기반 deterministic room/corridor/junction/loop/dead-end
 > lattice maze generator, occupancy와 항상 일치하는 wall segment 목록,
@@ -566,6 +596,35 @@ tests/test_hierarchical_interface.py
 > Round 3 이후 Docker 전체 회귀 테스트 **1597개가 오류·실패·skip 없이 통과**했고,
 > 19/19 profile이 유효하다. 상세 근거는
 > `docs/verification/2026-08-28_hierarchical_navigation_phase3.md`를 참조한다.
+>
+> **2026-08-31 갱신 (live Gazebo 연결, 진행 중).** 이전까지 이 phase의 유일한
+> gap이었던 "`long_horizon_world`/`wall_segment_pool`이 live Gazebo reset에
+> 연결되지 않음"을
+> `navigation/local_rl/live_gazebo_executor.py`의 `LiveGazeboLocalExecutor.bind_mission()`으로
+> 닫았다: `pause_world` → `reset_world` → `activate_walls(wall_pool, world.wall_segments)`
+> → robot을 `world.start_pose`로 `set_entity_pose_ignition` → `propagate_state`(settle)
+> → `wait_for_fresh_sensors` 순서로, `env/simulation/gazebo_runtime.GazeboRuntimeMixin`
+> (기존 `environment_node.py`가 쓰는 hang-회피 `time.sleep()` polling 규율 재사용)과
+> `env/spawning/wall_segment_spawner`(기존 `ensure_spawned`/`activate_walls`)를
+> 그대로 재사용했다.
+>
+> **Live Gazebo 검증 완료 (같은 세션, Phase 2 학습을 중단해 Gazebo를 확보한 뒤).**
+> `runtime/smoke_test_live_hierarchical.py`로 seed=0 world(57 wall segment)를
+> 생성해 `bind_mission()`을 실행: 150개 wall pool slot이 실제로 spawn됐고, robot이
+> 요청한 `start_pose`로 정확히(오차 0.000m) teleport됐으며, `wait_for_fresh_sensors`가
+> 실제 새 `/scan`/`/odometry` 메시지 도착을 확인했다(80-91 scan, 202-230 odom
+> update). 이 과정에서 THREE개의 실제 결함을 발견해 수정했다: (1) 백그라운드
+> `MultiThreadedExecutor` spin thread가 wall-pool spawn 서비스 호출보다 늦게
+> 시작해 모든 Gazebo 서비스 호출이 타임아웃 -- thread 시작 순서를 fail-fast
+> checkpoint 검증 이후·Gazebo 의존 호출 이전으로 재배치, (2) `/scan`/`/odometry`
+> 구독이 기본 RELIABLE QoS를 써서 실제 BEST_EFFORT publisher와 호환되지 않아
+> 메시지가 전혀 도착하지 않음 -- `hierarchical_environment_node.py`와 동일한
+> `SENSOR_QOS`(BEST_EFFORT)로 수정, (3) `pose_world` 프로퍼티가 아직 odom을
+> 받지 못한 상태(`INVALID_POSE`, x=y=0.0 -- **finite**)를 유효한 (0,0,0) 판독으로
+> 오인 -- `pose.valid` 플래그 확인을 추가. 세 번째는 라이브 실행 전 코드 리뷰에서
+> 발견, 앞의 둘은 라이브 실행에서 직접 확인. 이후 `run_option()`을 실제로 호출해
+> partial map이 0 -> 5000+ observed cell로 확장되고 robot이 물리적으로 1m 이상
+> 이동하는 것을 확인했다(Phase 4 절 참조). 자세한 수치는 세션 최종 보고서 참조.
 
 ### 7.1 목표
 
@@ -681,6 +740,121 @@ tests/test_world_information_boundary.py
 ---
 
 ## 8. Phase 4: Global RL MVP
+
+> **당시 구성요소 구현 기록 (2026-08-28; 최신 판정은 section 18).** `navigation/global_rl/`(observation,
+> subgoal_sampler, action_mask, networks, agent, replay, replay_schema,
+> reward), opt-in `GlobalRLConfig`/`HierarchicalTrainingConfig`,
+> `training/train_hierarchical_dqn.py`(ROS-free `HierarchicalTrainingLoop`),
+> `nodes/hierarchical_environment_node.py`/`nodes/hierarchical_train_node.py`,
+> `config/profiles/hierarchical_phase4.yaml`를 구현했다. 8방향x2거리
+> discrete candidate + backtrack fallback, action mask(occupied/inflated
+> endpoint, **Ackermann arc** short rollout collision -- 직선이 아니라
+> endpoint까지 실제로 도달하는 데 필요한 전체 arc length(`s=r*phi/sin(phi)`,
+> 직선거리 `radius_m`로 잘라내지 않음)를 vehicle의 실제 turning radius로
+> sweep, 필요 curvature가 한계를 넘으면 clamp 대신 해당 후보를 invalid
+> 처리, 즉시 footprint collision, localization/map invalid, UNKNOWN은
+> valid 유지, fallback 항상 valid), map/scalar/candidate 고정 shape 관측,
+> masked Dueling Double DQN (`Q(invalid)=-inf`), `option_reward +
+> gamma^local_steps * (1-mission_done) * max_valid Q_target` SMDP target,
+> uint8 압축 Global replay(schema version + 채널/scalar/candidate-feature
+> 이름 metadata 저장 및 load 시 불일치 검증, RNG 상태 저장, `mode="train"`
+> 외 저장 거부 guard), reason별 local-failure penalty + exploration reward
+> clip + repeated dead-end 전용 penalty를 포함한 Global reward를 구현했다.
+> Local checkpoint는 `local_checkpoint_dir`/`local_checkpoint_name`
+> (directory+tag) pair로 config화해 `ckpt_manager.load_generation`과
+> checkpoint hash 계산이 정확히 같은 파일을 가리키도록 했다. 리뷰 라운드 1에서
+> 발견된 3건(checkpoint dir/path 불일치, 직선 rollout, replay 채널 metadata
+> 누락)을 모두 수정했고, 리뷰 라운드 2에서 라운드 1의 Ackermann arc 수정이
+> endpoint까지의 전체 arc length가 아니라 여전히 직선거리(radius_m)만큼만
+> sweep해 실제 arc의 뒷부분(예: 90도/6m 후보의 6m~9.42m 구간)에 있는
+> obstacle을 놓치는 결함을 재발견해 수정했다(clamp 대신 curvature 초과 시
+> invalid 처리로 변경). 이후 최종 리뷰에서 긴 feasible arc가 고정
+> `rollout_sample_count` 사이의 known obstacle을 건너뛸 수 있던 문제를
+> 추가로 수정했다: `rollout_sample_count`는 최소 샘플 수로만 사용하고,
+> 실제 arc length를 `partial_map.resolution_m * 0.5` 이하 간격으로
+> adaptive subdivision하며, 인접 샘플 사이 grid cell도 `trace_clipped()`로
+> 검사한다. 135도/6m 후보의 약 20m 원호에서 기존 sparse sample 사이에
+> 놓인 obstacle 회귀 테스트를 추가했다. 두 라운드 수정 후 Docker 전체
+> 회귀 테스트 1660개, `colcon test` 1665개가 오류·실패·skip 없이
+> 통과했고, 최종 adaptive sampling 수정 후 Phase 4 관련 로컬 회귀 테스트
+> 55개가 통과했다(2개 skip은 기존 torch-gated 테스트). 20/20 profile이
+> 유효하다(19개 기존 + `hierarchical_phase4`). 상세 근거는
+> `docs/verification/2026-08-28_hierarchical_navigation_phase4.md`를
+> 참조한다.
+>
+> **MVP 범위상 제한 (다음 세션/Phase 5-6에서 마저 다룰 것):**
+> `HierarchicalTrainingLoop`의 local-option 실행은 실제 frozen kinodynamic
+> TQC + live Gazebo가 아니라 `SimplifiedKinematicLocalExecutor`(단순
+> point-robot steer-then-drive 모델 + 시뮬레이션 LiDAR ray-cast를 Phase
+> 1의 `PartialMap`/`raytracing`에 실제로 적분하는 lightweight stand-in)로
+> 대체했다 -- Global RL/map/hierarchy 배선 자체는 실제 Phase 1-3 코드를
+> 그대로 재사용해 검증했지만, "실제 Hunter kinodynamic 동역학으로 이
+> Global 정책이 안전하게 subgoal을 추종하는지"는 아직 검증하지 않았다.
+> `nodes/hierarchical_environment_node.py`/`hierarchical_train_node.py`는
+> 구조적으로 완성된 ROS adapter(프로파일 로드, 센서 구독,
+> `HierarchyCoordinator`/`LocalPolicyController`/`GlobalDQNAgent` 배선,
+> Docker에서 `rclpy.init()`으로 생성 자체는 확인함)이지만 **살아있는
+> Gazebo 인스턴스로 실행/검증하지 않았다**(Phase 3와 동일한 제한). Local
+> checkpoint hash는 Global manifest에 기록되도록 구현·테스트했지만, 실제
+> frozen local TQC checkpoint를 만들어 Phase 4 MVP를 그 위에서 학습시키는
+> 실험 자체는 이번 세션 범위 밖이다.
+>
+> **2026-08-31 갱신 (live Local TQC executor, 진행 중).** 위 MVP 범위상 제한의
+> 핵심 gap이었던 `SimplifiedKinematicLocalExecutor` 대체를
+> `navigation/local_rl/live_gazebo_executor.LiveGazeboLocalExecutor`로 구현했다:
+> `LocalOptionExecutor` protocol(`run_option(coordinator, partial_map, rng,
+> max_local_steps)`)과 `run_mission`이 요구하는 `pose_world` 프로퍼티를 그대로
+> 만족하고, `HierarchyCoordinator.record_local_tick`(기존 Phase 1/2 termination
+> 로직 재사용, 재구현 없음)을 매 tick 호출한다. `training/train_hierarchical_dqn.py`의
+> `HierarchicalTrainingLoop`와 `evaluation/long_horizon_benchmark.py`의
+> `run_ablation_mission` 양쪽에 `local_executor_factory` 주입점을 추가했다
+> (기본값 `None` = 기존 `SimplifiedKinematicLocalExecutor` 경로와 byte-identical --
+> 기존 hierarchical 테스트 전체가 무수정 통과로 회귀 없음을 확인). 누락/architecture
+> 불일치 checkpoint는 `LocalCheckpointError`로 즉시 fail-fast(4개 신규 테스트로
+> 검증, `ckpt_manager.load_generation`의 생성/해시 검증에 더해 `state_dim`/
+> `action_dim`/`architecture_fingerprint` 비교 추가). `nodes/hierarchical_train_node.py`에
+> `live` 파라미터(및 `launch/hierarchical_train.launch.py`)를, 새 CLI
+> `evaluation/run_live_hierarchical_benchmark.py`(및
+> `launch/hierarchical_environment.launch.py`)를 추가해 A(local-only baseline)
+> vs B(Phase 4 Global DQN) 비교를 live Gazebo + 실제 frozen Local TQC로 실행할
+> 수 있게 했다.
+>
+> **Live Gazebo 검증 완료 (같은 세션).** `hierarchical_phase4.yaml`을 실제 frozen
+> checkpoint(Phase 2, global_step=10274)에 물렸을 때 즉시 실제 결함을 하나 더
+> 발견했다: 이 profile은 `action_space`/`features`/`observation`/`risk`/
+> `counterfactual`을 `defaults.yaml` 상속(robot_state_dim=7, temporal_context=false
+> 등, state_dim=88)에 맡기고 있었는데, checkpoint는 328-wide 입력(frame_stack=4,
+> robot_state_dim=8, temporal_context=true)로 학습됐다 -- `LiveGazeboLocalExecutor`가
+> 이 profile로 `RiskAgent`를 구성하자 `load_state_dict` shape mismatch로 즉시
+> fail-fast했다(설계대로 동작 -- 조용히 진행하지 않음). `kinodynamic_tqc_arbitrary_subgoal.yaml`과
+> 동일한 5개 section을 `hierarchical_phase4.yaml`에 명시적으로 복사해 수정했다.
+> 이후 `LiveGazeboLocalExecutor.run_option()`을 live Gazebo에서 직접 실행해 확인:
+> subgoal 활성화 -> 44 local step -> `FAILED_NO_PROGRESS`(실제
+> `HierarchyCoordinator` 판정, 재구현 아님) -> final goal distance 9.96m -> 8.93m로
+> 실제 감소, partial map 0 -> 5000+ observed cell, robot 1.03m 실제 이동. 이 과정에서
+> 스레드 경합 버그(`_on_scan`이 `self._active_partial_map`을 두 번 재읽어 main
+> thread의 `None` 대입과 경합, 백그라운드 스레드에서 조용히 예외 발생)도 발견해
+> local 변수로 한 번만 읽도록 수정했다.
+>
+> `nodes/hierarchical_train_node.py --live`로 5-mission end-to-end 학습(Global
+> decision -> live Local TQC option -> SMDP replay -> `GlobalDQNAgent.train_step`
+> -> checkpoint 저장)을 실행: global_step=200, 실제 gradient update 발생(mission 4
+> loss=9.4096), checkpoint 저장 확인. `resume_run_dir`로 1개 추가 mission을 재개
+> 실행해 "resumed ... at global_step=200" 로그와 함께 정확히 이어서 실행되고
+> (다시 실제 gradient update, loss=8.0420) global_step=240으로 진행하는 것을
+> live Gazebo에서 확인했다 -- replay/optimizer/seed scheduler/checkpoint resume이
+> 실제로 동작한다.
+>
+> **Live 20-scenario unseen benchmark (test seed pool, `run_live_hierarchical_benchmark.py`,
+> `max_options=5`/`max_local_steps=35`로 wall-clock 축소 -- profile 기본값
+> 40/150 그대로면 비현실적으로 느림)**: ablation A(local-only baseline)와
+> B(Phase 4 Global DQN, 이번 세션 5-mission/200-step 학습 checkpoint) 모두
+> **final_goal_success_rate=0.0, subgoal_success_rate=0.0** -- Phase 4 완료
+> 기준("hierarchical MVP가 baseline보다 final-goal success가 높다")은 **이 학습
+> 수준에서 NOT MET이다**. Local TQC(7274 gradient step)와 Global DQN(1 gradient
+> step)이 모두 극히 초기 단계인 것이 원인으로, "wiring이 작동하지 않는다"가
+> 아니라 "성능에 필요한 학습량에 크게 못 미친다"는 뜻이다 -- 정확한 수치와
+> 해석은 세션 최종 보고서 참조.
 
 ### 8.1 목표
 
@@ -892,6 +1066,78 @@ tests/test_hierarchical_training_loop.py
 ---
 
 ## 9. Phase 5: Topological memory와 Global-Local feedback
+
+> **당시 구성요소 구현 기록 (2026-08-29; 최신 판정은 section 18).** `navigation/memory/`(topological_graph,
+> node_manager, route_history, dead_end_detector), `navigation/hierarchy/feasibility.py`,
+> `navigation/global_rl/feasibility_predictor.py`를 구현했다. Global
+> observation/network/replay/reward는 `GlobalRLConfig`의 신규 ablation flag
+> (`include_failure_channel`/`topology_feedback_enabled`/
+> `feasibility_feedback_enabled`/`global_risk_feedback_enabled`, 모두 기본
+> False)로 확장했고, 모든 flag가 꺼진 기본 상태는 Phase 4와 byte-identical
+> 관측/네트워크 shape을 유지한다(`test_hierarchical_checkpoint_compatibility.py`).
+> Replay schema를 v3로 올리고(node tensor 저장), `hierarchical_architecture_fingerprint`를
+> 신설했다(local-only `architecture_fingerprint`와 완전히 분리). 사용자 요청이
+> 함께 포함시킨 Phase 6 항목(`evaluation/global_metrics.py`,
+> `evaluation/long_horizon_benchmark.py`, localization backend 확장
+> `wheel_imu_backend.py`/`lidar_odom_backend.py`/`lio_adapter.py`,
+> `nodes/hierarchical_navigation_node.py`의 실차/dry-run 안전 계층)도 함께
+> 구현했다. Ablation A/B/D/E/F/G 프로파일(`hierarchical_phase5_{a,b,d,e,f,g}.yaml`)을
+> 추가했다 -- **B와 C는 이 구현에서 동일**하다(Phase 4의 `visited` 채널이
+> 원래 별도 토글 뒤에 있지 않았음, 정직하게 문서화). 신규 테스트 13개
+> 전부 통과, Docker 전체 회귀 테스트(`python3 -m pytest -q`) 1773개와
+> `colcon test` 1778개가 오류·실패·스킵 없이 통과했고, 26/26 profile이
+> 유효하다. `HierarchicalTrainingLoop`/`train_hierarchical_dqn()`/
+> `run_ablation_benchmark()`를 실제 torch Global agent로 end-to-end
+> smoke-run해 replay/checkpoint/metrics 파이프라인 전체를 확인했다. 라이브
+> Gazebo 검증과 rosbag dry-run은 Phase 3/4와 동일하게 이번 세션 범위 밖이다
+> (실행 중인 Gazebo 인스턴스 없음). 상세 근거는
+> `docs/verification/2026-08-29_hierarchical_navigation_phase5.md`를 참조한다.
+>
+> **Round 2 (code review, same date).** 외부 리뷰에서 실제 결함 6건을 발견해
+> 모두 수정했다: (1) real/dry-run node가 `goal_x`/`goal_y`(이미 mission-frame
+> 좌표)에 `mission_frame.odom_to_mission()`을 한 번 더 적용해 비영점 start
+> pose/yaw에서 final goal이 틀어지던 문제, (2) safety guard 호출에서
+> `now_sec`(monotonic)과 `last_sensor/odom_time_sec`(ROS 메시지 stamp)의
+> clock domain이 섞여 있던 문제(신규 `_latest_{scan,odom}_receipt_time` 분리로
+> 수정), (3) localization backend가 profile 설정과 무관하게 항상
+> `GazeboOdomLocalizationBackend`로 고정되던 문제(`_build_localization_backend()`
+> factory 신설, `wheel_imu`/`lio` 실제 배선), (4) benchmark manifest의
+> `relative_goal`이 mission-frame이 아닌 world 좌표 그대로였던 문제, (5)
+> `run_ablation_mission()`이 ablation label과 무관하게 caller의 config
+> flag를 그대로 써서 label-config 불일치 시 예외 또는 feature 누락이
+> 가능했던 문제(`effective_*_config()` 강제 재작성으로 수정), (6) 새로
+> 생성된 topological node의 `visit_count`가 0으로 시작해 merge된 node와
+> 비일관이었던 문제. Round 2 이후 Docker 전체 회귀 테스트 1785개,
+> `colcon test` 1790개가 오류·실패·스킵 없이 통과했고, 26/26 profile이
+> 유효하다. 상세 근거는 검증 문서의 "Round 2" 섹션을 참조한다.
+>
+> **Round 3 (code review, same date).** 다시 리뷰에서 결함 2건을 발견해
+> 수정했다: (1) `_localization_valid()`가 여전히 `now_sec=self._latest_odom_time`
+> (pose의 message stamp를 자기 자신과 비교)으로 검사해 odom 수신이 끊긴
+> 뒤에도 계속 valid로 남던 문제 -- Global action mask/subgoal activation이
+> stale localization으로도 계속 동작할 수 있었다(물리 command는 Round 2에서
+> 이미 막혔지만 Global decision은 막지 못함). `_latest_odom_receipt_time`
+> 기반 별도 freshness 체크와 `_effective_localization_confidence()`(stale이면
+> 0.0)를 추가해 기존 `HierarchyCoordinator`의 degraded-localization state
+> machine에 올바른 confidence를 흘려보내도록 수정(`hierarchical_environment_node.py`도
+> 동일 수정). (2) `long_horizon_benchmark.py`의 manifest hash(`content_hash`/
+> `occupancy_hash`)가 문서상 "재현성 검증용"이라면서 실제로는 비교되지
+> 않던 문제 -- `_verify_scenario_regeneration()`을 추가해 world 재생성
+> 직후 hash mismatch 시 fail-fast하도록 수정. Round 3 이후 Docker 전체
+> 회귀 테스트 1794개, `colcon test` 1799개가 오류·실패·스킵 없이
+> 통과했고, 26/26 profile이 유효하다.
+>
+> **Round 4 (code review, same date).** stale localization이 activation은
+> 막아도 `_maybe_select_next_subgoal()`의 observation 생성/action 선택/
+> `coordinator.enqueue_subgoal()`은 막지 못하던 behavioral gap을 발견해
+> 수정했다 -- `activate_next_subgoal()`은 degraded 상태에서 큐를 pop하지
+> 않으므로, odom이 끊긴 매 tick 새 stale candidate가 큐에 계속 쌓이고
+> localization 회복 시 가장 오래된(가장 stale한) candidate가 FIFO로 먼저
+> activate될 수 있었다. `_maybe_select_next_subgoal()` 시작부에
+> `_localization_valid()` 체크를 추가해 stale이면 전체 Global 결정을
+> 건너뛰고 degraded gate만 갱신하도록 수정(두 노드 모두). Round 4 이후
+> Docker 전체 회귀 테스트 1796개, `colcon test` 1801개가 오류·실패·스킵
+> 없이 통과했고, 26/26 profile이 유효하다.
 
 ### 9.1 목표
 
@@ -1374,3 +1620,307 @@ Docker 검증은 저장소 `CLAUDE.md`의 Active Docker Environment를 기준으
 
 실패하면 원인을 수정하고 동일 검증을 다시 실행해. 최종 응답에는 구현 결과, 주요 변경 파일, Docker 검증 결과와 실제로 남은 제한만 간결하게 정리해.
 ```
+
+## 17. 2026-09-01 세션: 정식 학습 준비 인프라 (요구사항 A-O)
+
+> **Historical implementation report.** 당시 후속 audit에서 training-ready
+> 판정이 철회됐고, 그 결함들은 이후 defect-fix pass에서 닫혔다. 최신 판정은
+> section 19와 `docs/CURRENT_STATUS.md`를 따른다.
+> 이 세션은 "정식 Local/Global 학습과 A-G/A-B benchmark를 사용자가 직접 실행할
+> 수 있도록" 준비하는 것이 목적이었다 (연구 성능 검증이 아님). 아래는 요구사항
+> A-O 각각의 당시 구현 보고다. 2026-09-01 후속 감사에서 좌표계, benchmark/
+> promotion, feasibility snapshot, dry-run/formal gate 결함이 확인됐으므로 이 절의
+> "완료" 표현을 현재 판정으로 사용하지 않는다. 최신 상태는
+> `docs/CURRENT_STATUS.md`, 수정 전 실행 제한은
+> `docs/RUNBOOK_HIERARCHICAL_NAVIGATION.md`를 참조한다.
+
+- **A (Local preflight)**: `training/preflight.py` (`run_local_preflight`) —
+  full-circle 검사, 실측 infeasible fraction 샘플링, resume/fresh 일관성,
+  device/ROS 의존성, identity(아키텍처/training-contract fingerprint) 리포트.
+  기존 checkpoint 자동 resume 방지와 distribution-mismatch strict 거부는
+  이미 `training/trainer_base.py`에 구현돼 있었음을 확인 (수정 없이 유지).
+- **B (Local benchmark + promotion)**: `evaluation/local_subgoal_benchmark.py`
+  (manifest/metrics/artifact, subgoal_success/collision/timeout/
+  infeasible_goal_rejection/high_risk_failure/termination_reason,
+  성공 전용 time_to_goal vs 전체 time_to_termination), `evaluation/
+  local_promotion.py` (`LocalAcceptanceConfig`/`config/local_acceptance.yaml`,
+  `promote_local_checkpoint` — 실패/legacy checkpoint는 항상 거부).
+- **C (Global 학습 준비)**: `training/hierarchical_preflight.py`,
+  `nodes/hierarchical_train_node.py`의 `require_promoted_local`(기본 True,
+  fresh 실행만 적용) 게이트, `hierarchical_navigation_node.py`/
+  `hierarchical_environment_node.py` checkpoint 로드에 누락돼 있던
+  `map_location`(CUDA-저장 checkpoint의 CPU 로드) 수정.
+- **D (A/B formal benchmark)**: `evaluation/run_live_hierarchical_benchmark.py`의
+  `formal=True` — heuristic Global 대체 금지, 20 scenario 미만 즉시 거부,
+  `benchmark_kind="formal"` 강제. `evaluation/global_metrics.py`에 `loop_count`/
+  `global_decision_rate` 지표 추가.
+- **E (LocalFeasibilityEvaluator)**: `navigation/hierarchy/
+  local_feasibility_evaluator.py` (`FrozenLocalFeasibilityEvaluator`) —
+  3개 production 경로(`nodes/hierarchical_navigation_node.py`,
+  `training/train_hierarchical_dqn.py`의 `HierarchicalTrainingLoop`,
+  `evaluation/long_horizon_benchmark.py`의 `run_ablation_mission`)에 연결.
+  evaluator 없이 E/F/G-tier ablation을 실행하면 즉시 fail-fast(이전에는
+  `local_evaluator=None`으로 조용히 zero-fill). fallback은 별도 telemetry
+  카운터로 기록된다. 단, 2026-09-02 재감사 결과 candidate tensor 자체는
+  policy-conditioned 두 열을 0으로 채우고 validity 열이 없으므로, "risk=0으로
+  위장되지 않음"은 artifact 해석에만 해당하며 network 입력에는 해당하지 않는다.
+- **F (B/C 분리)**: `config.schema.GlobalRLConfig.include_visited_channel`
+  (B=False, C=True) — `hierarchical_phase5_c.yaml` 신설, B/C가 이제 서로
+  다른 `hierarchical_architecture_fingerprint`를 가짐 (이전에는 동일했음).
+- **G (A-G aggregation)**: `evaluation/ablation_suite.py`
+  (`run_ablation_suite`/`evaluate_acceptance_report`, D-vs-C/E-vs-D/
+  F,G-vs-E 비교, `insufficient_data` 가드), `evaluation/
+  run_live_ablation_suite.py`(live 드라이버).
+- **H (Phase 3 live evidence)**: `evaluation/live_evidence_runner.py` —
+  구조화 JSONL 이벤트 로그 + raw launch stdout/stderr 보존 + leftover
+  process 검사.
+- **I (localization sweep)**: `evaluation/localization_sweep.py` —
+  pairing 검증(`ScenarioPairingError`) + drift-sensitivity aggregation +
+  drift curve. **live 드라이버(노이즈 backend를 실제로 스윕하며 episode를
+  생성하는 스크립트)는 아직 없음** — noise model(`WheelImuNoiseModel`/
+  `LidarOdomNoiseModel`)은 이미 존재.
+- **J (rosbag dry-run)**: `evaluation/rosbag_dry_run.py` —
+  `inspect_bag`/`verify_required_topics`(실제 `rosbag2_py`) +
+  `replay_message_stream`(순수 로직, mock 가능) + actuator-command-count=0
+  성공 조건. `HierarchicalNavigationNode._publish()`의 dry_run 차단은
+  이미 존재했음을 확인(수정 없음), 그 보장을 증명하는 테스트를 추가.
+- **K (thread safety)**: `navigation/mapping/partial_map.py`의 락은 이미
+  올바르게 모든 public method를 감싸고 있었음(수정 없음) — 실제 동시
+  접근 테스트(`tests/test_partial_map_concurrency.py`)만 추가.
+- **L (provenance)**: `evaluation/provenance.py`는 이미 nested-git-root를
+  올바르게 처리(수정 없음). `ablation_suite`/`run_live_ablation_suite`
+  결과에 `collect_package_provenance()` 출력을 추가.
+- **M (runbook)**: `docs/RUNBOOK_HIERARCHICAL_NAVIGATION.md` 신설 — 1~12
+  단계 전체, 실제 명령/입력/산출물/성공조건/실패 로그/resume/formal-vs-smoke.
+- **N (테스트)**: 이 세션에서 신규/수정 테스트 파일 다수 추가 (아래
+  "주요 변경 파일" 참조) — Docker 전체 회귀 `colcon test` 2002개
+  (0 오류/실패/스킵, pytest 1997 + lint 5).
+- **O (문서/legacy 표시)**: 이 섹션. `runtime/experiments/
+  20260831_005836_kinodynamic_tqc_arbitrary_subgoal_seed0/LEGACY_INVALID.md`
+  및 Global smoke checkpoint 4곳에 legacy 마커 추가(기존 파일은 삭제/이동
+  없이 보존).
+
+**의도적으로 실행하지 않은 것**: 정식 Local 학습(150k step), 정식 Local
+benchmark(20+ scenario 실제 실행), 정식 Global 학습, 정식 A/B benchmark,
+Phase 5 A-G 정식 학습/benchmark, localization sweep 실제 실행, 실제
+rosbag dry-run(bag 없음). `docs/RUNBOOK_HIERARCHICAL_NAVIGATION.md`의
+"요약" 표에 상태별로 정리했다.
+
+## 18. 2026-09-01 후속 감사: 정식 학습 전 필수 수정
+
+> **Historical audit.** 이 절이 지적한 결함은 이후 defect-fix pass에서 코드와
+> 회귀 테스트로 닫혔다. 항목 자체는 결함 발견 이력으로 보존하며 현재 상태는
+> section 19와 `docs/CURRENT_STATUS.md`가 대체한다.
+
+이 절은 section 17의 구현 보고를 검토한 당시 판정이었다. 저장된 회귀 결과는 Docker `colcon
+test-result` 기준 2,002 tests, 0 errors/failures/skips이고 관련 신규 테스트 87개도
+별도로 통과했다. 그러나 이 수치는 pure-Python/ROS 회귀 증거이며 live policy 성능
+또는 formal 연구 결과가 아니다.
+
+### 18.1 차단 결함
+
+1. **Local observation frame**: 계층 경로가 robot-relative subgoal과 odom/world
+   `RobotState`를 함께 `build_robot_state_vector()`에 전달한다. 동일 frame 계약으로
+   통일하고 비원점·회전 pose 회귀 테스트를 추가해야 한다.
+2. **Local benchmark infeasible metric**: 전체 episode를 분모로 한
+   `infeasible_goal_rejection_rate`와 0.5 acceptance는 목표 infeasible fraction 0.15와
+   양립하지 않는다. timeout/collision을 rejection으로 부르지 말고 infeasible 조건부
+   false-success/collision/high-risk 지표와 valid count로 바꿔야 한다.
+3. **Promotion trust chain**: 빈 `promotion_manifest.json`도 promoted로 인정되며
+   caller-supplied manifest와 identity를 신뢰한다. 실제 source generation/SHA,
+   architecture/training-contract, supported artifact schema, manifest/episode 일치,
+   provenance를 독립 검증하고 atomic promotion을 구현해야 한다.
+4. **Feasibility temporal context**: 후보마다 동일 scan을 frame stack에 push해
+   candidate order가 Local observation을 바꾼다. 한 Global decision의 모든 후보가
+   immutable LiDAR-history/vehicle-state/previous-action snapshot을 공유해야 한다.
+
+### 18.2 높은 우선순위 결함
+
+- `predict_risk()`도 bounded timeout/error handling에 포함하고 evaluator validity와
+  fallback telemetry를 replay/episode/formal artifact에 기록한다.
+- 전진 전용 Local action과 항상 valid인 후방 BACKTRACK의 계약을 reachability mask,
+  실제 recovery, reverse 또는 multi-arc 중 하나로 닫는다.
+- rosbag dry-run의 성공 조건에 필수 topic, 실제 decision, replay 완료, 실제 actuator
+  publish 0건을 모두 포함한다. real rclpy publisher를 mock `.published` 속성으로
+  검증하지 않는다.
+- live evidence runner가 유효한 Local checkpoint/profile로 시작하고 wall activation,
+  teleport, sensor readiness, control tick과 소유 process teardown을 실제로 기록하게 한다.
+- formal A/B는 test mode, strict trained checkpoint, promoted Local, profile 기본 budget을
+  강제한다. formal A-G는 요청 label 누락을 skip하지 않고 실패한다.
+- Phase 4의 Local tag `best`와 Phase 5/promotion의 `final`을 하나의 canonical tag로
+  통일한다.
+- localization sweep은 pairing/aggregation뿐 아니라 동일 manifest를 실제 backend별로
+  실행하는 live driver와 condition provenance를 제공해야 한다.
+
+### 18.3 수정 후 검증 순서
+
+> **2026-09-02 R0 실행:** 1–4단계와 Local save/resume, teardown,
+> release tag를 완료했다. 5단계 Global live smoke는 legacy/unpromoted
+> `local_frozen`을 preflight가 차단해 보류했다. acceptance/promotion 없이
+> smoke checkpoint를 강제 승격시키지 않았다.
+
+1. frame/benchmark/promotion/evaluator/dry-run/formal gate negative regression tests
+2. 관련 targeted pytest
+3. 전체 pytest와 package build/colcon test
+4. Local 1 episode 또는 수십 step 이하의 bounded smoke
+5. Global 1 mission, option 1~2개, optimizer update 1회, save/resume 1회의 bounded smoke
+6. leftover process와 raw/structured evidence 확인
+
+정식 Local 150k 학습, Global 1000+ mission, 20+ scenario formal A/B, A–G,
+localization sweep와 실차 시험은 위 차단 결함을 닫기 전 실행하지 않는다.
+
+### 18.4 연구 검증 순서
+
+코드 게이트를 닫은 뒤 Local을 먼저 검증한다.
+
+```text
+Local direct-control/fixed-L/path baseline
+    -> rollout-risk calibration
+    -> counterfactual contribution
+    -> raw/guarded safety attribution
+    -> Hunter SE Local trial
+    -> frozen promoted Local
+    -> Global map/memory/feasibility/risk ablation
+    -> large-layout/drift/real-Hunter hierarchy
+```
+
+Phase 완료 판정과 연구 주장에 필요한 통계·baseline은
+`docs/RESEARCH_PROTOCOL.md`, artifact/metric 계약은 `docs/BENCHMARK.md`, 현재 한 줄
+판정은 `docs/CURRENT_STATUS.md`를 따른다.
+
+## 19. 2026-09-01 연구 로드맵 반영: Local-first, capability-aware Global
+
+이 절은 기존 Phase 1~6 구현 계획을 폐기하지 않고 연구 우선순위를 재배치한다.
+알고리즘 수식과 전체 ablation은 `docs/RESEARCH_ROADMAP.md`, 실험/통계 계약은
+`docs/RESEARCH_PROTOCOL.md`가 정본이다.
+
+### 19.1 의존성 변경
+
+기존 구현 Phase 1~6은 hierarchy 기능의 engineering 단계다. 앞으로의 연구 실행은
+다음 순서를 강제한다.
+
+```text
+Phase R0  corrected baseline release freeze
+    |
+Phase R1  current Local L0-L5 formal baselines
+    |
+Phase R2  multi-task risk ensemble + calibration/OOD
+    |
+Phase R3  physics + residual dynamics ensemble
+    |
+Phase R4  progress-preserving uncertainty-gated counterfactual Local
+    |
+Phase R5  promoted Local checkpoint immutable freeze
+    |
+Phase R6  capability distribution + experience-aware Global
+    |
+Phase R7  localization covariance propagation + GPS-denied evaluation
+```
+
+Global R6/R7은 R5의 immutable Local generation 없이 시작하지 않는다. Global 학습
+중 Local actor/risk/residual weight, normalization 또는 calibrator를 변경하면 새로운
+Local generation으로 간주하고 Global 전체를 다시 학습한다.
+
+### 19.2 Global candidate capability 계약
+
+현재 geometry/feasibility/risk feature를 다음 candidate vector로 확장한다.
+
+$$
+C_i=[P_{success},E[R],U[R],E[progress],E[T_{execute}],
+P_{stop},P_{unrecoverable}].
+$$
+
+추가 규칙:
+
+- 한 Global decision의 모든 candidate는 동일한 immutable Local temporal snapshot을
+  사용한다.
+- risk/residual ensemble member와 calibrator generation을 Global artifact에 기록한다.
+- timeout/error/non-finite는 `valid=false`와 reason을 갖는 unknown이며 0으로 채우지 않는다.
+- `P_success`, risk mean과 uncertainty는 held-out Local benchmark에서 calibration한다.
+- BACKTRACK/recovery candidate는 single forward arc로 허위 progress를 만들지 않고
+  실제 recovery execution model 또는 명시적 unknown capability를 사용한다.
+
+Network는 masked Dueling Double DQN을 유지하고 candidate-conditioned value
+estimator로 해석한다.
+
+위 validity 규칙은 목표 schema다. 현재 구현은 fallback reason을 artifact에는
+기록하지만 candidate tensor에는 validity 열이 없고 두 policy-conditioned 값을
+0으로 채운다. schema 확장 전 formal E/F/G는 raw action/risk fallback count가
+모두 0인 gate를 적용한다. 기존 `fallback_rate`는 decision/candidate 단위가 섞인
+분모이므로 formal acceptance에 사용하지 않는다.
+
+$$
+Q(s,c_i)=MLP([Encoder_{map}(M),Encoder_{memory}(H),
+Encoder_{candidate}(C_i),z_{state}]).
+$$
+
+DDQN 교체는 우선순위가 아니다. 비교 대상은 geometry-only, oracle capability,
+learned mean capability, learned mean+uncertainty다.
+
+### 19.3 Experience-Aware Topological Memory
+
+현재 `TopologicalGraph`는 이미 traversal/success/failure count, path length,
+elapsed time, mean/max risk, last direction과 blocked 상태를 edge별로 보존한다.
+다음 목표는 이 저장값을 Global observation에 직접 노출하고 uncertainty/recency
+posterior까지 확장하는 것이다. 목표 vector 예시는 다음과 같다.
+
+$$
+e_{ij}=[N_{visit},N_{success},N_{fail},\bar R,\bar T,\bar U,t_{last}].
+$$
+
+성공률은 작은 표본에서 과신하지 않도록 Beta prior 등의 smoothed posterior를
+사용한다. 구현 전 다음 계약을 확정한다.
+
+- node/edge merge 시 count와 moment 병합법;
+- loop closure 또는 map correction 시 edge identity;
+- 환경 변화에 대한 time decay와 `t_last` 의미;
+- failure reason별 분리와 Local generation이 바뀔 때 경험 통계의 유효성;
+- replay/checkpoint schema migration과 architecture fingerprint.
+
+### 19.4 Localization-aware risk
+
+scalar localization confidence만 candidate feature로 사용하지 않고
+$x\sim\mathcal N(\hat x,\Sigma_x)$에서 pose sample을 생성해 residual-dynamics
+ensemble과 함께 rollout한다. Global에는 expected risk, uncertainty와 선택적인
+quantile/CVaR를 전달한다.
+
+현재 `WheelImuLocalizationBackend`의 confidence/covariance 성장만으로 실제 drift
+robustness를 주장하지 않는다. R7 전에 실제 pose error가 발생하는 injection/backend,
+GT 대비 localization error logging과 covariance calibration을 구현해야 한다.
+
+### 19.5 Global ablation
+
+| Label | 구성 |
+|---|---|
+| G0 | frozen Local only |
+| G1 | partial map |
+| G2 | G1 + visited |
+| G3 | G2 + topology/dead-end memory |
+| G4 | G3 + Local success probability |
+| G5 | G4 + Local expected risk |
+| G6 | G5 + Local risk uncertainty |
+| G7 | G6 + localization-aware risk |
+| G8 | G7 + complete capability/experience model |
+
+이 label은 기존 Phase-5 A–G를 소급해 이름만 바꾸는 표가 아니다. 각 learned row는
+고유 config/fingerprint와 독립 training checkpoint를 가져야 하며, 동일 immutable
+test manifest에서 classical frontier/A*/D* Lite 또는 Hybrid-A* 비교도 수행한다.
+
+### 19.6 단계별 완료 게이트
+
+| 단계 | 완료 게이트 |
+|---|---|
+| R0 | 전체 회귀 + bounded live Local/Global save-resume + frozen benchmark + release provenance (2026-09-02: release/Local 완료, Global은 promoted Local 대기) |
+| R1 | L0–L5 multi-seed baseline, calibration/guard attribution 원시 artifact |
+| R2 | risk factor별 calibration, uncertainty-error/coverage, ID/OOD 성능 |
+| R3 | nominal/single residual/ensemble의 one-step·multi-step·risk error 비교 |
+| R4 | progress/feasibility/uncertainty constraint와 abstention ablation, Local 실차 |
+| R5 | 사전 등록 promotion 기준, immutable Local/risk/residual/calibrator generation |
+| R6 | G0–G8 독립 학습, capability와 experience memory 원인 분리 |
+| R7 | 실제 pose-error drift curve, covariance calibration, long-route/실차 hierarchy |
+
+### 19.7 의도적으로 보류
+
+TQC 교체, diffusion policy, VLM/VLA/RGB, 무조건적인 GNN 도입, 추가 reward shaping은
+현재 핵심 가설의 선행 조건이 아니다. Local risk/residual/counterfactual과 frozen-
+Local capability 연구를 완료한 뒤 필요성을 재평가한다.

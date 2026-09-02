@@ -1,5 +1,8 @@
 # 2026-08-28: Phase 1 code-review fixes + live Gazebo verification
 
+> **Historical verification artifact.** 당시 source/명령/결과를 보존한다. 최신
+> 상태는 [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md)를 따른다.
+
 Follow-up to `2026-08-28_hierarchical_navigation_phase1.md`. An external code
 review of that Phase 1 delivery found the runtime was NOT actually verified
 against a live Gazebo instance and identified several real defects that

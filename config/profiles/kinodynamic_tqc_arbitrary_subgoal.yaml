@@ -1,0 +1,83 @@
+# Local kinodynamic TQC trained on ARBITRARY SHORT-RANGE SUBGOALS (plan
+# section 6.6 / detailed spec "Local TQC 통합") instead of the flat
+# whole-world goal distribution every other kinodynamic_tqc_* profile uses.
+# This is the checkpoint hierarchical Phase 4 (hierarchical_phase4.yaml's
+# local_checkpoint_dir/local_checkpoint_name) actually freezes and drives
+# live behind a robot-relative Global-RL-issued subgoal -- so its goal
+# distribution during training must resemble what the Global candidate grid
+# (global_rl.direction_degrees x distances_m, see hierarchical_phase4.yaml)
+# will actually hand it: 2-6 m away, in ANY direction (Global's own
+# direction_degrees spans the full circle, including rear-diagonal/directly
+# behind, plus the always-available angle=180 BACKTRACK fallback -- see
+# scenario.goal_direction_sectors_deg below), including a fraction of goals
+# that are genuinely blocked/unreachable within the episode (a real,
+# verified-infeasible goal-encircling obstacle ring -- see
+# env/scenarios/procedural_generator.py's _build_goal_blocking_ring) so the
+# policy learns to time out / stop cleanly instead of only ever seeing
+# solvable subgoals.
+#
+# Same architecture/action/risk contract as kinodynamic_tqc_counterfactual
+# (Ablation F, the full proposed system: Ackermann trajectory action
+# [kappa, v_ref, L], temporal context, risk critic, counterfactual
+# candidate-trajectory ranking) -- the ONLY thing this profile changes is
+# the procedural scenario's goal distribution and a reduced training-step
+# budget sized for a single live-Gazebo training session rather than the
+# full 2,000,000-step baseline (extend via --resume-run-dir for further
+# training; this budget is a floor, not a claim of full convergence).
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8  # section P0-4: trajectory-mode opt-in, see kinodynamic_tqc.yaml
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  include_stop_candidate: true
+
+scenario:
+  feasibility_check: ackermann
+  # 16 m world (vs the 12 m ablation default) so a 6 m subgoal in any
+  # front/left/right sector still fits comfortably inside the inset area
+  # from most sampled start positions without excessive inner-loop
+  # resampling/whole-attempt redraws.
+  world_size_m: 16.0
+  min_obstacles: 2
+  max_obstacles: 10
+  goal_sampling_mode: robot_relative_band
+  goal_distance_range_m: [2.0, 6.0]
+  # item 3 (code review, distribution-alignment finding): hierarchical_phase4.yaml's
+  # global_rl.direction_degrees is [-180, -135, -90, -45, 0, 45, 90, 135] --
+  # it DOES include rear-diagonal/directly-behind candidates (plus the
+  # always-available angle=180 BACKTRACK fallback), contrary to this
+  # profile's previous "front/left/right (never straight behind)" sector
+  # list, which capped out at +-150 deg and left a real, untrained 30 deg
+  # wedge on each side around directly-behind that Global could still
+  # select at inference time. Full-circle sector so Local's training
+  # distribution actually covers everywhere Global can point it.
+  goal_direction_sectors_deg: [[-180.0, 180.0]]
+  # ~15% of episodes deliberately keep an unreachable/blocked subgoal --
+  # spec: "blocked, timeout, high-risk, 즉시 도달 불가능한 subgoal도
+  # 학습/평가 분포에 포함한다".
+  goal_infeasible_fraction: 0.15
+
+training:
+  # Reduced from the 2,000,000-step baseline to a budget realistic for one
+  # live-Gazebo training session; resume via --resume-run-dir to extend.
+  max_timesteps: 150000
+  timesteps_before_training: 3000
+  eval_freq: 10000
+  eval_episodes: 10

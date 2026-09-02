@@ -495,6 +495,45 @@ class ScenarioConfig:
     # stress-test benchmark) -- an explicit, documented choice, never a
     # silent default.
     dynamic_obstacle_initial_feasibility_check: bool = True
+    # -- arbitrary short-range subgoal training (hierarchical Phase 2) -----
+    # "uniform_world" (default, legacy): goal drawn uniformly over the whole
+    # inset world area, exactly the pre-existing behaviour -- BYTE-IDENTICAL
+    # RNG draw order to before these fields existed. "robot_relative_band":
+    # goal is instead drawn at a distance in goal_distance_range_m and an
+    # angle within one of goal_direction_sectors_deg (both relative to the
+    # robot's OWN start_yaw), mirroring the actual robot-relative candidate
+    # geometry navigation/global_rl/subgoal_sampler.py's Global policy will
+    # hand the Local TQC at inference time (see
+    # docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 6.6) --
+    # used ONLY by the Local-TQC arbitrary-subgoal training profile, never
+    # by any pre-existing profile (all of which stay on "uniform_world").
+    # Requires start_pose.heading_mode == "legacy_random" (the only mode
+    # whose start_yaw is already known at goal-draw time -- every other
+    # heading_mode samples start_yaw AFTER obstacles/goal are placed, which
+    # would make the goal geometry depend on a heading not sampled yet);
+    # generate_scenario fails fast on this combination rather than silently
+    # reordering its own draw sequence.
+    goal_sampling_mode: str = "uniform_world"
+    goal_distance_range_m: List[float] = field(default_factory=lambda: [2.0, 6.0])
+    # Each entry is [lo_deg, hi_deg], an angular sector relative to
+    # start_yaw (0 deg == straight ahead, positive == robot's left, matching
+    # this package's standard right-handed yaw convention). One sector is
+    # drawn uniformly at random per scenario attempt, then an angle uniform
+    # within it. Defaults cover front/left/right (never directly behind).
+    goal_direction_sectors_deg: List[List[float]] = field(
+        default_factory=lambda: [[-60.0, 60.0], [60.0, 150.0], [-150.0, -60.0]]
+    )
+    # Fraction of "robot_relative_band" scenario attempts that deliberately
+    # SKIP the feasibility check (grid_bfs, and ackermann when
+    # feasibility_check="ackermann") for the drawn goal -- so the Local TQC
+    # training/eval distribution also includes subgoals that are blocked or
+    # otherwise unreachable within the episode horizon (plan section 6.6:
+    # "즉시 도달 불가능한 subgoal도 학습/평가 분포에 포함"), teaching the
+    # policy to time out / signal blocked rather than only ever seeing
+    # solvable subgoals. 0.0 (default) never skips the check -- identical to
+    # every other feasibility-checked scenario. Only meaningful when
+    # goal_sampling_mode="robot_relative_band"; ignored otherwise.
+    goal_infeasible_fraction: float = 0.0
 
     def validate(self) -> None:
         if self.world_size_m <= 0.0:
@@ -509,6 +548,28 @@ class ScenarioConfig:
             raise ConfigError(
                 f"scenario.feasibility_check must be grid_bfs|ackermann, got {self.feasibility_check!r}"
             )
+        if self.goal_sampling_mode not in ("uniform_world", "robot_relative_band"):
+            raise ConfigError(
+                "scenario.goal_sampling_mode must be uniform_world|robot_relative_band, "
+                f"got {self.goal_sampling_mode!r}"
+            )
+        if len(self.goal_distance_range_m) != 2 or not (
+            0.0 < self.goal_distance_range_m[0] <= self.goal_distance_range_m[1]
+        ):
+            raise ConfigError(
+                f"scenario.goal_distance_range_m must be [lo, hi] with 0 < lo <= hi, "
+                f"got {self.goal_distance_range_m}"
+            )
+        if not self.goal_direction_sectors_deg:
+            raise ConfigError("scenario.goal_direction_sectors_deg must be non-empty")
+        for sector in self.goal_direction_sectors_deg:
+            if len(sector) != 2 or not (-180.0 <= sector[0] < sector[1] <= 180.0):
+                raise ConfigError(
+                    f"scenario.goal_direction_sectors_deg entries must be [lo, hi] with "
+                    f"-180 <= lo < hi <= 180, got {sector}"
+                )
+        if not (0.0 <= self.goal_infeasible_fraction <= 1.0):
+            raise ConfigError("scenario.goal_infeasible_fraction must be in [0, 1]")
         ranges = [self.train_seed_range, self.validation_seed_range, self.test_seed_range]
         for r in ranges:
             if len(r) != 2 or r[0] > r[1]:
@@ -1115,14 +1176,34 @@ class MissionConfig:
             raise ConfigError("mission.goal_speed_threshold_mps must be >= 0")
 
 
+#: Backend names ``LocalizationConfig.backend``/the real-node backend
+#: factory (``nodes/hierarchical_navigation_node.py``) actually know how to
+#: construct AND feed from a live topic. ``"lidar_odom"`` is deliberately
+#: excluded here (plan section 4/10.5) -- ``navigation/localization/lidar_odom_backend.py``
+#: implements the ``LocalizationBackend`` Protocol and is unit-tested, but
+#: this repository has no real scan-matching/ICP/NDT algorithm to produce
+#: the relative-transform input it needs, so nothing can genuinely feed it
+#: from a live topic yet; accepting it as a valid profile value would
+#: promise a backend swap this codebase cannot actually perform.
+SUPPORTED_LOCALIZATION_BACKENDS = ("odom", "gazebo_odom", "wheel_imu", "lio")
+
+
 @dataclass
 class LocalizationConfig:
     """Localization backend selection + validity gating (Phase 1 section
-    5.7). ``backend="odom"`` is the ROS-free
+    5.7, extended Phase 5/6 section 4/10.5). ``backend="odom"`` is the
+    ROS-free
     :class:`~hunter_kinodynamic_rl.navigation.localization.odom_backend.OdomLocalizationBackend`
     (tests, replay); ``"gazebo_odom"`` additionally parses
     ``nav_msgs/Odometry`` covariance into a confidence estimate (see
-    ``navigation/localization/gazebo_odom_backend.py``)."""
+    ``navigation/localization/gazebo_odom_backend.py``); ``"wheel_imu"``
+    dead-reckons from the SAME odometry topic's twist (a documented,
+    simulation-only stand-in for a real wheel+IMU driver -- see
+    ``navigation/localization/wheel_imu_backend.py``'s module docstring);
+    ``"lio"`` parses a LIO-SAM-shaped ``nav_msgs/Odometry`` topic (see
+    ``navigation/localization/lio_adapter.py``). See
+    ``SUPPORTED_LOCALIZATION_BACKENDS`` for why ``"lidar_odom"`` is not yet
+    a valid value here."""
 
     backend: str = "gazebo_odom"
     odom_topic: str = "/odometry"
@@ -1131,8 +1212,10 @@ class LocalizationConfig:
     publish_mission_tf: bool = True
 
     def validate(self) -> None:
-        if self.backend not in ("odom", "gazebo_odom"):
-            raise ConfigError(f"localization.backend must be odom|gazebo_odom, got {self.backend!r}")
+        if self.backend not in SUPPORTED_LOCALIZATION_BACKENDS:
+            raise ConfigError(
+                f"localization.backend must be one of {SUPPORTED_LOCALIZATION_BACKENDS}, got {self.backend!r}"
+            )
         if self.pose_timeout_sec <= 0.0:
             raise ConfigError("localization.pose_timeout_sec must be > 0")
         if not (0.0 <= self.minimum_confidence <= 1.0):
@@ -1404,6 +1487,426 @@ class WallSegmentPoolConfig:
 
 
 @dataclass
+class GlobalRLConfig:
+    """Phase 4 Global RL MVP (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    section 8) -- discrete candidate-subgoal action space, masked-DQN
+    network sizing, replay/agent hyperparameters, and the option-level
+    Global reward weights (section 8.7/14). Consumed only by
+    ``navigation/global_rl`` + ``training/train_hierarchical_dqn.py`` --
+    opt-in by construction (default ``enabled=False``), matching
+    ``mission``/``localization``/``mapping``/``hierarchy``/``long_horizon_world``.
+    Bundles the reward weights alongside the action/network/replay knobs
+    (rather than a separate section) -- the same "one flat dataclass per
+    opt-in subsystem" shape ``HierarchyConfig`` already uses for its own
+    subgoal+replanning+recovery thresholds.
+
+    ``direction_degrees``/``distances_m`` form the robot-relative candidate
+    grid (``len(direction_degrees) * len(distances_m)`` candidates); exactly
+    one additional fallback candidate (``fallback_mode``) is always appended
+    last, so :attr:`n_candidates` is that product plus one. The fallback
+    candidate is ALWAYS a valid action regardless of what the action mask
+    computes for every other candidate (plan section 8.4)."""
+
+    enabled: bool = False
+    direction_degrees: List[float] = field(
+        default_factory=lambda: [-180.0, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0]
+    )
+    distances_m: List[float] = field(default_factory=lambda: [3.0, 6.0])
+    # "backtrack" -- fallback endpoint is a short step directly behind the
+    # robot (robot-relative angle=pi); "stop_recovery" -- fallback endpoint
+    # is the robot's OWN current position (zero-distance, i.e. "hold still,
+    # let the next Global decision re-evaluate").
+    fallback_mode: str = "backtrack"
+    fallback_backtrack_distance_m: float = 2.0
+    # Number of interpolated points sampled between the robot and a
+    # candidate's endpoint for action_mask's short-rollout collision check
+    # (plan section 8.4: "endpoint까지의 Ackermann short rollout이 known
+    # obstacle과 충돌") -- includes both endpoints.
+    rollout_sample_count: int = 8
+    robot_footprint_radius_m: float = 0.45
+
+    # -- Global observation (section 8.5) --------------------------------
+    map_crop_size_cells: int = 96
+    goal_distance_norm_m: float = 40.0
+    max_speed_norm_mps: float = 1.5
+
+    # -- Network sizing (section 8.6, masked Dueling Double DQN) ---------
+    cnn_channels: List[int] = field(default_factory=lambda: [16, 32])
+    map_feature_dim: int = 128
+    scalar_feature_dim: int = 32
+    candidate_feature_dim: int = 32
+    fused_feature_dim: int = 128
+
+    # -- Replay / agent (section 8.8/8.9) --------------------------------
+    replay_capacity: int = 50_000
+    batch_size: int = 64
+    gamma: float = 0.99
+    learning_rate: float = 1e-4
+    target_update_interval_steps: int = 500
+    epsilon_start: float = 1.0
+    epsilon_end: float = 0.05
+    epsilon_decay_steps: int = 20_000
+    warmup_options: int = 200
+
+    # -- Global reward weights (section 8.7/14) --------------------------
+    goal_reward: float = 100.0
+    progress_reward_scale: float = 1.0
+    exploration_reward_scale: float = 0.02
+    # Caps R_exploration BEFORE it is added into R_global -- plan section
+    # 8.7/14: "Exploration reward는 goal reward/final progress를 압도하지
+    # 않도록 clip".
+    exploration_reward_clip: float = 5.0
+    revisit_penalty_scale: float = 0.05
+    # Only applied when the caller reports a REPEATED dead-end/branch
+    # re-entry (plan section 8.7/15: a FIRST dead-end exploration is normal
+    # and must not be penalized identically to repeating one).
+    repeated_deadend_penalty: float = 5.0
+    local_failure_penalty_timeout: float = 2.0
+    local_failure_penalty_no_progress: float = 2.0
+    local_failure_penalty_blocked: float = 3.0
+    local_failure_penalty_high_risk: float = 4.0
+    local_failure_penalty_cancelled_by_replan: float = 1.0
+    risk_penalty_scale: float = 1.0
+    elapsed_penalty_per_local_step: float = 0.01
+    # Only nonzero when global_risk_feedback_enabled -- prices the PREDICTED
+    # risk of the candidate actually SELECTED, at decision time (never zero
+    # by construction so a caller could pass it anyway; a caller only ever
+    # passes a nonzero predicted_risk_at_selection when this ablation flag
+    # below is on).
+    predicted_risk_penalty_scale: float = 0.0
+
+    # -- Phase 5 ablation flags (docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md
+    # section 9.9) -- each toggles ONE additional observation/reward input
+    # on the SAME code path (never a separate branch), so ablations B-G
+    # differ only in which of these are True. All default False, so a
+    # profile that sets none of them reproduces Phase 4's exact
+    # observation/network/reward shape byte-for-byte. ------------------
+    #: Adds PartialMap's per-cell failure-count raster as a 6th map channel
+    #: (ablation D's "visited/failure raster" step). Independent of
+    #: topology_feedback_enabled/memory.enabled -- this is a cheap raster
+    #: already tracked by PartialMap, not the node-graph tensor.
+    include_failure_channel: bool = False
+    #: Requirement F: the map-tensor "visited" raster channel, ON by
+    #: default (so every already-existing profile that never sets this
+    #: field explicitly -- Phase 4's own `hierarchical_phase4.yaml` and
+    #: ablation profiles B/D/E/F/G, all pre-dating this flag -- stays
+    #: byte-identical to before). Ablation B alone sets this False, making
+    #: B ("Global partial map, no visited") and C ("+ visited map",
+    #: everything else identical) genuinely differ in observation shape
+    #: (map_tensor channel count) and therefore in
+    #: `hierarchical_architecture_fingerprint` -- previously `visited` was
+    #: unconditionally present, so B and C were byte-identical (plan 9.9's
+    #: documented, since-fixed limitation).
+    include_visited_channel: bool = True
+    #: Adds 2 candidate-tensor columns (repeated-dead-end flag, branch
+    #: visit-count norm) AND the topological-memory node tensor + validity
+    #: mask to the Global observation. Requires memory.enabled=true.
+    topology_feedback_enabled: bool = False
+    #: Adds hierarchy/feasibility.py's 6 candidate-tensor columns (rollout
+    #: collision, steering saturation, clearance, predicted action risk,
+    #: progress-preserving, historical success rate). Requires
+    #: feasibility.enabled=true.
+    feasibility_feedback_enabled: bool = False
+    #: Adds 1 candidate-tensor column (the feasibility-computed predicted
+    #: action risk, exposed as its own "global risk" feature so the network
+    #: can weigh distance against risk per plan section 13) AND enables
+    #: predicted_risk_penalty_scale in the reward. Requires
+    #: feasibility.enabled=true (reuses the SAME rollout, never a second
+    #: risk computation).
+    global_risk_feedback_enabled: bool = False
+
+    @property
+    def n_direction_distance_candidates(self) -> int:
+        return len(self.direction_degrees) * len(self.distances_m)
+
+    @property
+    def n_candidates(self) -> int:
+        return self.n_direction_distance_candidates + 1
+
+    @property
+    def fallback_index(self) -> int:
+        return self.n_candidates - 1
+
+    def validate(self) -> None:
+        if not self.direction_degrees:
+            raise ConfigError("global_rl.direction_degrees must be non-empty")
+        for d in self.direction_degrees:
+            if not (-180.0 <= d <= 180.0):
+                raise ConfigError(f"global_rl.direction_degrees entries must be in [-180, 180], got {d}")
+        if not self.distances_m:
+            raise ConfigError("global_rl.distances_m must be non-empty")
+        for r in self.distances_m:
+            if r <= 0.0:
+                raise ConfigError("global_rl.distances_m entries must be > 0")
+        if self.fallback_mode not in ("backtrack", "stop_recovery"):
+            raise ConfigError(
+                f"global_rl.fallback_mode must be 'backtrack' or 'stop_recovery', got {self.fallback_mode!r}"
+            )
+        if self.fallback_backtrack_distance_m <= 0.0:
+            raise ConfigError("global_rl.fallback_backtrack_distance_m must be > 0")
+        if self.rollout_sample_count < 2:
+            raise ConfigError("global_rl.rollout_sample_count must be >= 2 (needs at least both endpoints)")
+        if self.robot_footprint_radius_m <= 0.0:
+            raise ConfigError("global_rl.robot_footprint_radius_m must be > 0")
+        if self.map_crop_size_cells <= 0:
+            raise ConfigError("global_rl.map_crop_size_cells must be > 0")
+        if self.goal_distance_norm_m <= 0.0:
+            raise ConfigError("global_rl.goal_distance_norm_m must be > 0")
+        if self.max_speed_norm_mps <= 0.0:
+            raise ConfigError("global_rl.max_speed_norm_mps must be > 0")
+        if not self.cnn_channels or any(c <= 0 for c in self.cnn_channels):
+            raise ConfigError("global_rl.cnn_channels must be a non-empty list of positive ints")
+        for name in ("map_feature_dim", "scalar_feature_dim", "candidate_feature_dim", "fused_feature_dim"):
+            if getattr(self, name) <= 0:
+                raise ConfigError(f"global_rl.{name} must be > 0")
+        if self.replay_capacity <= 0:
+            raise ConfigError("global_rl.replay_capacity must be > 0")
+        if self.batch_size <= 0:
+            raise ConfigError("global_rl.batch_size must be > 0")
+        if not (0.0 < self.gamma <= 1.0):
+            raise ConfigError("global_rl.gamma must be in (0, 1]")
+        if self.learning_rate <= 0.0:
+            raise ConfigError("global_rl.learning_rate must be > 0")
+        if self.target_update_interval_steps <= 0:
+            raise ConfigError("global_rl.target_update_interval_steps must be > 0")
+        if not (0.0 <= self.epsilon_end <= self.epsilon_start <= 1.0):
+            raise ConfigError("global_rl.{epsilon_end,epsilon_start} must satisfy 0 <= epsilon_end <= epsilon_start <= 1")
+        if self.epsilon_decay_steps <= 0:
+            raise ConfigError("global_rl.epsilon_decay_steps must be > 0")
+        if self.warmup_options < 0:
+            raise ConfigError("global_rl.warmup_options must be >= 0")
+        if self.goal_reward <= 0.0:
+            raise ConfigError("global_rl.goal_reward must be > 0")
+        if self.exploration_reward_clip < 0.0:
+            raise ConfigError("global_rl.exploration_reward_clip must be >= 0")
+        for name in (
+            "progress_reward_scale", "exploration_reward_scale", "revisit_penalty_scale",
+            "repeated_deadend_penalty", "local_failure_penalty_timeout", "local_failure_penalty_no_progress",
+            "local_failure_penalty_blocked", "local_failure_penalty_high_risk",
+            "local_failure_penalty_cancelled_by_replan", "risk_penalty_scale", "elapsed_penalty_per_local_step",
+            "predicted_risk_penalty_scale",
+        ):
+            if getattr(self, name) < 0.0:
+                raise ConfigError(f"global_rl.{name} must be >= 0")
+
+
+@dataclass
+class MemoryConfig:
+    """Phase 5 topological memory (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    section 9.3/9.4) -- flat YAML-facing section that
+    ``training/train_hierarchical_dqn.py``'s ``memory_config_from`` splits
+    into ``navigation.memory.node_manager.NodeManagerConfig`` and
+    ``navigation.memory.dead_end_detector.DeadEndDetectorConfig`` (the same
+    "one flat dataclass per opt-in subsystem, translated by a builder
+    function" pattern ``hierarchy_config_from`` already uses for
+    ``HierarchyConfig``). Opt-in (default ``enabled=False``); consumed only
+    by ``navigation/memory`` + the Global RL observation/training path."""
+
+    enabled: bool = False
+    node_min_distance_m: float = 2.0
+    node_heading_change_rad: float = math.pi / 3.0
+    node_merge_radius_m: float = 1.0
+    max_nodes: int = 64
+    max_nodes_in_observation: int = 16
+    node_recency_norm_steps: float = 200.0
+    free_direction_threshold: int = 1
+    progress_stall_window_steps: int = 20
+    progress_stall_min_delta_m: float = 0.2
+    repeated_estop_limit: int = 3
+    evidence_vote_threshold: int = 2
+
+    def validate(self) -> None:
+        if self.node_min_distance_m <= 0.0:
+            raise ConfigError("memory.node_min_distance_m must be > 0")
+        if not (0.0 < self.node_heading_change_rad <= math.pi):
+            raise ConfigError("memory.node_heading_change_rad must be in (0, pi]")
+        if self.node_merge_radius_m <= 0.0:
+            raise ConfigError("memory.node_merge_radius_m must be > 0")
+        if self.node_merge_radius_m >= self.node_min_distance_m:
+            raise ConfigError("memory.node_merge_radius_m must be < node_min_distance_m")
+        if self.max_nodes <= 0:
+            raise ConfigError("memory.max_nodes must be > 0")
+        if self.max_nodes_in_observation < 0:
+            raise ConfigError("memory.max_nodes_in_observation must be >= 0")
+        if self.max_nodes_in_observation > self.max_nodes:
+            raise ConfigError("memory.max_nodes_in_observation must be <= memory.max_nodes")
+        if self.node_recency_norm_steps <= 0.0:
+            raise ConfigError("memory.node_recency_norm_steps must be > 0")
+        if self.free_direction_threshold < 0:
+            raise ConfigError("memory.free_direction_threshold must be >= 0")
+        if self.progress_stall_window_steps <= 0:
+            raise ConfigError("memory.progress_stall_window_steps must be > 0")
+        if self.progress_stall_min_delta_m < 0.0:
+            raise ConfigError("memory.progress_stall_min_delta_m must be >= 0")
+        if self.repeated_estop_limit <= 0:
+            raise ConfigError("memory.repeated_estop_limit must be > 0")
+        if not (1 <= self.evidence_vote_threshold <= 5):
+            raise ConfigError("memory.evidence_vote_threshold must be in [1, 5]")
+
+
+@dataclass
+class GlobalFeasibilityConfig:
+    """Phase 5 Global-Local feasibility feedback (plan section 9.6) --
+    flat YAML-facing section translated by
+    ``training/train_hierarchical_dqn.py``'s ``feasibility_config_from``
+    into ``navigation.hierarchy.feasibility.FeasibilityConfig``. Opt-in
+    (default ``enabled=False``); consumed only by
+    ``navigation/hierarchy/feasibility.py`` + the Global RL observation/
+    training path. Named ``GlobalFeasibilityConfig`` (not just
+    ``FeasibilityConfig``) to avoid colliding with the identically-purposed
+    pure-logic dataclass of that name in ``navigation/hierarchy/feasibility.py``
+    -- this section IS the YAML-facing translation source for that one."""
+
+    enabled: bool = False
+    rollout_sample_count: int = 8
+    clearance_search_radius_m: float = 2.0
+    clearance_norm_m: float = 2.0
+    historical_stats_radius_m: float = 1.0
+    # Requirement E (LocalFeasibilityEvaluator wiring): the version of the
+    # concrete evaluator's observation/action I/O contract
+    # (navigation/hierarchy/local_feasibility_evaluator.py) -- bump whenever
+    # that contract changes (e.g. a different sensor-snapshot shape or
+    # progress-preserving rollout formula), NEVER when just tuning a
+    # threshold below. Part of the `feasibility` section already hashed by
+    # `hierarchical_architecture_fingerprint`, so a contract change is
+    # guaranteed to invalidate any ablation E/F/G checkpoint trained under
+    # the old contract, exactly like every other fingerprinted section.
+    local_evaluator_schema_version: int = 1
+    # Inference budget for one candidate's LocalFeasibilityEvaluator query
+    # (navigation/hierarchy/local_feasibility_evaluator.FrozenLocalFeasibilityEvaluator),
+    # bounded via the same SingleFlightThreadWorker discipline
+    # live_gazebo_executor.py already uses for its own policy inference --
+    # a slow/hung Local policy can never block Global decision-making past
+    # this budget.
+    local_evaluator_inference_timeout_sec: float = 0.5
+    # A caller-supplied sensor snapshot older than this is rejected as
+    # stale (evaluate() returns None -- a tracked fallback, never a
+    # disguised risk=0/progress=True reading).
+    local_evaluator_max_snapshot_age_sec: float = 0.5
+
+    def validate(self) -> None:
+        if self.rollout_sample_count < 2:
+            raise ConfigError("feasibility.rollout_sample_count must be >= 2")
+        if self.clearance_search_radius_m <= 0.0:
+            raise ConfigError("feasibility.clearance_search_radius_m must be > 0")
+        if self.clearance_norm_m <= 0.0:
+            raise ConfigError("feasibility.clearance_norm_m must be > 0")
+        if self.historical_stats_radius_m <= 0.0:
+            raise ConfigError("feasibility.historical_stats_radius_m must be > 0")
+        if self.local_evaluator_schema_version < 1:
+            raise ConfigError("feasibility.local_evaluator_schema_version must be >= 1")
+        if self.local_evaluator_inference_timeout_sec <= 0.0:
+            raise ConfigError("feasibility.local_evaluator_inference_timeout_sec must be > 0")
+        if self.local_evaluator_max_snapshot_age_sec <= 0.0:
+            raise ConfigError("feasibility.local_evaluator_max_snapshot_age_sec must be > 0")
+
+
+@dataclass
+class HierarchicalTrainingConfig:
+    """Phase 4 ROS-free hierarchical training-loop knobs
+    (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 8.9) --
+    separate from :class:`GlobalRLConfig` (network/replay/reward) and
+    :class:`HierarchyConfig` (Phase 2 subgoal lifecycle, reused as-is by
+    Phase 4). Opt-in (default ``enabled=False``); consumed only by
+    ``training/train_hierarchical_dqn.py`` and the Phase 4 node adapters."""
+
+    enabled: bool = False
+    # FROZEN local-policy checkpoint (rl.algorithms.kinodynamic_tqc or tqc)
+    # to load -- Phase 4 never trains the local policy (plan section 8.9
+    # item 7: "Local policy를 joint fine-tuning하지 않는다"). Split into a
+    # (directory, tag) pair -- NEVER a single combined file path -- to
+    # match ``rl.checkpointing.manager.load_generation``'s own contract
+    # (and every other checkpoint-loading entrypoint in this package, e.g.
+    # ``real_policy_node.py``'s ``checkpoint_dir``/``checkpoint_name``
+    # parameters): ``local_checkpoint_dir`` is the run's ``checkpoints/``
+    # directory (containing the ``<tag>`` symlink into
+    # ``.generations/<uuid>/``), ``local_checkpoint_name`` is the tag
+    # (``"final"``/``"latest"``/``"best"``). The resolved
+    # ``<local_checkpoint_dir>/<local_checkpoint_name>/model.pt`` is hashed
+    # (sha256) and recorded into the Global checkpoint manifest (see
+    # train_hierarchical_dqn.py) so a resumed/evaluated run can verify it
+    # was produced against the SAME frozen local checkpoint.
+    local_checkpoint_dir: str = ""
+    local_checkpoint_name: str = "final"
+    # Profile whose scenario section defines the distribution the frozen
+    # Local policy is required to have trained against.  A hierarchical
+    # profile's own scenario is a long-horizon Global world, so it cannot be
+    # used for this comparison.  The live executor loads this named profile
+    # and compares its strict local-training-contract fingerprint with the
+    # checkpoint manifest before creating any ROS background thread.
+    local_training_profile_name: str = ""
+    # Local and Global devices are deliberately independent.  In particular,
+    # a CUDA-authored Local checkpoint is loadable on CPU via map_location;
+    # this gives live=True a supported CPU-only path when an in-process CUDA
+    # runtime conflicts with rclpy/DDS.
+    local_inference_device: str = "auto"
+    global_training_device: str = "auto"
+    max_local_steps_per_option: int = 150
+    max_global_options_per_mission: int = 40
+    # env/scenarios/long_horizon_curriculum.py level (1-6) applied to
+    # long_horizon_world before generation -- curriculum-only; leaves
+    # long_horizon_world's own train/validation/test seed ranges untouched.
+    long_horizon_level: int = 1
+    # item 9 (code review, training-update-cadence finding): the Global
+    # trainer previously ran EXACTLY ONE optimizer update per MISSION,
+    # regardless of how many Global option-transitions that mission
+    # actually stored into replay (a mission with max_global_options_per_mission=40
+    # options still got only 1 update) -- with a default 1000-mission run,
+    # the real update count could be a small fraction of what a
+    # comparable flat-RL setup would perform for the same amount of
+    # collected experience.
+    #
+    # "per_mission" (this field's DEFAULT, byte-identical to every
+    # pre-existing profile/test that never sets this field): exactly one
+    # update per mission once warmup is satisfied -- unchanged behaviour.
+    # "per_transition": ``max(1, round(this_mission's stored transitions *
+    # updates_per_option_transition))`` updates per mission -- an actual
+    # update-to-data ratio scaling with collected experience. The shipped
+    # ``hierarchical_phase4.yaml`` profile explicitly opts into this (see
+    # that file) -- "per_mission" remains the SCHEMA default so nothing
+    # else silently changes cadence.
+    training_update_cadence: str = "per_mission"
+    updates_per_option_transition: float = 1.0
+
+    def validate(self) -> None:
+        if self.max_local_steps_per_option <= 0:
+            raise ConfigError("hierarchical_training.max_local_steps_per_option must be > 0")
+        if self.max_global_options_per_mission <= 0:
+            raise ConfigError("hierarchical_training.max_global_options_per_mission must be > 0")
+        if self.training_update_cadence not in ("per_mission", "per_transition"):
+            raise ConfigError(
+                "hierarchical_training.training_update_cadence must be 'per_mission' or 'per_transition', "
+                f"got {self.training_update_cadence!r}"
+            )
+        if self.updates_per_option_transition <= 0.0:
+            raise ConfigError("hierarchical_training.updates_per_option_transition must be > 0")
+        from hunter_kinodynamic_rl.env.scenarios.long_horizon_curriculum import MAX_LEVEL, MIN_LEVEL
+        if not (MIN_LEVEL <= self.long_horizon_level <= MAX_LEVEL):
+            raise ConfigError(
+                f"hierarchical_training.long_horizon_level must be in [{MIN_LEVEL}, {MAX_LEVEL}], "
+                f"got {self.long_horizon_level}"
+            )
+        if self.enabled and not self.local_checkpoint_dir:
+            raise ConfigError(
+                "hierarchical_training.enabled=true requires local_checkpoint_dir to be set "
+                "(Phase 4 never trains the local policy -- a frozen checkpoint must be named)"
+            )
+        if not self.local_checkpoint_name:
+            raise ConfigError("hierarchical_training.local_checkpoint_name must be non-empty")
+        if self.enabled and not self.local_training_profile_name:
+            raise ConfigError(
+                "hierarchical_training.enabled=true requires local_training_profile_name so the frozen "
+                "Local checkpoint's training distribution can be verified"
+            )
+        for field_name in ("local_inference_device", "global_training_device"):
+            value = getattr(self, field_name)
+            if value not in ("auto", "cpu", "cuda"):
+                raise ConfigError(
+                    f"hierarchical_training.{field_name} must be auto|cpu|cuda, got {value!r}"
+                )
+
+
+@dataclass
 class Profile:
     """The fully-resolved config for one run -- what a training/eval node
     actually consumes."""
@@ -1435,6 +1938,10 @@ class Profile:
     hierarchy: HierarchyConfig = field(default_factory=HierarchyConfig)
     long_horizon_world: LongHorizonWorldConfig = field(default_factory=LongHorizonWorldConfig)
     wall_segment_pool: WallSegmentPoolConfig = field(default_factory=WallSegmentPoolConfig)
+    global_rl: GlobalRLConfig = field(default_factory=GlobalRLConfig)
+    hierarchical_training: HierarchicalTrainingConfig = field(default_factory=HierarchicalTrainingConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    feasibility: GlobalFeasibilityConfig = field(default_factory=GlobalFeasibilityConfig)
 
     def validate(self) -> None:
         for section in (
@@ -1444,7 +1951,8 @@ class Profile:
             self.obstacle_pool, self.sensor_noise, self.training,
             self.evaluation, self.reward, self.domain_randomization, self.runtime,
             self.mission, self.localization, self.mapping, self.hierarchy,
-            self.long_horizon_world, self.wall_segment_pool,
+            self.long_horizon_world, self.wall_segment_pool, self.global_rl, self.hierarchical_training,
+            self.memory, self.feasibility,
         ):
             section.validate()
         # Cross-section consistency checks that no single section can do alone.
@@ -1525,6 +2033,45 @@ class Profile:
             )
         if self.wall_segment_pool.enabled:
             validate_wall_pool_capacity(self.wall_segment_pool, self.long_horizon_world)
+        # Phase 4: the hierarchical training loop has nothing to train
+        # against without BOTH a Global RL action/network config and a
+        # long-horizon world to explore -- mirrors wall_segment_pool's own
+        # "opt-in extension requires its base subsystem" relationship.
+        if self.hierarchical_training.enabled and not self.global_rl.enabled:
+            raise ConfigError(
+                "hierarchical_training.enabled=true requires global_rl.enabled=true "
+                "(nothing to select subgoals with otherwise)"
+            )
+        if self.hierarchical_training.enabled and not self.long_horizon_world.enabled:
+            raise ConfigError(
+                "hierarchical_training.enabled=true requires long_horizon_world.enabled=true "
+                "(nothing to explore otherwise)"
+            )
+        # Phase 5 ablations (B-G): each observation/reward-affecting flag on
+        # global_rl requires its own subsystem's section actually enabled --
+        # mirrors hierarchical_training's own "opt-in extension requires its
+        # base subsystem" relationship above.
+        if self.global_rl.topology_feedback_enabled and not self.memory.enabled:
+            raise ConfigError(
+                "global_rl.topology_feedback_enabled=true requires memory.enabled=true "
+                "(nothing to build the node tensor/candidate features from otherwise)"
+            )
+        if self.global_rl.feasibility_feedback_enabled and not self.feasibility.enabled:
+            raise ConfigError(
+                "global_rl.feasibility_feedback_enabled=true requires feasibility.enabled=true"
+            )
+        if self.global_rl.global_risk_feedback_enabled and not self.feasibility.enabled:
+            raise ConfigError(
+                "global_rl.global_risk_feedback_enabled=true requires feasibility.enabled=true "
+                "(the global-risk candidate feature reuses feasibility's own rollout/predicted risk, "
+                "never a second independent risk computation)"
+            )
+        if self.memory.enabled and not self.global_rl.enabled:
+            raise ConfigError("memory.enabled=true requires global_rl.enabled=true (nothing to feed into otherwise)")
+        if self.feasibility.enabled and not self.global_rl.enabled:
+            raise ConfigError(
+                "feasibility.enabled=true requires global_rl.enabled=true (nothing to feed into otherwise)"
+            )
 
 
 def validate_procedural_pool_capacity(obstacle_pool: "ObstaclePoolConfig", scenario: "ScenarioConfig") -> None:

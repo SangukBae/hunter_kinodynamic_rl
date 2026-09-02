@@ -44,6 +44,12 @@ from hunter_kinodynamic_rl.env.randomization.domain_randomizer import sample_dra
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
 from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
+from hunter_kinodynamic_rl.evaluation.fingerprint import (
+    architecture_fingerprint,
+    architecture_fingerprint_from_resolved_config,
+    local_training_contract_fingerprint,
+    local_training_contract_fingerprint_from_resolved_config,
+)
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer, RiskTransition
 from hunter_kinodynamic_rl.training.checkpoint_policy import checkpoint_due
@@ -970,6 +976,15 @@ class TrainerBase:
             # every checkpoint self-describing regardless of what the
             # profile file on disk looks like later.
             "resolved_config": dataclasses.asdict(self.profile),
+            # defect 2 (hierarchical live executor): the SUBGOAL-DISTRIBUTION
+            # contract this checkpoint was actually trained under
+            # (scenario.goal_sampling_mode/goal_distance_range_m/
+            # goal_direction_sectors_deg/goal_infeasible_fraction/
+            # feasibility_check), separate from architecture_fingerprint --
+            # two checkpoints can share an architecture fingerprint while
+            # having trained under completely different subgoal
+            # distributions. See evaluation.fingerprint's own docstring.
+            "local_training_contract_fingerprint": local_training_contract_fingerprint(self.profile),
             "state_dim": self.state_dim,
             "action_dim": self.action_dim,
             "training_steps": self.agent.training_steps,
@@ -1037,6 +1052,7 @@ class TrainerBase:
         # ckpt_manager.load_generation_lease's docstring.
         with ckpt_manager.load_generation_lease(
             directory, checkpoint_tag, self.agent.checkpoint_components(),
+            map_location=str(self.agent.device),
         ) as result:
             manifest = result["manifest"]
 
@@ -1044,25 +1060,62 @@ class TrainerBase:
             # dimension/profile compatibility를 fail-fast 검증한다") -- a silent
             # dimension mismatch would corrupt training with garbage gradients
             # instead of an immediate, legible error.
-            ckpt_state_dim = manifest.get("state_dim")
-            ckpt_action_dim = manifest.get("action_dim")
-            if ckpt_state_dim is not None and ckpt_state_dim != self.state_dim:
+            required_fields = (
+                "state_dim", "action_dim", "profile_name", "resolved_config",
+                "local_training_contract_fingerprint",
+            )
+            missing = [name for name in required_fields if name not in manifest or manifest[name] is None]
+            if missing:
+                raise ValueError(
+                    f"resume checkpoint is missing required compatibility field(s): {missing}"
+                )
+
+            ckpt_state_dim = manifest["state_dim"]
+            ckpt_action_dim = manifest["action_dim"]
+            if ckpt_state_dim != self.state_dim:
                 raise ValueError(
                     f"resume dimension mismatch: checkpoint state_dim={ckpt_state_dim} != "
                     f"live environment state_dim={self.state_dim} (observation config changed?)"
                 )
-            if ckpt_action_dim is not None and ckpt_action_dim != self.action_dim:
+            if ckpt_action_dim != self.action_dim:
                 raise ValueError(
                     f"resume dimension mismatch: checkpoint action_dim={ckpt_action_dim} != "
                     f"live environment action_dim={self.action_dim}"
                 )
-            ckpt_profile = manifest.get("profile_name")
-            if ckpt_profile and ckpt_profile != self.profile.name:
+            ckpt_profile = manifest["profile_name"]
+            if ckpt_profile != self.profile.name:
                 raise ValueError(
                     f"resume profile mismatch: checkpoint was saved under profile {ckpt_profile!r}, "
                     f"resuming with {self.profile.name!r} -- use the SAME profile to resume, or accept "
                     f"the risk explicitly by editing this check if a deliberate architecture-preserving "
                     f"profile swap is intended."
+                )
+            recorded_config = manifest["resolved_config"]
+            if architecture_fingerprint_from_resolved_config(recorded_config) != architecture_fingerprint(
+                self.profile
+            ):
+                raise ValueError(
+                    "resume architecture mismatch: checkpoint resolved_config does not match the current "
+                    "Local policy architecture/action/observation contract"
+                )
+            recorded_training_contract = manifest["local_training_contract_fingerprint"]
+            try:
+                derived_training_contract = local_training_contract_fingerprint_from_resolved_config(
+                    recorded_config
+                )
+            except KeyError as exc:
+                raise ValueError(f"resume checkpoint has an incomplete Local training contract: {exc}") from exc
+            current_training_contract = local_training_contract_fingerprint(self.profile)
+            if recorded_training_contract != derived_training_contract:
+                raise ValueError(
+                    "resume Local training-contract metadata is internally inconsistent: "
+                    f"recorded={recorded_training_contract}, derived={derived_training_contract}"
+                )
+            if recorded_training_contract != current_training_contract:
+                raise ValueError(
+                    "resume Local training distribution mismatch: checkpoint="
+                    f"{recorded_training_contract}, current={current_training_contract}; start a fresh run "
+                    "instead of relabeling old weights after changing the subgoal distribution"
                 )
 
             self.agent.load_ent_coef_state(manifest.get("ent_coef_state"))

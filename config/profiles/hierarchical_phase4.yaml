@@ -1,0 +1,183 @@
+# Phase 4 Global RL MVP verification profile (see
+# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 8). Exercises
+# every opt-in section the hierarchical stack needs together: Phase 1
+# mission/localization/mapping, Phase 3 long_horizon_world/wall_segment_pool,
+# and this phase's own global_rl/hierarchical_training.
+#
+# 2026-08-31: action_space/features/observation/risk/counterfactual below
+# are NOT defaults.yaml's -- they are copied VERBATIM from
+# kinodynamic_tqc_arbitrary_subgoal.yaml (the profile
+# hierarchical_training.local_checkpoint_dir/name below actually points
+# at). LiveGazeboLocalExecutor builds its RiskAgent/LocalPolicyController
+# from THIS profile, so these sections must match the frozen checkpoint's
+# own training-time architecture EXACTLY (same state_dim, same
+# risk_critic/counterfactual_risk wiring) -- a mismatch here fails
+# load_generation's own state_dict shape check immediately (confirmed
+# live: the previous defaults.yaml-inherited shape here -- robot_state_dim
+# defaulting to 7 (legacy, non-trajectory) and temporal_context=false --
+# does NOT match the frozen checkpoint's real 328-wide input and raises
+# before LiveGazeboLocalExecutor's OWN state_dim/architecture_fingerprint
+# checks are even reached, since torch's own state_dict loading happens
+# first inside ckpt_manager.load_generation). Update these sections
+# together with local_checkpoint_dir/local_checkpoint_name whenever the
+# frozen Local checkpoint changes.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  include_stop_candidate: true
+
+mission:
+  position_tolerance_m: 0.6
+  heading_tolerance_rad: 3.141592653589793
+  require_low_speed_on_goal: true
+  goal_speed_threshold_mps: 0.1
+
+localization:
+  backend: gazebo_odom
+  odom_topic: /odometry
+  pose_timeout_sec: 0.5
+  minimum_confidence: 0.5
+  publish_mission_tf: true
+
+mapping:
+  resolution_m: 0.2
+  mission_size_cells: 256
+  rolling_size_cells: 128
+  visit_radius_m: 0.4
+
+hierarchy:
+  subgoal_position_tolerance_m: 0.5
+  local_option_timeout_steps: 200
+  no_progress_window_steps: 40
+  no_progress_min_delta_m: 0.1
+  consecutive_emergency_stop_limit: 5
+  local_risk_threshold: 0.8
+  localization_min_confidence: 0.5
+  max_retries_per_subgoal: 1
+  mission_timeout_steps: 6000
+
+long_horizon_world:
+  enabled: true
+  size_m: 24.0
+  resolution_m: 0.25
+  wall_thickness_m: 0.2
+  wall_height_m: 1.0
+  corridor_width_min_m: 2.0
+  corridor_width_max_m: 3.0
+  room_count_range: [3, 6]
+  dead_end_count_range: [1, 3]
+  loop_count_range: [1, 3]
+  alternative_route_min_count: 1
+  start_goal_geodesic_min_m: 10.0
+  require_ackermann_feasibility: true
+  generation_attempt_limit: 100
+  train_seed_range: [0, 9999]
+  validation_seed_range: [10000, 11999]
+  test_seed_range: [12000, 13999]
+
+# Sized against config/schema.py's validate_wall_pool_capacity the same way
+# hierarchical_phase3.yaml is (see that profile's own comment for the
+# derivation): largest class must cover size_m/3 = 8.0, and each class's
+# guaranteed round-robin slot count (max_segments // len(length_classes_m))
+# must cover env.scenarios.long_horizon_generator's worst-case per-class
+# segment demand for THIS profile's own long_horizon_world settings above.
+wall_segment_pool:
+  enabled: true
+  max_segments: 150
+  length_classes_m: [2.0, 3.0, 8.0]
+  parking_margin_m: 5.0
+
+global_rl:
+  enabled: true
+  direction_degrees: [-180.0, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0]
+  distances_m: [3.0, 6.0]
+  fallback_mode: backtrack
+  fallback_backtrack_distance_m: 2.0
+  rollout_sample_count: 8
+  robot_footprint_radius_m: 0.45
+  map_crop_size_cells: 96
+  goal_distance_norm_m: 30.0
+  max_speed_norm_mps: 1.5
+  cnn_channels: [16, 32]
+  map_feature_dim: 128
+  scalar_feature_dim: 32
+  candidate_feature_dim: 32
+  fused_feature_dim: 128
+  replay_capacity: 50000
+  batch_size: 64
+  gamma: 0.99
+  learning_rate: 0.0001
+  target_update_interval_steps: 500
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_steps: 20000
+  warmup_options: 200
+  goal_reward: 100.0
+  progress_reward_scale: 1.0
+  exploration_reward_scale: 0.02
+  exploration_reward_clip: 5.0
+  revisit_penalty_scale: 0.05
+  repeated_deadend_penalty: 5.0
+  local_failure_penalty_timeout: 2.0
+  local_failure_penalty_no_progress: 2.0
+  local_failure_penalty_blocked: 3.0
+  local_failure_penalty_high_risk: 4.0
+  local_failure_penalty_cancelled_by_replan: 1.0
+  risk_penalty_scale: 1.0
+  elapsed_penalty_per_local_step: 0.01
+
+hierarchical_training:
+  enabled: true
+  # 2026-08-31: points at a REAL trained checkpoint --
+  # runtime/experiments/local_frozen is a symlink to
+  # 20260831_005836_kinodynamic_tqc_arbitrary_subgoal_seed0 (the
+  # kinodynamic_tqc_arbitrary_subgoal profile, section 6.6's arbitrary
+  # short-range subgoal distribution). "best"/"latest" (no "final" --
+  # training was stopped at global_step=10274/150000, training_steps=7274
+  # gradient updates, to free Gazebo for Phase 3/4 live wiring
+  # verification within this session; see the plan doc's 2026-08-31 status
+  # notes and the session's closing report for the exact, honest
+  # performance level this represents -- NOT a claim of full convergence).
+  local_checkpoint_dir: "runtime/experiments/local_frozen/checkpoints"
+  # defect-fix item 5: unified to "final" -- the ONE canonical Local
+  # promotion tag across every profile (matches every hierarchical_phase5_*
+  # profile and evaluation.local_promotion.promote_local_checkpoint's own
+  # default target_tag). Previously "best", which promote_local_checkpoint
+  # never wrote (it only ever creates/updates a "final" symlink), so a
+  # promoted checkpoint was silently invisible to this profile.
+  local_checkpoint_name: "final"
+  local_training_profile_name: kinodynamic_tqc_arbitrary_subgoal
+  # Supported live=True path. CUDA-authored checkpoints are explicitly
+  # remapped to CPU by LiveGazeboLocalExecutor; this avoids the observed
+  # in-process CUDA/rclpy publisher-context failure during the bounded smoke.
+  local_inference_device: cpu
+  global_training_device: cpu
+  max_local_steps_per_option: 150
+  max_global_options_per_mission: 40
+  # item 9: a real update-to-data ratio (one optimizer step per stored
+  # Global option-transition, once warmup is satisfied) instead of the
+  # schema default's one-update-per-MISSION -- a mission can produce up to
+  # max_global_options_per_mission=40 transitions, so this is up to a 40x
+  # increase in gradient updates for the same number of missions run.
+  training_update_cadence: per_transition
+  updates_per_option_transition: 1.0
+  long_horizon_level: 1

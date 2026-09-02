@@ -28,8 +28,10 @@ import yaml
 
 from hunter_kinodynamic_rl.config.schema import (
     ActionSpaceConfig, AlgorithmConfig, ConfigError, CounterfactualConfig, DomainRandomizationConfig,
-    DynamicsConfig, EvaluationConfig, FeatureFlags, HierarchyConfig, LocalizationConfig,
-    LongHorizonWorldConfig, MappingConfig,
+    DynamicsConfig, EvaluationConfig, FeatureFlags, GlobalFeasibilityConfig, GlobalRLConfig,
+    HierarchicalTrainingConfig,
+    HierarchyConfig, LocalizationConfig,
+    LongHorizonWorldConfig, MappingConfig, MemoryConfig,
     MissionConfig, ObservationConfig, ObstaclePoolConfig, Profile,
     RewardConfig, RiskConfig, RobotConfig, RuntimeConfig, SACHyperparameters, ScenarioConfig,
     SensorNoiseConfig, StartPoseConfig, TQCHyperparameters, TrainingConfig, TrajectoryConfig,
@@ -63,6 +65,10 @@ _SECTION_TYPES = {
     "hierarchy": HierarchyConfig,
     "long_horizon_world": LongHorizonWorldConfig,
     "wall_segment_pool": WallSegmentPoolConfig,
+    "global_rl": GlobalRLConfig,
+    "hierarchical_training": HierarchicalTrainingConfig,
+    "memory": MemoryConfig,
+    "feasibility": GlobalFeasibilityConfig,
 }
 
 

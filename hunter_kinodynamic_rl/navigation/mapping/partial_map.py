@@ -24,6 +24,7 @@ originally documented).
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -60,6 +61,24 @@ class MapChannels:
     origin_y: float
 
 
+@dataclass(frozen=True)
+class PartialMapSnapshot:
+    """One lock-consistent read of every mutable map raster.
+
+    Live scan callbacks update occupancy while the Global decision thread
+    reads occupancy, visit and failure history together.  Returning copies
+    prevents callers from retaining a view that mutates after the lock is
+    released.
+    """
+
+    channels: MapChannels
+    observed: np.ndarray
+    log_odds: np.ndarray
+    visited_count: np.ndarray
+    failure_count: np.ndarray
+    last_visit_step: np.ndarray
+
+
 class PartialMap:
     def __init__(self, config: MappingConfig, size_cells: Optional[int] = None) -> None:
         self.config = config
@@ -79,6 +98,20 @@ class PartialMap:
         self.visited_count = np.zeros((h, w), dtype=np.uint16)
         self.failure_count = np.zeros((h, w), dtype=np.uint8)
         self.last_visit_step = np.full((h, w), -1, dtype=np.int32)
+        # item 7: guards every read/write of the arrays above. A live
+        # executor's scan CALLBACK (a background ROS spin thread) writes
+        # via integrate_scan()/record_visit() while the option/main thread
+        # concurrently reads via channels()/observed_count() -- without
+        # this, a reader can observe a PARTIALLY-updated scan (some beams'
+        # log_odds/observed writes applied, others not yet), and
+        # channels()'s own occupied/free/unknown/inflated derivation reads
+        # observed+log_odds together, so a torn snapshot there is a torn
+        # 4-way map partition, not just one stale field. RLock (not a plain
+        # Lock): integrate_scan() calls integrate_beam() in a loop, and a
+        # caller may reasonably call integrate_beam() directly too -- both
+        # need to be independently lock-safe without the outer call
+        # deadlocking on its own inner acquisition.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ grid <-> mission-frame
     def world_to_cell(self, x: float, y: float) -> Optional[Tuple[int, int]]:
@@ -135,49 +168,68 @@ class PartialMap:
         the map entirely). The boundary-clipped cell still gets marked
         FREE -- the ray was genuinely observed passing through it
         unobstructed -- exactly like the no-endpoint max-range case.
-        """
-        if math.isnan(range_m) or range_m == -math.inf:
-            return
-        if math.isinf(range_m):
-            effective_r = float(range_max)
-            is_hit = False
-        else:
-            if range_m < range_min:
+
+        item 7: holds this instance's lock for the duration -- a single
+        beam's read-modify-write of log_odds/observed must never interleave
+        with a concurrent reader's channels()/observed_count() call."""
+        with self._lock:
+            if math.isnan(range_m) or range_m == -math.inf:
                 return
-            effective_r = min(float(range_m), float(range_max))
-            is_hit = range_m < (range_max - _MAX_RANGE_EPS)
-        if effective_r <= 0.0:
-            return
+            if math.isinf(range_m):
+                effective_r = float(range_max)
+                is_hit = False
+            else:
+                if range_m < range_min:
+                    return
+                effective_r = min(float(range_m), float(range_max))
+                is_hit = range_m < (range_max - _MAX_RANGE_EPS)
+            if effective_r <= 0.0:
+                return
 
-        sx, sy = sensor_origin_xy
-        ex = sx + math.cos(angle_mission) * effective_r
-        ey = sy + math.sin(angle_mission) * effective_r
-        endpoint_in_bounds = self.world_to_cell(ex, ey) is not None
+            sx, sy = sensor_origin_xy
+            ex = sx + math.cos(angle_mission) * effective_r
+            ey = sy + math.sin(angle_mission) * effective_r
+            endpoint_in_bounds = self.world_to_cell(ex, ey) is not None
 
-        start_cell = self._clamp_to_grid_index(sx, sy)
-        end_cell = self._clamp_to_grid_index(ex, ey)
-        cells = trace_clipped(start_cell[0], start_cell[1], end_cell[0], end_cell[1], self.size_cells, self.size_cells)
-        if not cells:
-            return
+            start_cell = self._clamp_to_grid_index(sx, sy)
+            end_cell = self._clamp_to_grid_index(ex, ey)
+            cells = trace_clipped(
+                start_cell[0], start_cell[1], end_cell[0], end_cell[1], self.size_cells, self.size_cells)
+            if not cells:
+                return
 
-        for r, c in cells[:-1]:
-            self._apply_log_odds(r, c, self.config.free_log_odds_delta)
-        r_end, c_end = cells[-1]
-        if is_hit and endpoint_in_bounds:
-            self._apply_log_odds(r_end, c_end, self.config.occupied_log_odds_delta)
-        else:
-            self._apply_log_odds(r_end, c_end, self.config.free_log_odds_delta)
+            for r, c in cells[:-1]:
+                self._apply_log_odds(r, c, self.config.free_log_odds_delta)
+            r_end, c_end = cells[-1]
+            if is_hit and endpoint_in_bounds:
+                self._apply_log_odds(r_end, c_end, self.config.occupied_log_odds_delta)
+            else:
+                self._apply_log_odds(r_end, c_end, self.config.free_log_odds_delta)
 
     def integrate_scan(
         self, sensor_origin_xy: Tuple[float, float], beam_angles_mission: np.ndarray,
         ranges: np.ndarray, range_max: float, range_min: float = 0.0,
     ) -> None:
+        """item 7: the outer lock acquisition here (an RLock, so each
+        per-beam integrate_beam() call below re-entering it is a no-op
+        extra acquisition, never a deadlock) makes the WHOLE scan atomic
+        from a reader's point of view -- a channels()/observed_count()
+        call from another thread sees either the state before this scan
+        started or after it fully finished, never a partially-integrated
+        scan (some beams applied, others not yet). This is held only for
+        the beam loop itself (a fast, pure numpy/python pass over one
+        scan's beams, typically sub-millisecond) -- callers (e.g.
+        LiveGazeboLocalExecutor._on_scan) do their OWN slower work (pose
+        lookup, frame transforms, localization-confidence checks) OUTSIDE
+        this call, before ever acquiring the lock, so a sensor callback
+        never holds it for anything beyond this one bounded pass."""
         beam_angles_mission = np.asarray(beam_angles_mission, dtype=np.float64)
         ranges = np.asarray(ranges, dtype=np.float64)
         if beam_angles_mission.shape[0] != ranges.shape[0]:
             raise ValueError("beam_angles_mission and ranges must have the same length")
-        for angle, r in zip(beam_angles_mission, ranges):
-            self.integrate_beam(sensor_origin_xy, float(angle), float(r), range_max, range_min=range_min)
+        with self._lock:
+            for angle, r in zip(beam_angles_mission, ranges):
+                self.integrate_beam(sensor_origin_xy, float(angle), float(r), range_max, range_min=range_min)
 
     def _clamp_to_grid_index(self, x: float, y: float) -> Tuple[int, int]:
         """Un-bounds-checked cell index (may lie outside the grid) --
@@ -195,9 +247,10 @@ class PartialMap:
             return
         radius_cells = (self.config.visit_radius_m if radius_m is None else radius_m) / self.resolution_m
         cells = [c for c in rasterize_circle_cells(center[0], center[1], radius_cells) if self.in_bounds(*c)]
-        increment_saturating(self.visited_count, cells, self.config.visited_count_saturation)
-        for r, c in cells:
-            self.last_visit_step[r, c] = int(step)
+        with self._lock:
+            increment_saturating(self.visited_count, cells, self.config.visited_count_saturation)
+            for r, c in cells:
+                self.last_visit_step[r, c] = int(step)
 
     def record_failure(self, x: float, y: float, radius_m: Optional[float] = None) -> None:
         center = self.world_to_cell(x, y)
@@ -205,9 +258,12 @@ class PartialMap:
             return
         radius_cells = (self.config.visit_radius_m if radius_m is None else radius_m) / self.resolution_m
         cells = [c for c in rasterize_circle_cells(center[0], center[1], radius_cells) if self.in_bounds(*c)]
-        increment_saturating(self.failure_count, cells, self.config.failure_count_saturation)
+        with self._lock:
+            increment_saturating(self.failure_count, cells, self.config.failure_count_saturation)
 
     def _inflate(self, occupied: np.ndarray) -> np.ndarray:
+        """Caller (channels()) already holds the lock -- never called on
+        its own from outside this class."""
         radius_cells = self.config.inflation_radius_m / self.resolution_m
         if radius_cells <= 0.0:
             return occupied.copy()
@@ -219,7 +275,7 @@ class PartialMap:
         return inflated
 
     # ------------------------------------------------------------------ policy-facing channels
-    def channels(self) -> MapChannels:
+    def _channels_locked(self) -> MapChannels:
         occupied = self.observed & (self.log_odds >= self.config.occupied_threshold)
         free = self.observed & (self.log_odds <= self.config.free_threshold)
         unknown = ~self.observed
@@ -232,3 +288,49 @@ class PartialMap:
             visited=visited, failure=failure, inflated=inflated,
             resolution_m=self.resolution_m, origin_x=self.origin_x, origin_y=self.origin_y,
         )
+
+    def channels(self) -> MapChannels:
+        """item 7: locked for the whole derivation -- occupied/free/
+        unknown/observed_uncertain/inflated are all derived TOGETHER from
+        ``observed``/``log_odds`` (and visited/failure from their own
+        arrays); reading them one-at-a-time without a lock could interleave
+        with a concurrent integrate_scan()/record_visit() call mid-scan,
+        producing an internally-INCONSISTENT 4-way partition (e.g. a cell
+        appearing in neither ``occupied`` nor ``unknown`` because
+        ``observed`` was read before a beam set it True but ``log_odds``
+        was read after)."""
+        with self._lock:
+            return self._channels_locked()
+
+    def snapshot(self) -> PartialMapSnapshot:
+        """Returns occupancy and history rasters from exactly one map state."""
+        with self._lock:
+            return PartialMapSnapshot(
+                channels=self._channels_locked(),
+                observed=self.observed.copy(),
+                log_odds=self.log_odds.copy(),
+                visited_count=self.visited_count.copy(),
+                failure_count=self.failure_count.copy(),
+                last_visit_step=self.last_visit_step.copy(),
+            )
+
+    def visited_cell_count(self) -> int:
+        with self._lock:
+            return int(np.count_nonzero(self.visited_count))
+
+    def failure_count_at(self, x: float, y: float) -> int:
+        cell = self.world_to_cell(x, y)
+        if cell is None:
+            return 0
+        with self._lock:
+            return int(self.failure_count[cell])
+
+    def observed_count(self) -> int:
+        """item 7: lock-protected equivalent of ``int(partial_map.observed.sum())``
+        -- every call site computing exploration-gain/newly-explored-cell
+        counts (a before/after ``.observed.sum()`` diff) MUST use this
+        instead of reading ``.observed`` directly, or the "before" and
+        "after" snapshots can straddle a concurrent scan-callback write on
+        a live executor (see this class's own lock docstring)."""
+        with self._lock:
+            return int(self.observed.sum())

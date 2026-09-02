@@ -240,3 +240,69 @@ def test_zero_inflation_radius_makes_inflated_equal_occupied():
     pm.integrate_beam((0.0, 0.0), angle_mission=0.0, range_m=3.0, range_max=10.0)
     channels = pm.channels()
     assert np.array_equal(channels.inflated, channels.occupied)
+
+
+# ---------------------------------------------------------------------------
+# item 7: PartialMap concurrency -- a live executor's scan CALLBACK (a
+# background ROS spin thread) writes via integrate_scan()/record_visit()
+# while the option/main thread concurrently reads via channels()/
+# observed_count(). Stress-tests the lock added to PartialMap for exactly
+# this: no torn reads, no crash, no lost updates, across many concurrent
+# writer/reader iterations.
+# ---------------------------------------------------------------------------
+
+def test_concurrent_scan_writes_and_channel_reads_never_produce_a_torn_partition():
+    import threading
+
+    pm = PartialMap(_config(mission_size_cells=60))
+    n_beams = 72
+    angles = np.linspace(-math.pi, math.pi, n_beams, endpoint=False)
+    stop = threading.Event()
+    errors = []
+
+    def _writer():
+        rng = np.random.RandomState(0)
+        while not stop.is_set():
+            ranges = rng.uniform(0.5, 9.5, size=n_beams)
+            try:
+                pm.integrate_scan((0.0, 0.0), angles, ranges, range_max=10.0)
+                pm.record_visit(0.0, 0.0, step=1)
+            except Exception as e:  # noqa: BLE001 -- captured for the assertion below, not swallowed
+                errors.append(e)
+                return
+
+    def _reader():
+        while not stop.is_set():
+            try:
+                channels = pm.channels()
+                # Exhaustive 4-way partition invariant (module docstring):
+                # every cell belongs to EXACTLY one of these four -- if a
+                # reader ever observes a torn snapshot (some arrays from
+                # before a concurrent write, some from after), this sum
+                # would not equal exactly 1 everywhere.
+                partition_sum = (
+                    channels.occupied.astype(np.int32) + channels.free.astype(np.int32)
+                    + channels.unknown.astype(np.int32) + channels.observed_uncertain.astype(np.int32)
+                )
+                if not np.all(partition_sum == 1):
+                    errors.append(AssertionError("torn 4-way map partition observed under concurrent access"))
+                    return
+                pm.observed_count()
+            except Exception as e:  # noqa: BLE001 -- captured for the assertion below, not swallowed
+                errors.append(e)
+                return
+
+    threads = [threading.Thread(target=_writer) for _ in range(2)] + [threading.Thread(target=_reader) for _ in range(3)]
+    for t in threads:
+        t.start()
+    stop.wait(1.0)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5.0)
+        assert not t.is_alive(), "a writer/reader thread failed to terminate"
+
+    assert errors == [], f"concurrent access produced errors: {errors}"
+    # Sanity: the writers actually ran and produced real map content --
+    # this test would trivially "pass" with zero real concurrency exercised
+    # if integrate_scan silently no-op'd.
+    assert pm.observed_count() > 0

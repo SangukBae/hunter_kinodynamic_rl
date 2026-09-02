@@ -1,0 +1,33 @@
+# Requirement B: config-driven Local checkpoint promotion acceptance gate.
+# Loaded by evaluation.local_promotion.load_local_acceptance_config().
+# Edit these thresholds to tune what counts as a "passing" formal Local
+# subgoal benchmark before a checkpoint may be promoted to local_frozen.
+#
+# defect-fix item 2: min_subgoal_success_rate/min_infeasible_goal_rejection_rate
+# are gone -- see evaluation/local_subgoal_benchmark.py's module docstring
+# for why (no explicit "the policy recognized this goal as unreachable"
+# signal exists; infeasible scenarios must never dilute the FEASIBLE
+# success-rate denominator or be scored as if timeout==rejection).
+#
+# Acceptance-contract rationale at the profile default
+# scenario.goal_infeasible_fraction=0.15, num_scenarios=20: the expected
+# infeasible-scenario count per formal run is ~3, with real run-to-run
+# variance (Binomial(20, 0.15)) -- P(0 infeasible)~=3.9%,
+# P(<=1 infeasible)~=17.6%. min_infeasible_scenarios=1 accepts that ~3.9%
+# of otherwise-good runs will need a re-run due to sampling bad luck alone,
+# without demanding an unrealistically large num_scenarios just to
+# stabilize a rare-event rate. The infeasible-conditional thresholds below
+# are deliberately loose (0.5) given how few samples back them at this
+# scenario count -- they catch a policy that is CLEARLY failing on
+# infeasible goals, not a policy that missed one of three.
+
+min_scenarios: 20
+min_feasible_subgoal_success_rate: 0.5
+max_collision_rate: 0.15
+max_timeout_rate: 0.3
+max_high_risk_failure_rate: 0.15
+min_infeasible_scenarios: 1
+max_infeasible_false_success_rate: 0.5
+max_infeasible_collision_rate: 0.5
+max_infeasible_high_risk_rate: 0.5
+min_infeasible_safe_termination_rate: 0.34

@@ -264,6 +264,19 @@ def test_saved_last_checkpoint_step_matches_its_own_global_step(tmp_path):
     assert manifest["last_checkpoint_step"] == manifest["global_step"] == 8
 
 
+def test_resume_rejects_same_named_profile_after_local_goal_distribution_changes(tmp_path):
+    trainer = _make_trainer(str(tmp_path / "distribution_change"), eval_freq=4, max_timesteps=4, seed=3)
+    trainer.run()
+
+    resumed = _make_trainer(str(tmp_path / "distribution_change"), eval_freq=4, max_timesteps=8, seed=3)
+    resumed.profile = dataclasses.replace(
+        resumed.profile,
+        scenario=dataclasses.replace(resumed.profile.scenario, goal_infeasible_fraction=0.25),
+    )
+    with pytest.raises(ValueError, match="Local training distribution mismatch"):
+        resumed._resume_from(str(tmp_path / "distribution_change"), checkpoint_tag="latest")
+
+
 def test_checkpoint_manifest_embeds_the_full_resolved_config_not_just_profile_name(tmp_path):
     """A checkpoint must be self-describing regardless of what the
     profile's YAML file on disk looks like LATER -- configs/
