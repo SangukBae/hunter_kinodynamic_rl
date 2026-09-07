@@ -39,6 +39,9 @@ locked evaluation과 campaign 집계까지 전용 code path가 구현돼 있다.
 | [templates/MODEL_CARD.md](templates/MODEL_CARD.md) | checkpoint 승격·배포 양식 |
 | [templates/REAL_ROBOT_TRIAL_CARD.md](templates/REAL_ROBOT_TRIAL_CARD.md) | 실차 승인·실행 양식 |
 
+`ARCHITECTURE.md`, `DELIVERY_REPORT.md`, `ABLATION_MATRIX.md`는 기존 editor/bookmark를 위한 짧은
+compatibility index이며 별도 정본이 아니다.
+
 `README.md` 자체는 위 문서의 위치와 권한만 설명하며 연구 사실의 정본이 아니다.
 
 ## 정본 우선순위
@@ -89,9 +92,10 @@ locked evaluation과 campaign 집계까지 전용 code path가 구현돼 있다.
 
 - prior audit의 Docker `2,138 passed`는 provenance가 불완전한 code-health snapshot이다.
 - Stage-2 L0–L5 formal matrix는 training **0/30**, benchmark **0/30**이다.
-- TRACTOR-TQC와 matched B1–B8 implementation, formal realized-track collector, 공통
-  training/calibration/locked-evaluation campaign, frozen protocol v1과 616-instance split-safe
-  scenario plan은 존재하지만 dataset/training/benchmark/calibration/target timing 결과는 없다.
+- TRACTOR-TQC와 B1–B8 development implementation, realized-track relabeler, navigation evaluator,
+  frozen acceptance/scenario protocol v1과 616-instance split-safe scenario plan은 존재한다.
+  다만 full Stage 3–5, supervision schema, H1–H3 evaluator, semantic promotion과 system-axis
+  scenario가 미구현이라 formal campaign evidence 단계는 fail-closed되어 있다.
 - 별도 `tractor_env_v2` curriculum과 48개 fixed ID/OOD scenario가 구현·checksum 고정됐지만,
   아직 navigation rollout 또는 비교 성능 증거는 아니다.
 - accepted Local을 고정한 formal Global 결과와 Hunter SE 실차 navigation 증거도 없다.
@@ -99,6 +103,6 @@ locked evaluation과 campaign 집계까지 전용 code path가 구현돼 있다.
 따라서 현재 허용되는 요약은 다음과 같다.
 
 > The package contains a TQC-based Local baseline, hierarchical infrastructure, and an
-> untrained regression-tested TRACTOR-TQC and matched-baseline implementation with a formal comparison
-> runner. Formal training, comparative
+> untrained regression-tested TRACTOR-TQC and matched-baseline development implementation. The full
+> formal campaign is blocked by explicit implementation-readiness gates. Formal training, comparative
 > benchmarking, calibration, target-hardware timing, and real-robot validation remain open.

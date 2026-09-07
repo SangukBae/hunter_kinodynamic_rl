@@ -1,6 +1,6 @@
 # Data and Replay Contract
 
-Status: **IMPLEMENTED core storage/index/sampler and frozen scenario plan; no collected rollout dataset**
+Status: **PARTIAL IMPLEMENTATION: core storage/index/sampler/candidate labels; full supervision and lineage schema blocked; no collected rollout dataset**
 Schema: `tractor_sequence_v2`
 
 Current IID transition replay cannot train recurrent ego-warped belief or cause-time risk. TRACTOR
@@ -12,12 +12,15 @@ not silently reinterpret legacy replay, and no dataset artifact has yet passed t
 
 | Layer | Role |
 |---|---|
-| raw episode store | immutable physical values, timestamps, masks, outcomes and provenance |
+| raw episode store | immutable packed observation, timestamps, masks, outcomes and core provenance |
 | replay index | valid sequence starts, event strata, split and sidecar references |
 | sampled batch | burn-in + loss window, normalized only after loading |
 | optional sidecar | large counterfactual/dense future targets keyed by episode and step |
 
-Raw physical values remain authoritative. Normalization parameters are model-manifest fields.
+Candidate trajectories and command telemetry use physical units, but the current observation is stored
+as the packed policy vector rather than decomposed authoritative raw scan/goal/pose fields. A future
+formal schema must preserve those raw fields separately; normalization parameters remain model-manifest
+fields.
 
 ## 2. Episode header
 
@@ -38,9 +41,16 @@ An episode belongs to exactly one development, calibration or locked-test split.
 sidecars inherit that assignment. In v2, `group_id` equals the canonical scenario geometry SHA-256;
 renaming a copied scenario therefore cannot hide cross-split geometry leakage.
 
-## 3. Per-step record
+## 3. Per-step record: current implementation and formal target
 
-### Observation and timing
+The currently enforced `CORE_STEP_FIELDS` store the packed observation and masks, motion delta,
+previous published command, covariance/localization fields, requested normalized action, reward,
+measured `dt`/discount and terminal semantics. `CANDIDATE_FIELDS` store fixed-capacity physical
+trajectories, candidate masks, cause/time/censor/severity/progress labels and one candidate-set hash.
+`PRIVILEGED_LABEL_FIELDS` store the pre-action ego/obstacle snapshot. Fields listed below that are not
+in those three executable tuples are **formal target extensions**, not current collected columns.
+
+### Target observation and timing extensions
 
 ```text
 decision_timestamp_ns
@@ -58,7 +68,7 @@ The four-frame observation is reconstructed inside one reset epoch. `dt` is time
 must be positive. Missing motion, pose or scan validity is stored explicitly; it is never encoded as
 valid zero.
 
-### Action and response
+### Target action and response extensions
 
 ```text
 action_normalized_requested[3]
@@ -69,12 +79,14 @@ command_published[2], publication_valid, publication_timestamp_ns
 selected_candidate_index, selected_candidate_set_sha256, selector_reason
 ```
 
-Requested, guarded and confirmed-published values are distinct. The next row consumes the previous
+The runtime telemetry distinguishes requested, guarded and confirmed-published values, but the current
+sequence row stores only the requested normalized action and previous confirmed-published command. The
+formal target requires all fields below. The next row consumes the previous
 confirmed published command exactly once. `selected_candidate_index=-1` iff selection is disabled,
 no candidate is feasible, or fallback is guard-only. Otherwise it indexes a present/model-valid row in
 the exact `selected_candidate_set_sha256`; mismatch or an out-of-range index rejects the transition.
 
-### Outcome and risk
+### Outcome and risk: core plus target extensions
 
 ```text
 reward and named reward terms
@@ -103,9 +115,9 @@ is deterministically derived from `transition_dt_sec` and the fingerprinted refe
 it is not silently fixed to nominal 0.1 s. No-event sequence end is censored unless the observation
 window proves survival to its horizon.
 
-### Scene and flow supervision
+### Target scene and flow supervision — not implemented
 
-When labels are available, each row/sidecar stores:
+The future formal row/sidecar must store, when labels are available:
 
 ```text
 current_bev_class_target[64,64]          # F/S/D/U integer class
@@ -124,9 +136,10 @@ becomes free occupancy or zero flow. `tube_oob_mass_target` is probability mass 
 bounds before gathering; in-grid weights retain their original scale and are not renormalized.
 Boundary-or-unknown supervision is in-grid unknown overlap plus this OOB mass.
 
-### Candidate supervision
+### Candidate supervision — core implemented, lineage extensions open
 
-MC-3 sidecar rows use this fixed-capacity schema (`K=8`, `H=15`):
+Current episode rows use the fixed-capacity tensor portion of this schema (`K=8`, `H=15`). The
+`base_transition_row_sha256` join and the per-contract hashes at the end remain target extensions:
 
 ```text
 episode_id, step_index, base_transition_row_sha256
@@ -173,10 +186,15 @@ one present candidate may carry stop identity. Candidate index is meaningful onl
 Counterfactual labels simulate the **unguarded constant-candidate commitment** from the recorded
 pre-action measured vehicle state using the fingerprinted commit/actuator model. A later guard change
 cannot retroactively alter them. Requested/guarded/published actual-transition fields remain separate.
-All labels bind to candidate-set, action, trajectory, decoder, executor, robot, scenario, generator and
-source hashes. They are training/evaluation targets, never deployment inputs.
+The current executable row binds the candidate set with `candidate_set_sha256` and the episode header
+with its available provenance. Binding every label to action, trajectory, decoder, executor, robot,
+scenario, generator and source hashes is still a formal target. Labels remain training/evaluation
+targets, never deployment inputs.
 
-R0 does not infer a legacy scalar label from MC-3. The main transition row separately stores
+The following separate R0 legacy fields are also a target extension; the current sequence schema does
+not store them:
+
+R0 does not infer a legacy scalar label from MC-3. The target main transition row stores
 `legacy_risk_target:float32`, `legacy_risk_valid:bool`, the **pre-guard
 `action_normalized_requested`** hash, and exact current nominal risk-target generator/horizon hashes.
 The post-guard published 2D command has no unique `L` and is not mislabeled as a normalized 3D action.
@@ -303,13 +321,15 @@ EnvironmentClient (tractor_env_v2)
 
 The live collector conservatively invalidates an entire current scan frame when diagnostics report
 any dropped beam, records measured transition time and planar odometry covariance, and stores the
-actual published command separately from requested action. It also stores explicit `next_*` input
-columns so a time-limit truncation can bootstrap from the real final post-step observation.
+previous confirmed-published command separately from the current requested action. It also stores
+explicit `next_*` input columns so a time-limit truncation can bootstrap from the real final post-step
+observation. Per-transition requested/guarded/published attribution remains a target extension.
 
 The development-only collector can still emit `nominal_preaction_rollout_summary_v1`. The formal
 comparison collector instead records a privileged pre-action world snapshot outside policy inputs and,
 after episode completion, aligns every candidate with actual future obstacle states by timestamp. It
 emits `realized_timestamp_aligned_counterfactual_v1` cause/time/censor/severity sidecars. Formal
-validation requires this source for every candidate and rejects missing lineage. The generator and gate
-are implemented, but no 616-scenario corpus has been collected; therefore label quality and navigation
-performance remain unmeasured.
+validation requires this realized source for candidate labels. Complete per-label lineage hashes are
+not yet enforced, so the formal readiness gate blocks collection. The relabel generator and core source
+check are implemented, but no 616-scenario corpus has been collected; therefore label quality and
+navigation performance remain unmeasured.

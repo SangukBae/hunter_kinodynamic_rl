@@ -10,10 +10,10 @@ ledger and legacy manifest. It is provenance metadata, not a performance result.
 | Field | Value |
 |---|---|
 | repository | `hunter_kinodynamic_rl` package working tree |
-| branch | `phase1-hierarchical-navigation` |
-| commit at audit | `42e192f2f038c8cc9f214ff15ed6f8e57c00c5f6` |
-| worktree | dirty; tracked and untracked research changes present |
-| audit date | 2026-09-06 KST |
+| branch | `main` |
+| base commit at audit | `ffb5fcc28e00e9668cde8305c2300f9d4627f8dd` |
+| worktree | dirty; tracked contract-remediation changes and user-owned untracked media present |
+| audit date | 2026-09-07 KST |
 
 This snapshot must not be described as a clean tagged release. Source line numbers may drift; symbol
 and file references below should be resolved against the recorded commit/dirty digest before citation.
@@ -28,25 +28,25 @@ and file references below should be resolved against the recorded commit/dirty d
 | risk | `rl/networks/risk_critic.py`, agent/environment label path | scalar supervised risk, not cause-time calibrated hazard |
 | trajectory/action | `hunter_kinodynamic_rl/trajectory/*` | normalized 3D → `[kappa,v_ref,L]` → Pure-Pursuit command |
 | safety | `hunter_kinodynamic_rl/env/safety/*` and publisher call sites | fixed final command checks remain required |
-| replay/checkpoint | `rl/replay/*`, agent/training checkpoint code | transition replay; TRACTOR sequence schema absent |
+| replay/checkpoint | `rl/replay/*`, `rl/checkpointing/tractor.py` | core TRACTOR sequence/checkpoint path exists; full supervision and semantic-lineage contract remains open |
 | localization/map | `hunter_kinodynamic_rl/navigation/localization/*`, `navigation/mapping/*` | interfaces/infrastructure, not a complete GPS-denied result |
 | hierarchy | `hunter_kinodynamic_rl/navigation/hierarchy/*` and associated runners | Global infrastructure; no accepted-Local formal campaign |
 | TRACTOR model | `rl/networks/tractor/*` | untrained A7/A8/A9 implementation with typed causal scoring path |
 | TRACTOR data/checkpoint | `rl/replay/sequence_*`, `rl/checkpointing/tractor.py` | synthetic contract evidence only; no collected dataset/promoted checkpoint |
 | TRACTOR evaluation | `evaluation/tractor_*` | metric/matrix/latency tooling; no formal result rows |
 
-TRACTOR-specific packages are present in the current dirty working tree. They have not produced a
-trained, calibrated, benchmarked or promoted artifact.
+TRACTOR-specific packages are tracked in the current source tree. They have not produced a trained,
+calibrated, benchmarked or promoted artifact.
 
 ## 3. Regression and runtime evidence
 
 | Evidence | Observed | Allowed interpretation |
 |---|---|---|
 | prior Docker regression report | `2,138 passed` | broad code-health snapshot; exact run provenance incomplete |
-| current combined regression | `2,186 passed, 1 skipped` in `126.73 s` | ROS mounted into `drl_path:final`, CPU-only code correctness snapshot |
+| current combined regression after contract remediation | `2,224 passed` in `258.55 s` | sourced ROS overlay + Torch Docker, CPU-only code correctness snapshot |
 | Local bounded/Gazebo historical runs | reset/step/save/resume and command-tracking records | smoke/wiring and simulator behavior only |
 | Stage-2 L0–L5 artifacts | no completed training/benchmark directories in inspected runtime | training 0/30, benchmark 0/30 |
-| TRACTOR artifacts | none | implementation/training/benchmark/timing unproven |
+| TRACTOR formal artifacts | none | formal implementation readiness is false; campaign evidence stages are fail-closed |
 | current TRACTOR contract tests | synthetic unit/property/checkpoint checks pass | implementation correctness within covered fixtures only |
 | default A7 forward/timing smoke | untrained CPU synthetic process run | executable path only; not target-device real-time evidence |
 | Hunter real navigation artifacts | none | real and GPS-denied claims unavailable |

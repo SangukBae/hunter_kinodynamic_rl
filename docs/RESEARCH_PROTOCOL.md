@@ -1,6 +1,12 @@
 # TRACTOR-TQC Research Protocol
 
-Status: **FROZEN as `tractor_protocol_v1` before formal runs**
+Status: **acceptance/scenario contract frozen as `tractor_protocol_v1`; formal execution blocked by implementation readiness**
+
+The frozen file fixes intended methods, navigation acceptance thresholds, seed statistics and scenario
+identity. It does not certify that every training objective, dataset field, hypothesis metric or
+promotion check below is implemented. `formal_research_implementation_readiness()` is currently false;
+formal collect/train/calibrate/evaluate/aggregate commands fail closed until all registered gaps are
+removed with tests and a new code/contract fingerprint.
 Frozen payload SHA-256: `fe2c1cfbd175c12c333173a7c9ccd25edf885fbfc18e519640c4d7e597ba9ee1`
 Scope: Local kinodynamic control first; Global is a dependent follow-up
 
@@ -84,7 +90,7 @@ Publication tables label those differences.
 - tuning budget and search space logged per method;
 - failure/timeout runs retained and excluded only by preregistered rules.
 
-### TRACTOR stages
+### Target TRACTOR stages
 
 | Stage | Train | Frozen/controlled output | Exit gate |
 |---|---|---|---|
@@ -100,7 +106,8 @@ Stage 3/4/5 are separate experiment lineages linked by explicit warm-start maps.
 real executed transitions only. Auxiliary losses may update the registered value-path modules; actor
 updates detach belief but preserve gradients through action-conditioned scoring.
 
-Core phase truth table:
+Target phase truth table; current code implements only the Bellman value, risk-head, actor/entropy and
+EMA development path, not the full Stage 3/4 or atomic Stage-5 value+risk transaction:
 
 | Phase/transaction | Exact objective | Owner/eligible modules | Ineligible updates |
 |---|---|---|---|
@@ -135,17 +142,30 @@ geometry hashes are disjoint across splits. The plan SHA-256 is
 
 ### Scenario axes
 
+The frozen 616-geometry v1 plan currently varies only topology and static/dynamic obstacle-family
+geometry/motion. Its generated `dynamics` and `sensor` mappings are empty and it has no localization
+perturbation mapping. The remaining axes below are **required target extensions** and may not be
+claimed from protocol v1. The separate Environment v2 suites exercise broader axes but are not part of
+this frozen 616-instance matrix.
+
 - topology: open, corridor, corner, choke point, clutter, dead end;
 - obstacle: static density, crossing, head-on, overtaking, occlusion, mixed motion;
-- vehicle: mass/friction/lag/steering/braking perturbations;
-- sensing: dropout, range noise, latency, stale frames, partial observability;
-- localization: drift, jump, covariance inflation, invalid periods;
-- goal: distance/bearing including rear/full-circle observability cases.
+- target vehicle extension: mass/friction/lag/steering/braking perturbations;
+- target sensing extension: dropout, range noise, latency, stale frames, partial observability;
+- target localization extension: drift, jump, covariance inflation, invalid periods;
+- target goal extension: distance/bearing including rear/full-circle observability cases.
 
-ID varies registered ranges seen in development. OOD holds out layouts, trajectories and combinations;
-each OOD axis is reported separately before any pooled score.
+Protocol v1 provides split-isolated held-out geometry seeds, but every split contains the same eleven
+families and it does not constitute a registered ID/OOD axis matrix. A future protocol version must
+define which ranges are ID and which layouts, trajectories or system combinations are held out; each
+OOD axis is then reported separately before any pooled score.
 
-### Metrics
+### Target metrics
+
+The current locked evaluator records navigation outcome, path/time/clearance, emergency-stop and
+latency diagnostics only. Prediction, proposal/ranking, cause-time risk and uncertainty metrics are
+implemented only as isolated helper functions/tests or remain absent from campaign records; therefore
+H1–H3 cannot yet be evaluated by the formal orchestrator.
 
 | Family | Metrics |
 |---|---|

@@ -1,6 +1,6 @@
 # TRACTOR-TQC Implementation and Operations Plan
 
-Status: **core, matched baselines and formal comparison pipeline landed; data/training/evidence open**
+Status: **development core landed; formal comparison blocked by explicit implementation-readiness gaps**
 
 This document is the single code-change, integration and runbook map. It does not report completion;
 actual state belongs to [CURRENT_STATUS.md](CURRENT_STATUS.md).
@@ -45,7 +45,9 @@ hunter_kinodynamic_rl/
     train_tractor_tqc.py, tractor_episode_collector.py, tractor_sequence_training.py
     tractor_preflight.py, tractor_dataset_validation.py
   evaluation/
-    tractor_*_metrics.py, tractor_latency.py, tractor_bundle_export.py
+    tractor_*_metrics.py, tractor_latency.py
+  rl/checkpointing/
+    tractor.py  # training checkpoint, calibration artifact and bundle export
 config/tractor/{model,data,training,inference}.yaml
 config/profiles/tractor_*.yaml
 ```
@@ -53,9 +55,11 @@ config/profiles/tractor_*.yaml
 New modules consume typed dataclasses from `contracts.py`; no dict with optional semantic fields may
 cross the `encode/propose/score` boundary.
 
-As of 2026-09-07, the listed TRACTOR network, B1–B8 matched baselines, formal realized-track collector,
-reset-prefix replay adapter, ordered learning runners, checkpoint, calibration, common locked evaluator,
-campaign orchestrator, preflight and runtime boundary exist.
+As of 2026-09-07, the listed TRACTOR network, current-TQC B1 and B2–B8 baselines, core
+realized-track relabeler, reset-prefix replay adapter, development learning runners, partial
+checkpoint/calibration, navigation locked evaluator, campaign orchestrator, preflight and runtime
+boundary exist. Formal evidence stages are intentionally blocked until the readiness gaps registered
+in `config/tractor.py` are implemented.
 Work-package completion still follows the exit gates
 below; source presence must not be interpreted as trained or paper-ready evidence.
 
@@ -171,14 +175,16 @@ dataset/index. The current live collector labels are explicitly marked
 `nominal_preaction_rollout_summary_v1`; they exercise the complete development path but are not a
 substitute for the formal realized timestamp-aligned candidate corpus.
 
-The strict paper matrix has one orchestrator and one fresh immutable root:
+The paper-matrix orchestrator can prepare an immutable manifest, but its evidence-producing commands
+currently fail closed because formal implementation readiness is false:
 
 ```bash
 # freeze manifests and expected B1–B8/A7–A9 × five-seed matrix
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
   --campaign-root runtime/tractor_paper_v1 prepare
 
-# with the registered simulator/profile running: collect all 616 scenarios once
+# BLOCKED until formal_research_implementation_readiness().ready is true:
+# collect all 616 scenarios once
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
   --campaign-root runtime/tractor_paper_v1 collect
 
@@ -200,7 +206,8 @@ ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
   --campaign-root runtime/tractor_paper_v1 status
 ```
 
-Formal runs require an explicit fresh output root. Run long stages in `tmux`, preserve stdout/stderr,
+Do not bypass the readiness gate or label development-runner output as formal evidence. Once every
+gap has code and regression coverage, formal runs require an explicit fresh output root. Run long stages in `tmux`, preserve stdout/stderr,
 record GPU/driver/container/commit identity and verify the first checkpoint in a separate process.
 `aggregate` reports paired seed-level B1 comparisons; it cannot turn incomplete or non-target timing
 artifacts into a pass.

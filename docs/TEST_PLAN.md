@@ -1,9 +1,12 @@
 # TRACTOR-TQC Test Plan
 
-Status: **unit/property/contract and frozen protocol/data-plan gates implemented; rollout/system/HIL gates open**
+Status: **development unit/property/contract subset implemented; full formal-contract, rollout-parity, system and HIL gates open**
 
 Tests establish code and contract correctness. Navigation, calibration and real-world claims still
 require the formal protocol and artifacts.
+
+Unchecked bullets below are requirements, not claims of existing test coverage. Formal campaign
+evidence commands remain blocked while the implementation-readiness registry is non-empty.
 
 ## 1. Test ladder
 
@@ -60,18 +63,18 @@ require the formal protocol and artifacts.
 - imagined samples never reach the primary Bellman loss;
 - optimizer parameter sets are complete and pairwise disjoint;
 - actor step changes actor only while action gradient through scorer is finite/nonzero;
-- failed/overflowed joint value transaction performs no EMA update.
+- target: failed/overflowed joint value+risk transaction changes no optimizer/RNG state and performs no EMA update.
 
 ## 4. Replay and checkpoint
 
 - windows never cross episode/reset/schema boundaries;
 - reset-prefix burn-in reconstruction equals online recurrence for both online and EMA target weights;
 - split/group/geometry leakage detector catches renamed duplicates and derived sidecars;
-- interrupted chunk/save writes recover the previous complete generation;
-- exact resume restores online/target/optimizers/scaler/replay/RNG/counters;
-- semantic mutations trigger the compatibility matrix decision;
+- interrupted chunk/save writes recover the previous complete generation (core publication test exists);
+- exact resume restores current online/target/optimizers/scaler/replay/RNG/counters;
+- target: every semantic mutation and parent/root lineage mismatch triggers the compatibility decision;
 - wrong role/hash/path traversal fails before deserialization;
-- deployment bundle has no optimizer, target or replay payload.
+- deployment bundle has no optimizer, target or replay payload; formal checkpoint/promotion binding remains open.
 
 ## 5. ROS/Gazebo integration
 

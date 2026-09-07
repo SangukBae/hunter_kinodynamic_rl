@@ -8,9 +8,9 @@ individual runs. Rows are append-only; corrections create a new row linked to th
 | Campaign | Planned matrix | Training complete | Benchmark complete | Status |
 |---|---:|---:|---:|---|
 | legacy Stage-2 L0–L5 | 6×5 = 30 | **0/30** | **0/30** | NOT STARTED in inspected runtime |
-| same-contract paper comparison | B1–B8/A7–A9 × 5 seeds; 176 locked scenarios | **0/55** | **0/55 runs; 0/9,680 episodes** | IMPLEMENTED / UNTRAINED |
+| same-contract paper comparison | B1–B8/A7–A9 × 5 seeds; 176 locked scenarios | **0/55** | **0/55 runs; 0/9,680 episodes** | FORMAL-BLOCKED / UNTRAINED |
 | comparison risk calibration | A7/A8/A9/B8 × 5 seeds; 88 calibration scenarios | — | **0/20** | IMPLEMENTED / UNFITTED |
-| formal realized-track corpus | 352 development + 88 calibration + 176 locked | — | **0/616** | COLLECTOR IMPLEMENTED / DATA ABSENT |
+| formal realized-track corpus | 352 development + 88 calibration + 176 locked | — | **0/616** | CORE COLLECTOR PRESENT / FULL SCHEMA BLOCKED |
 | TRACTOR simulation env v2 | 6 fixed suites × 8 scenarios | 0 | 0 | CONFIGURED / NO ROLLOUT EVIDENCE |
 | formal Global | blocked by Local promotion | 0 | 0 | BLOCKED |
 | Hunter real navigation | not approved | 0 | 0 | NO EVIDENCE |
@@ -70,7 +70,8 @@ denominators according to the frozen rule.
 | ID | Frozen definition | Status |
 |---|---|---|
 | B0, B12 | contract-difference references; see frozen protocol | FROZEN / UNRUN |
-| B1–B8 | same 328D sequence observation, `[kappa,v_ref,L]`, dataset/update budget | IMPLEMENTED / UNTRAINED |
+| B1 | current direct 328D TQC network, `[kappa,v_ref,L]` data/action contract | IMPLEMENTED / UNTRAINED |
+| B2–B8 | registered comparison representations/objectives on the shared data contract | IMPLEMENTED / UNTRAINED |
 | A7 core | nominal TRACTOR, `Q_m=0,Q_r=1` | IMPLEMENTED / UNTRAINED |
 | A8 residual | one bounded vehicle residual | IMPLEMENTED / UNTRAINED |
 | A9 ensemble | canonical `Q_m=3,Q_r=3` | IMPLEMENTED / UNTRAINED |
@@ -119,7 +120,8 @@ Use [templates/EXPERIMENT_CARD.md](templates/EXPERIMENT_CARD.md) for a new run a
 
 ## 8. Completion rule
 
-Documentation or implementation completion is not research completion. The project may be marked
+Documentation or partial implementation completion is not research completion. Formal collection and
+training remain blocked while `formal_research_implementation_readiness()` reports any gap. The project may be marked
 complete only when every claim has a valid artifact, the registered matrix is complete, target timing
 and calibration gates pass, and any reported real claim has approved trial cards. Until then the
 registry remains explicit about zero/missing evidence.
