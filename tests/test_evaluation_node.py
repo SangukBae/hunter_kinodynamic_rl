@@ -339,7 +339,12 @@ def test_environment_client_kwargs_carries_the_requested_profiles_own_telemetry_
         base, runtime=dataclasses.replace(
             base.runtime, risk_telemetry_wait_timeout_sec=7.25, risk_telemetry_reset_marker_timeout_sec=13.5))
     kwargs = environment_client_kwargs(edited)
-    assert kwargs == {"telemetry_wait_timeout_sec": 7.25, "reset_marker_wait_timeout_sec": 13.5}
+    assert kwargs == {
+        "telemetry_wait_timeout_sec": 7.25,
+        "reset_marker_wait_timeout_sec": 13.5,
+        "wheelbase_m": edited.robot.wheelbase_m,
+        "track_width_m": edited.robot.track_width_m,
+    }
     # sanity: genuinely different from EnvironmentClient's own hardcoded defaults
     assert kwargs["telemetry_wait_timeout_sec"] != 1.0
     assert kwargs["reset_marker_wait_timeout_sec"] != 5.0

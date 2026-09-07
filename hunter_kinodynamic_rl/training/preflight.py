@@ -45,10 +45,10 @@ import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from hunter_kinodynamic_rl.config.loader import load_profile
+from hunter_kinodynamic_rl.config.loader import DEFAULT_RL_PROFILE, load_profile
 from hunter_kinodynamic_rl.config.schema import ConfigError, Profile
 from hunter_kinodynamic_rl.evaluation.fingerprint import architecture_fingerprint, local_training_contract_fingerprint
-from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
+from hunter_kinodynamic_rl.trajectory.action_space import action_dim_for_mode
 
 DEFAULT_INFEASIBLE_SAMPLE_COUNT = 300
 #: Defect-fix item 11: replaces the old FIXED absolute tolerance (0.15),
@@ -197,6 +197,15 @@ def run_local_preflight(
             "training must run against a simulation profile"
         )
 
+    if profile.environment_v2.enabled:
+        from hunter_kinodynamic_rl.config.loader import default_config_root
+        from hunter_kinodynamic_rl.env.randomization.calibration_manifest import validate_calibration_manifest
+        calibration = validate_calibration_manifest(profile, default_config_root())
+        for warning in calibration.warnings:
+            report._warn(f"environment_v2 calibration: {warning}")
+        for error in calibration.errors:
+            report._fail(f"environment_v2 calibration: {error}")
+
     # 2. full-circle goal direction.
     report.goal_direction_sectors_deg = list(profile.scenario.goal_direction_sectors_deg)
     report.goal_distance_range_m = list(profile.scenario.goal_distance_range_m)
@@ -307,7 +316,7 @@ def run_local_preflight(
     # 8. identity.
     history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
     report.state_dim = profile.observation.lidar_bins * history_len + profile.observation.robot_state_dim
-    report.action_dim = ACTION_DIM
+    report.action_dim = action_dim_for_mode(profile.action_space)
     report.resolved_config_hash = architecture_fingerprint(profile)
     try:
         report.local_training_contract_fingerprint = local_training_contract_fingerprint(profile)
@@ -403,7 +412,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="kinodynamic_tqc_arbitrary_subgoal")
+    parser.add_argument("--profile", default=DEFAULT_RL_PROFILE)
     parser.add_argument("--run-root", default="runtime/experiments")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-run-dir", default=None)

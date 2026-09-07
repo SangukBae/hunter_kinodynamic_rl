@@ -2,14 +2,14 @@
 
 ``rl/networks/tqc.py`` in this package is a VERBATIM copy of
 ``drl_agent/drl_agent/rl/networks/tqc.py`` (hash-checked in
-docs/SOURCE_MAP.md). This test proves that claim operationally: given the
+docs/IMPLEMENTATION_PLAN.md). This test proves that claim operationally: given the
 same seed and the same constructor arguments, this package's ``Actor``/
 ``Critic`` produce BIT-IDENTICAL weights and forward output to drl_agent's.
 If anyone edits either copy without the other, this test starts failing --
 that is the point (guards against silent drift between the two).
 
 drl_agent is loaded by inserting its source path directly (NOT declared as a
-runtime dependency of this package -- see package.xml / docs/SOURCE_MAP.md):
+runtime dependency of this package -- see package.xml / docs/IMPLEMENTATION_PLAN.md):
 this is dev-time-only comparison tooling. Skips cleanly if the sibling
 checkout is not where expected (e.g. this package copied out of the
 monorepo) or if torch is unavailable.

@@ -20,6 +20,7 @@ import json
 import os
 import random
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional
 
@@ -49,12 +50,15 @@ from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint_from_resolved_config,
     local_training_contract_fingerprint,
     local_training_contract_fingerprint_from_resolved_config,
+    training_profile_fingerprint,
+    training_profile_fingerprint_from_resolved_config,
 )
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
+from hunter_kinodynamic_rl.robot.limits import wheel_angles_to_center_steering
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer, RiskTransition
 from hunter_kinodynamic_rl.training.checkpoint_policy import checkpoint_due
 from hunter_kinodynamic_rl.trajectory.action_space import (
-    TrajectoryCommand, decode_action, trajectory_command_to_normalized,
+    TrajectoryCommand, action_dim_for_mode, decode_action, trajectory_command_to_normalized,
 )
 from hunter_kinodynamic_rl.training.run_logger import RunLogger, run_directory
 
@@ -95,7 +99,7 @@ def telemetry_is_new_reset_marker(t: Optional[rt.RiskTelemetry], known_generatio
     from "my own marker, just slow to arrive" under ANY heuristic
     operating on a broadcast topic alone) -- code review found that
     change violated this project's "shared interfaces stay untouched"
-    requirement, so it was reverted (see docs/SOURCE_MAP.md).
+    requirement, so it was reverted (see docs/IMPLEMENTATION_PLAN.md).
 
     RESULT: this closes the SAME race the previous scheme handled for the
     single-owner-client case (exactly one client calling ``/reset`` on a
@@ -139,6 +143,114 @@ class EnvServiceError(RuntimeError):
     failure the trainer can catch and stop on, never an unbounded hang
     (section 13: "environment node 종료/Gazebo failure/service exception을
     trainer가 감지하고 종료하도록 한다")."""
+
+
+class TrainingEnvironmentContractError(RuntimeError):
+    """The live environment/Gazebo stack is not the requested training stack."""
+
+
+def robot_name_from_urdf(description: str, source: str = "robot_description") -> str:
+    """Return ``<robot name>`` from a non-empty, resolved URDF document."""
+    if not isinstance(description, str) or not description.strip():
+        raise EnvServiceError(f"{source} is empty")
+    try:
+        root = ET.fromstring(description)
+    except ET.ParseError as exc:
+        raise EnvServiceError(f"{source} is malformed XML: {exc}") from exc
+    if root.tag != "robot" or not root.attrib.get("name"):
+        raise EnvServiceError(f"{source} root must be <robot name='...'>")
+    return root.attrib["name"]
+
+
+def expected_training_dimensions(profile: Profile) -> tuple[int, int]:
+    """Dimensions implied by the trainer's own resolved profile."""
+    history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
+    state_dim = profile.observation.lidar_bins * history_len + profile.observation.robot_state_dim
+    return state_dim, action_dim_for_mode(profile.action_space)
+
+
+def robot_state_publisher_node(profile: Profile) -> str:
+    """Return the model-variant-specific publisher used by the Gazebo launch.
+
+    The improved launch is namespaced to avoid colliding with the preserved
+    baseline publisher.  Selecting the expected service path is deliberate:
+    an improved profile connected to a baseline launch must fail because the
+    improved publisher service is absent, rather than accepting whichever
+    robot description happens to be discoverable first.
+    """
+    if profile.robot.name == "hunter_se_improved":
+        return "/hunter_se/robot_state_publisher"
+    if profile.robot.name == "hunter_se":
+        return "/robot_state_publisher"
+    raise TrainingEnvironmentContractError(
+        f"unsupported robot.name={profile.robot.name!r}: no robot_state_publisher attestation path is defined"
+    )
+
+
+def validate_training_environment_contract(env, profile: Profile, dims) -> dict:
+    """Fail before replay/agent creation unless the complete live stack matches.
+
+    This is intentionally stricter than checkpoint evaluation compatibility:
+    formal training must use the exact same resolved profile in trainer and
+    environment, and the actual URDF loaded by Gazebo's robot-state publisher
+    must identify the same physical model variant.
+    """
+    expected_state_dim, expected_action_dim = expected_training_dimensions(profile)
+    actual_dims = (int(dims.state_dim), int(dims.action_dim))
+    expected_dims = (expected_state_dim, expected_action_dim)
+    if actual_dims != expected_dims:
+        raise TrainingEnvironmentContractError(
+            f"live environment dimensions {actual_dims} != training profile {profile.name!r} dimensions "
+            f"{expected_dims}; relaunch environment_node.py with this exact profile"
+        )
+    if not math.isclose(float(dims.max_action), 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise TrainingEnvironmentContractError(
+            f"live environment max_action={dims.max_action!r}, expected normalized action bound 1.0"
+        )
+
+    expected_parameters = {
+        "resolved_profile_name": profile.name,
+        "architecture_fingerprint_sha256": architecture_fingerprint(profile),
+        "local_training_contract_fingerprint_sha256": local_training_contract_fingerprint(profile),
+        "training_profile_fingerprint_sha256": training_profile_fingerprint(profile),
+    }
+    live_parameters = {}
+    for name, expected in expected_parameters.items():
+        try:
+            actual = env.get_remote_parameter(name)
+        except EnvServiceError as exc:
+            raise TrainingEnvironmentContractError(
+                f"cannot attest live environment parameter {name!r}: {exc}; rebuild and relaunch "
+                "environment_node.py before training"
+            ) from exc
+        live_parameters[name] = actual
+        if actual != expected:
+            raise TrainingEnvironmentContractError(
+                f"live environment {name}={actual!r} != trainer value {expected!r} for profile "
+                f"{profile.name!r}; refusing to mix training contracts"
+            )
+
+    publisher_node = robot_state_publisher_node(profile)
+    try:
+        urdf_robot_name = env.get_robot_description_model_name(publisher_node)
+    except EnvServiceError as exc:
+        raise TrainingEnvironmentContractError(
+            f"cannot attest Gazebo robot model via {publisher_node}/get_parameters: {exc}; "
+            f"launch model_variant:={'improved' if profile.robot.name == 'hunter_se_improved' else 'baseline'}"
+        ) from exc
+    if urdf_robot_name != profile.robot.name:
+        raise TrainingEnvironmentContractError(
+            f"live robot_description identifies {urdf_robot_name!r}, but training profile requires "
+            f"robot.name={profile.robot.name!r}; refusing to train on the wrong physical model"
+        )
+    return {
+        "profile_name": profile.name,
+        "training_profile_fingerprint_sha256": live_parameters["training_profile_fingerprint_sha256"],
+        "robot_state_publisher_node": publisher_node,
+        "urdf_robot_name": urdf_robot_name,
+        "state_dim": actual_dims[0],
+        "action_dim": actual_dims[1],
+    }
 
 
 class _RiskTelemetryListener(Node):
@@ -199,11 +311,15 @@ class EnvironmentClient(Node):
                  service_discovery_timeout_sec: float = 60.0,
                  call_timeout_sec: float = 30.0,
                  telemetry_wait_timeout_sec: float = 1.0,
-                 reset_marker_wait_timeout_sec: float = 5.0):
+                 reset_marker_wait_timeout_sec: float = 5.0,
+                 wheelbase_m: float = 0.550,
+                 track_width_m: float = 0.460):
         super().__init__(node_name)
         self._call_timeout_sec = call_timeout_sec
         self._telemetry_wait_timeout_sec = telemetry_wait_timeout_sec
         self._reset_marker_wait_timeout_sec = reset_marker_wait_timeout_sec
+        self._wheelbase_m = float(wheelbase_m)
+        self._track_width_m = float(track_width_m)
         self._reset_client = self.create_client(Reset, "reset")
         self._step_client = self.create_client(Step, "step")
         self._dims_client = self.create_client(GetDimensions, "get_dimensions")
@@ -262,6 +378,7 @@ class EnvironmentClient(Node):
         self.declare_parameter("joint_states_topic", "/hunter_se/joint_states")
         self._latest_xy = None
         self._latest_yaw = 0.0
+        self._latest_pose_covariance = np.zeros((3, 3), dtype=np.float32)
         self.episode_path_length_m = 0.0
         self._latest_v_mps = 0.0
         self._latest_yaw_rate = 0.0
@@ -280,12 +397,16 @@ class EnvironmentClient(Node):
         self._latest_xy = (x, y)
         q = msg.pose.pose.orientation
         self._latest_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        covariance = np.asarray(msg.pose.covariance, dtype=np.float64).reshape(6, 6)
+        planar = covariance[np.ix_([0, 1, 5], [0, 1, 5])]
+        planar = 0.5 * (planar + planar.T)
+        if np.isfinite(planar).all() and np.linalg.eigvalsh(planar).min() >= -1e-6:
+            self._latest_pose_covariance = planar.astype(np.float32)
         self._latest_v_mps = msg.twist.twist.linear.x
         self._latest_yaw_rate = msg.twist.twist.angular.z
 
     def _on_joint_states(self, msg: JointState) -> None:
-        """Mirrors environment_node.py's own steering computation EXACTLY
-        (Ackermann center steering = mean of the two front wheel angles) --
+        """Mirrors environment_node.py's exact inverse Ackermann conversion --
         NOT odometry angular.z (that's yaw rate, a different physical
         quantity -- section 14/P1-4's explicit correction)."""
         try:
@@ -293,7 +414,9 @@ class EnvironmentClient(Node):
             right = float(msg.position[msg.name.index("front_right_steering")])
         except (ValueError, IndexError, TypeError):
             return
-        self._latest_center_steering_rad = 0.5 * (left + right)
+        self._latest_center_steering_rad = wheel_angles_to_center_steering(
+            left, right, self._wheelbase_m, self._track_width_m
+        )
 
     def _on_clock(self, msg: Clock) -> None:
         self._latest_sim_time_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
@@ -318,6 +441,10 @@ class EnvironmentClient(Node):
         if self._latest_xy is None:
             return None
         return (self._latest_xy[0], self._latest_xy[1], self._latest_yaw)
+
+    @property
+    def latest_pose_covariance(self) -> np.ndarray:
+        return self._latest_pose_covariance.copy()
 
     @property
     def latest_sim_time_sec(self) -> Optional[float]:
@@ -371,6 +498,14 @@ class EnvironmentClient(Node):
         result = self._call(self._set_params_client, req)
         return all(r.successful for r in result.results)
 
+    def _set_integer_parameter(self, name: str, value: int) -> bool:
+        if not self._set_params_client.wait_for_service(timeout_sec=self._call_timeout_sec):
+            raise EnvServiceError("environment_node's set_parameters service is unavailable")
+        req = SetParameters.Request()
+        req.parameters = [Parameter(name, Parameter.Type.INTEGER, int(value)).to_parameter_msg()]
+        result = self._call(self._set_params_client, req)
+        return all(r.successful for r in result.results)
+
     def set_scenario_override(self, path: str) -> bool:
         """Sets environment_node.py's ``scenario_override_path`` parameter --
         the NEXT ``/reset`` places this EXACT fixed scenario instead of
@@ -383,6 +518,11 @@ class EnvironmentClient(Node):
         if mode not in ("train", "validation", "test"):
             raise ValueError(f"explicit seed mode must be train|validation|test, got {mode!r}")
         return self._set_string_parameter("explicit_seed_mode", mode)
+
+    def set_curriculum_episode_index(self, episode_index: int) -> bool:
+        if episode_index < 0:
+            raise ValueError("curriculum episode index must be >= 0")
+        return self._set_integer_parameter("curriculum_episode_index", episode_index)
 
     def set_evaluation_contract_override(self, path: str) -> bool:
         """section item-1 (round 2): sets environment_node.py's
@@ -418,6 +558,31 @@ class EnvironmentClient(Node):
         if not result.values or result.values[0].type == 0:  # PARAMETER_NOT_SET
             raise EnvServiceError(f"environment_node has no parameter named {name!r}")
         return parameter_value_to_python(result.values[0])
+
+    def get_robot_description_model_name(self, publisher_node: str) -> str:
+        """Read and parse the live robot_state_publisher's resolved URDF.
+
+        The URDF is a stronger model-variant attestation than a launch
+        argument echoed by another process: it is the description actually
+        loaded for TF and supplied to the Gazebo spawner.  A missing service,
+        missing description, malformed XML or unnamed root all fail closed.
+        """
+        service_name = f"{publisher_node.rstrip('/')}/get_parameters"
+        client = self.create_client(GetParameters, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=self._call_timeout_sec):
+                raise EnvServiceError(
+                    f"{service_name} is unavailable after {self._call_timeout_sec:.0f}s"
+                )
+            req = GetParameters.Request()
+            req.names = ["robot_description"]
+            result = self._call(client, req)
+            if not result.values or result.values[0].type == 0:
+                raise EnvServiceError(f"{publisher_node} has no 'robot_description' parameter")
+            description = parameter_value_to_python(result.values[0])
+            return robot_name_from_urdf(description, f"{publisher_node} robot_description")
+        finally:
+            self.destroy_client(client)
 
     def _spin_telemetry_once(self, timeout_sec: float) -> None:
         self._telemetry_executor.spin_once(timeout_sec=timeout_sec)
@@ -616,15 +781,36 @@ class TrainerBase:
         seed_all(profile.training.seed)
         enable_torch_determinism(warn_only=True)
 
+        rclpy.init(args=None)
+        self.env = None
+        try:
+            self.env = EnvironmentClient(
+                telemetry_wait_timeout_sec=profile.runtime.risk_telemetry_wait_timeout_sec,
+                reset_marker_wait_timeout_sec=profile.runtime.risk_telemetry_reset_marker_timeout_sec,
+                wheelbase_m=profile.robot.wheelbase_m,
+                track_width_m=profile.robot.track_width_m,
+            )
+            dims = self.env.get_dimensions()
+            contract_attestation = validate_training_environment_contract(self.env, profile, dims)
+        except Exception:
+            # A contract failure is a pre-run failure: leave no mislabeled run
+            # directory/logger behind and release ROS resources immediately.
+            if self.env is not None:
+                self.env.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+            raise
+        print(
+            "training environment attested: "
+            f"profile={contract_attestation['profile_name']}, "
+            f"robot={contract_attestation['urdf_robot_name']}, "
+            f"state_dim={contract_attestation['state_dim']}, "
+            f"action_dim={contract_attestation['action_dim']}, "
+            f"profile_sha256={contract_attestation['training_profile_fingerprint_sha256']}"
+        )
+        self.training_environment_attestation = contract_attestation
         self.run_dir = resume_run_dir if (resume and resume_run_dir) else run_directory(profile, run_root)
         self.logger = RunLogger(self.run_dir, profile, log_full_state=profile.training.log_full_state)
-
-        rclpy.init(args=None)
-        self.env = EnvironmentClient(
-            telemetry_wait_timeout_sec=profile.runtime.risk_telemetry_wait_timeout_sec,
-            reset_marker_wait_timeout_sec=profile.runtime.risk_telemetry_reset_marker_timeout_sec,
-        )
-        dims = self.env.get_dimensions()
         self.state_dim = dims.state_dim
         self.action_dim = dims.action_dim
         self.max_action = dims.max_action
@@ -674,6 +860,13 @@ class TrainerBase:
         set_mode = getattr(self.env, "set_explicit_seed_mode", None)
         if callable(set_mode) and not set_mode("train"):
             raise RuntimeError("environment rejected explicit_seed_mode='train'")
+        if self.profile.environment_v2.enabled:
+            set_curriculum_index = getattr(self.env, "set_curriculum_episode_index", None)
+            if not callable(set_curriculum_index) or not set_curriculum_index(self.episode_index):
+                raise RuntimeError(
+                    "tractor_env_v2 requires the environment to accept curriculum_episode_index "
+                    f"{self.episode_index} before the training seed"
+                )
         if self.env.seed(seed) is False:
             raise RuntimeError(f"environment rejected training seed {seed}")
         state = self.env.reset()
@@ -985,6 +1178,13 @@ class TrainerBase:
             # having trained under completely different subgoal
             # distributions. See evaluation.fingerprint's own docstring.
             "local_training_contract_fingerprint": local_training_contract_fingerprint(self.profile),
+            # Verifiable proof that this trainer checked the separate live
+            # environment process and its resolved Gazebo URDF before it
+            # created the replay buffer.  Stage-2 completion/resume rejects
+            # checkpoints without this record.
+            "training_environment_attestation": getattr(
+                self, "training_environment_attestation", None,
+            ),
             "state_dim": self.state_dim,
             "action_dim": self.action_dim,
             "training_steps": self.agent.training_steps,
@@ -1062,7 +1262,7 @@ class TrainerBase:
             # instead of an immediate, legible error.
             required_fields = (
                 "state_dim", "action_dim", "profile_name", "resolved_config",
-                "local_training_contract_fingerprint",
+                "local_training_contract_fingerprint", "training_environment_attestation",
             )
             missing = [name for name in required_fields if name not in manifest or manifest[name] is None]
             if missing:
@@ -1116,6 +1316,34 @@ class TrainerBase:
                     "resume Local training distribution mismatch: checkpoint="
                     f"{recorded_training_contract}, current={current_training_contract}; start a fresh run "
                     "instead of relabeling old weights after changing the subgoal distribution"
+                )
+            recorded_attestation = manifest["training_environment_attestation"]
+            current_attestation = getattr(self, "training_environment_attestation", None)
+            if not isinstance(recorded_attestation, dict) or not isinstance(current_attestation, dict):
+                raise ValueError(
+                    "resume checkpoint has no usable training_environment_attestation; start a fresh "
+                    "formally-attested run"
+                )
+            attestation_fields = (
+                "profile_name", "training_profile_fingerprint_sha256", "urdf_robot_name",
+                "robot_state_publisher_node", "state_dim", "action_dim",
+            )
+            attestation_mismatches = [
+                name for name in attestation_fields
+                if recorded_attestation.get(name) != current_attestation.get(name)
+            ]
+            if attestation_mismatches:
+                raise ValueError(
+                    "resume training-environment attestation mismatch for field(s) "
+                    f"{attestation_mismatches}; recorded={recorded_attestation}, current={current_attestation}"
+                )
+            if training_profile_fingerprint_from_resolved_config(
+                recorded_config
+            ) != training_profile_fingerprint(self.profile):
+                raise ValueError(
+                    "resume training-profile mismatch: checkpoint resolved_config differs from the current "
+                    "live-environment contract (including reward/runtime/randomization/noise/episode length); "
+                    "start a fresh run instead of mixing two training contracts"
                 )
 
             self.agent.load_ent_coef_state(manifest.get("ent_coef_state"))

@@ -4,12 +4,12 @@
 kinodynamic_tqc_risk, kinodynamic_tqc_counterfactual profiles). Privileged risk labels arrive via
 environment_node.py's risk-telemetry side channel
 (env/simulation/risk_telemetry.py), transported end-to-end by
-TrainerBase/EnvironmentClient -- see docs/ARCHITECTURE.md's "Training vs
+TrainerBase/EnvironmentClient -- see docs/TRACTOR_TQC_MODEL_SPEC.md's "Training vs
 inference" note for why this label is training-only."""
 
 from __future__ import annotations
 
-from hunter_kinodynamic_rl.config.loader import load_profile
+from hunter_kinodynamic_rl.config.loader import DEFAULT_RL_PROFILE, load_profile
 from hunter_kinodynamic_rl.rl.algorithms.kinodynamic_tqc.agent import Agent
 from hunter_kinodynamic_rl.training.preflight import _format_report, run_local_preflight
 from hunter_kinodynamic_rl.training.trainer_base import TrainerBase
@@ -26,7 +26,7 @@ class KinodynamicTQCTrainer(TrainerBase):
         return self.agent.train_step(batch)
 
 
-def main(profile_name: str = "kinodynamic_tqc_risk", run_root: str = "runtime/experiments",
+def main(profile_name: str = DEFAULT_RL_PROFILE, run_root: str = "runtime/experiments",
          resume: bool = False, resume_run_dir: str = None, resume_checkpoint_tag: str = "latest",
          dry_run: bool = False, skip_preflight: bool = False):
     """``dry_run=True`` (requirement A's preflight gate, ``--dry-run``/
@@ -79,7 +79,7 @@ def main(profile_name: str = "kinodynamic_tqc_risk", run_root: str = "runtime/ex
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", default="kinodynamic_tqc_risk")
+    parser.add_argument("--profile", default=DEFAULT_RL_PROFILE)
     parser.add_argument("--resume-run-dir", default=None)
     parser.add_argument("--resume-checkpoint-tag", default="latest")
     parser.add_argument("--dry-run", "--validate-only", dest="dry_run", action="store_true",

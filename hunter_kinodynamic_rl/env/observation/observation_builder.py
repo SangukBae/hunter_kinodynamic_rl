@@ -23,7 +23,7 @@ from hunter_kinodynamic_rl.common.geometry import goal_distance_and_heading
 # 3rd, hybrid stop/yield action component, is NOT included in the state
 # drl_agent's own ObservationBuilder produces). ``baseline_tqc`` and
 # ``legacy_waypoint_tqc`` MUST match this exactly (87D / 327D temporal) --
-# see docs/SOURCE_MAP.md and tests/test_baseline_observation_parity.py.
+# see docs/IMPLEMENTATION_PLAN.md and tests/test_baseline_observation_parity.py.
 ROBOT_STATE_DIM_LEGACY_PARITY = 7
 # section P1-11: a 3rd previous-action component (L, for
 # ``[kappa, v_ref, L]``, or the hybrid legacy contract's own yield) is a

@@ -1,0 +1,45 @@
+robot_file: hunter_se_improved.yaml
+
+# Stage 2 / L5: L4 + structured candidate supervision/margin weighting.
+# This is the only Stage 2 row eligible for hierarchy Local promotion.
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  kappa_offsets_frac: [-1.0, -0.5, 0.5, 1.0]
+  speed_fractions: [0.5, 1.0]
+  include_stop_candidate: true
+
+scenario:
+  feasibility_check: ackermann
+  world_size_m: 16.0
+  min_obstacles: 2
+  max_obstacles: 10
+  goal_sampling_mode: robot_relative_band
+  goal_distance_range_m: [2.0, 6.0]
+  goal_direction_sectors_deg: [[-180.0, 180.0]]
+  goal_infeasible_fraction: 0.15
+
+training:
+  max_timesteps: 150000
+  timesteps_before_training: 3000
+  eval_freq: 10000
+  eval_episodes: 10
+  episode_length_steps: 600
+  seed: 0

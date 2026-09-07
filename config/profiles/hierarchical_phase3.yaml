@@ -1,5 +1,5 @@
 # Phase 3 verification profile (long-horizon procedural world generator --
-# see docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 7). No
+# see docs/IMPLEMENTATION_PLAN.md section 7). No
 # Global RL, no live environment_node integration yet (Phase 3's own scope
 # boundary) -- this profile exists so `long_horizon_world`/`wall_segment_pool`
 # validate cleanly end to end and can be loaded by a standalone
@@ -28,7 +28,7 @@ long_horizon_world:
   test_seed_range: [12000, 13999]
 
 # Sized against config/schema.py's validate_wall_pool_capacity (round 2 of
-# code review -- see docs/verification/2026-08-28_hierarchical_navigation_phase3.md):
+# code review -- see docs/verification/README.md):
 # - largest class (13.4) >= max_possible_pitch_m(size_m=40) = 40/3 = 13.33.
 # - for THIS profile's actual long_horizon_world settings above,
 #   env.scenarios.long_horizon_generator.max_possible_wall_segment_counts_by_class

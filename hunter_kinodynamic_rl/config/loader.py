@@ -28,7 +28,7 @@ import yaml
 
 from hunter_kinodynamic_rl.config.schema import (
     ActionSpaceConfig, AlgorithmConfig, ConfigError, CounterfactualConfig, DomainRandomizationConfig,
-    DynamicsConfig, EvaluationConfig, FeatureFlags, GlobalFeasibilityConfig, GlobalRLConfig,
+    DynamicsConfig, EnvironmentV2Config, EvaluationConfig, FeatureFlags, GlobalFeasibilityConfig, GlobalRLConfig,
     HierarchicalTrainingConfig,
     HierarchyConfig, LocalizationConfig,
     LongHorizonWorldConfig, MappingConfig, MemoryConfig,
@@ -37,6 +37,11 @@ from hunter_kinodynamic_rl.config.schema import (
     SensorNoiseConfig, StartPoseConfig, TQCHyperparameters, TrainingConfig, TrajectoryConfig,
     WallSegmentPoolConfig,
 )
+
+# Default for new simulation training/environment sessions.  Keep
+# load_profile()'s missing-robot_file fallback on hunter_se.yaml: that fallback
+# is part of the frozen reproduction contract for all existing named profiles.
+DEFAULT_RL_PROFILE = "kinodynamic_tqc_improved"
 
 _SECTION_TYPES = {
     "robot": RobotConfig,
@@ -54,6 +59,7 @@ _SECTION_TYPES = {
     "start_pose": StartPoseConfig,
     "obstacle_pool": ObstaclePoolConfig,
     "sensor_noise": SensorNoiseConfig,
+    "environment_v2": EnvironmentV2Config,
     "training": TrainingConfig,
     "evaluation": EvaluationConfig,
     "reward": RewardConfig,
@@ -174,6 +180,19 @@ def load_profile(profile_name: str, config_root: Optional[str] = None) -> Profil
     merged = deep_merge(merged, domain_rand_layer)
     merged = deep_merge(merged, profile_raw)
     profile = profile_from_dict(resolved_name, merged)
+
+    if profile.environment_v2.enabled:
+        # A v2 profile must never silently drift away from the documented
+        # source/ranges/application boundary of its randomization contract.
+        from hunter_kinodynamic_rl.env.randomization.calibration_manifest import (
+            validate_calibration_manifest,
+        )
+        calibration = validate_calibration_manifest(profile, root)
+        if not calibration.ok:
+            raise ConfigError(
+                f"profile {resolved_name!r}: invalid environment_v2 calibration manifest: "
+                + "; ".join(calibration.errors)
+            )
 
     # Filesystem check (not part of Profile.validate(), which is pure/no I/O):
     # an evaluation profile naming a benchmark that doesn't actually have any

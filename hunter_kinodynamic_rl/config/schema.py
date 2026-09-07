@@ -44,7 +44,7 @@ class RobotConfig:
     # Config-based collision footprint (section 7: "robot footprint 또는
     # 최소한 config 기반 collision radius 사용") -- a single bounding-circle
     # radius, NOT a magic literal scattered through env code.
-    collision_radius_m: float = 0.45
+    collision_radius_m: float = 0.53
 
     @property
     def steering_limit_rad(self) -> float:
@@ -81,9 +81,9 @@ class RobotConfig:
 
 @dataclass
 class ActionSpaceConfig:
-    """[kappa, v_ref, L] trajectory action, OR legacy [r, theta, yield]."""
+    """Trajectory, direct-control, or legacy-waypoint policy action."""
 
-    mode: str = "trajectory"  # "trajectory" | "legacy_waypoint"
+    mode: str = "trajectory"  # "trajectory" | "direct_control" | "legacy_waypoint"
     # trajectory mode bounds (kappa is clamped to robot.max_curvature at
     # resolve time -- kappa_scale in (0, 1] lets an ablation use less than
     # the full physical range).
@@ -112,8 +112,11 @@ class ActionSpaceConfig:
     legacy_speed_steer_factor: float = 0.6  # drl_agent's controller_speed_steer_factor
 
     def validate(self) -> None:
-        if self.mode not in ("trajectory", "legacy_waypoint"):
-            raise ConfigError(f"action_space.mode must be trajectory|legacy_waypoint, got {self.mode!r}")
+        if self.mode not in ("trajectory", "direct_control", "legacy_waypoint"):
+            raise ConfigError(
+                "action_space.mode must be trajectory|direct_control|legacy_waypoint, "
+                f"got {self.mode!r}"
+            )
         if not (0.0 < self.kappa_scale <= 1.0):
             raise ConfigError("action_space.kappa_scale must be in (0, 1]")
         if self.horizon_length_min_m <= 0.0 or self.horizon_length_max_m <= self.horizon_length_min_m:
@@ -158,7 +161,7 @@ class DynamicsConfig:
     trajectory mode, the per-candidate rollout horizon is L-DERIVED --
     ``horizon_from_trajectory()`` in dynamics/ackermann_rollout.py computes
     ``clip(L / v_ref, horizon_min_sec, horizon_max_sec)`` -- see
-    docs/ARCHITECTURE.md's "L semantics" section for the full rationale.
+    docs/TRACTOR_TQC_MODEL_SPEC.md's "L semantics" section for the full rationale.
     """
 
     horizon_sec: float = 2.0
@@ -171,7 +174,7 @@ class DynamicsConfig:
     # to make its own rollout too short to ever reach a distant obstacle,
     # always reporting risk=0 for a direction that is actually unsafe a
     # bit further out -- see dynamics/ackermann_rollout.py's
-    # horizon_from_trajectory() and docs/ARCHITECTURE.md's "L semantics"
+    # horizon_from_trajectory() and docs/TRACTOR_TQC_MODEL_SPEC.md's "L semantics"
     # section for the full rationale + the regression test that catches a
     # regression of this specific exploit.
     min_safety_horizon_sec: float = 1.5
@@ -310,7 +313,7 @@ class ObservationConfig:
     # this gets the parity-safe contract, not the extended one). 8 = the
     # SAME plus a 3rd previous-action component (L / yield memory) -- an
     # explicit, opt-in research extension every kinodynamic_tqc* profile
-    # sets deliberately in its own YAML (see docs/SOURCE_MAP.md,
+    # sets deliberately in its own YAML (see docs/IMPLEMENTATION_PLAN.md,
     # tests/test_baseline_observation_parity.py). No other value is valid.
     robot_state_dim: int = 7
     lidar_max_range_m: float = 10.0
@@ -504,7 +507,7 @@ class ScenarioConfig:
     # robot's OWN start_yaw), mirroring the actual robot-relative candidate
     # geometry navigation/global_rl/subgoal_sampler.py's Global policy will
     # hand the Local TQC at inference time (see
-    # docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 6.6) --
+    # docs/IMPLEMENTATION_PLAN.md section 6.6) --
     # used ONLY by the Local-TQC arbitrary-subgoal training profile, never
     # by any pre-existing profile (all of which stay on "uniform_world").
     # Requires start_pose.heading_mode == "legacy_random" (the only mode
@@ -824,6 +827,105 @@ class SensorNoiseConfig:
 
 
 @dataclass
+class EnvironmentV2Config:
+    """Opt-in simulation curriculum, isolated from frozen protocol v1."""
+
+    enabled: bool = False
+    contract_version: str = "tractor_env_v2"
+    curriculum_episode_boundaries: List[int] = field(default_factory=lambda: [0, 250, 1000, 3000, 6000])
+    curriculum_dynamic_counts: List[int] = field(default_factory=lambda: [0, 1, 2, 4, 8])
+    curriculum_static_limits: List[int] = field(default_factory=lambda: [2, 4, 6, 8, 10])
+    curriculum_speed_ratio_caps: List[float] = field(default_factory=lambda: [0.0, 0.50, 0.75, 1.0, 1.0])
+    evaluation_level: int = 4
+    topology_families: List[str] = field(
+        default_factory=lambda: [
+            "open", "corridor", "doorway", "intersection", "s_curve", "warehouse", "clutter"
+        ]
+    )
+    obstacle_shapes: List[str] = field(default_factory=lambda: ["cylinder", "box", "cart", "l_shape"])
+    motion_patterns: List[str] = field(
+        default_factory=lambda: [
+            "crossing", "head_on", "cut_in", "parallel", "random_waypoint",
+            "stop_go", "accelerate_decelerate", "sine_swerve", "bounce", "u_turn",
+        ]
+    )
+    interaction_modes: List[str] = field(default_factory=lambda: ["nonreactive", "yielding", "reciprocal"])
+    conflict_fraction: float = 0.65
+    conflict_ttc_range_sec: List[float] = field(default_factory=lambda: [1.0, 4.0])
+    conflict_dcpa_range_m: List[float] = field(default_factory=lambda: [0.0, 0.25])
+    dynamic_speed_ratio_range: List[float] = field(default_factory=lambda: [0.20, 1.0])
+    dynamic_accel_limit_range_mps2: List[float] = field(default_factory=lambda: [0.25, 1.0])
+    dynamic_turn_rate_range_rad_s: List[float] = field(default_factory=lambda: [0.25, 1.2])
+    motion_substeps: int = 5
+    use_oriented_robot_footprint: bool = True
+    footprint_padding_m: float = 0.05
+    calibration_manifest: str = "environment_v2/hunter_se_calibration.yaml"
+    require_measured_calibration: bool = False
+
+    def validate(self) -> None:
+        if self.contract_version != "tractor_env_v2":
+            raise ConfigError(
+                "environment_v2.contract_version must be 'tractor_env_v2'; "
+                f"got {self.contract_version!r}"
+            )
+        arrays = (
+            self.curriculum_episode_boundaries,
+            self.curriculum_dynamic_counts,
+            self.curriculum_static_limits,
+            self.curriculum_speed_ratio_caps,
+        )
+        if not self.curriculum_episode_boundaries or len({len(values) for values in arrays}) != 1:
+            raise ConfigError("environment_v2 curriculum arrays must be non-empty and have equal lengths")
+        if self.curriculum_episode_boundaries[0] != 0 or any(
+            b <= a for a, b in zip(self.curriculum_episode_boundaries, self.curriculum_episode_boundaries[1:])
+        ):
+            raise ConfigError(
+                "environment_v2.curriculum_episode_boundaries must start at 0 and be strictly increasing"
+            )
+        if any(value < 0 for value in self.curriculum_dynamic_counts + self.curriculum_static_limits):
+            raise ConfigError("environment_v2 curriculum obstacle counts must be >= 0")
+        if any(value < 0.0 for value in self.curriculum_speed_ratio_caps):
+            raise ConfigError("environment_v2.curriculum_speed_ratio_caps entries must be >= 0")
+        if not (0 <= self.evaluation_level < len(self.curriculum_episode_boundaries)):
+            raise ConfigError("environment_v2.evaluation_level is outside the configured curriculum")
+        allowed_topologies = {"open", "corridor", "doorway", "intersection", "s_curve", "warehouse", "clutter"}
+        allowed_shapes = {"cylinder", "box", "cart", "l_shape"}
+        allowed_motion = {
+            "crossing", "head_on", "cut_in", "parallel", "random_waypoint", "constant_velocity",
+            "stop_go", "accelerate_decelerate", "sine_swerve", "bounce", "u_turn",
+        }
+        allowed_interactions = {"nonreactive", "yielding", "reciprocal"}
+        for name, values, allowed in (
+            ("topology_families", self.topology_families, allowed_topologies),
+            ("obstacle_shapes", self.obstacle_shapes, allowed_shapes),
+            ("motion_patterns", self.motion_patterns, allowed_motion),
+            ("interaction_modes", self.interaction_modes, allowed_interactions),
+        ):
+            if not values or len(values) != len(set(values)) or not set(values).issubset(allowed):
+                raise ConfigError(f"environment_v2.{name} contains duplicates, is empty, or has unsupported values")
+        if not (0.0 <= self.conflict_fraction <= 1.0):
+            raise ConfigError("environment_v2.conflict_fraction must be in [0, 1]")
+        for name in (
+            "conflict_ttc_range_sec", "conflict_dcpa_range_m", "dynamic_speed_ratio_range",
+            "dynamic_accel_limit_range_mps2", "dynamic_turn_rate_range_rad_s",
+        ):
+            values = getattr(self, name)
+            _validate_range(f"environment_v2.{name}", values)
+            if values[0] < 0.0:
+                raise ConfigError(f"environment_v2.{name} must be non-negative")
+        if self.conflict_ttc_range_sec[0] <= 0.0:
+            raise ConfigError("environment_v2.conflict_ttc_range_sec must be positive")
+        if self.dynamic_speed_ratio_range[0] <= 0.0:
+            raise ConfigError("environment_v2.dynamic_speed_ratio_range must be positive")
+        if self.motion_substeps < 1 or self.motion_substeps > 50:
+            raise ConfigError("environment_v2.motion_substeps must be in [1, 50]")
+        if self.footprint_padding_m < 0.0:
+            raise ConfigError("environment_v2.footprint_padding_m must be >= 0")
+        if self.enabled and not self.calibration_manifest:
+            raise ConfigError("environment_v2.calibration_manifest must be set when v2 is enabled")
+
+
+@dataclass
 class RewardConfig:
     """Minimal reward (section 24 -- deliberately NOT the research novelty,
     kept small so it never masks the risk-critic/counterfactual signal)."""
@@ -1133,9 +1235,14 @@ class EvaluationConfig:
     common_metrics_include_stop_candidate: bool = True
 
     def validate(self) -> None:
-        if self.benchmark and self.benchmark not in ("id", "ood_geometry", "ood_dynamics", "dynamic"):
+        valid_benchmarks = (
+            "id", "ood_geometry", "ood_dynamics", "dynamic",
+            "v2_id", "v2_ood_motion", "v2_ood_density",
+            "v2_ood_geometry_12m", "v2_ood_geometry_24m", "v2_ood_system",
+        )
+        if self.benchmark and self.benchmark not in valid_benchmarks:
             raise ConfigError(
-                f"evaluation.benchmark must be one of id|ood_geometry|ood_dynamics|dynamic, got {self.benchmark!r}"
+                f"evaluation.benchmark must be one of {'|'.join(valid_benchmarks)}, got {self.benchmark!r}"
             )
         if self.episodes_per_scenario <= 0:
             raise ConfigError("evaluation.episodes_per_scenario must be > 0")
@@ -1156,7 +1263,7 @@ class EvaluationConfig:
 @dataclass
 class MissionConfig:
     """Hierarchical-navigation mission lifecycle (Phase 1 --
-    ``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 5.7).
+    ``docs/IMPLEMENTATION_PLAN.md`` section 5.7).
     Consumed only by ``navigation/`` -- the existing local-only env/training
     path never reads this section, so it is opt-in by construction (no
     ``enabled`` flag needed)."""
@@ -1288,7 +1395,7 @@ class MappingConfig:
 @dataclass
 class HierarchyConfig:
     """Phase 2 hierarchical local/global goal separation
-    (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 6).
+    (``docs/IMPLEMENTATION_PLAN.md`` section 6).
     Consumed only by ``navigation/hierarchy`` + ``navigation/local_rl`` --
     the existing local-only env/training path never reads this section, so
     it is opt-in by construction, matching ``mission``/``localization``/
@@ -1343,7 +1450,7 @@ class HierarchyConfig:
 
 @dataclass
 class LongHorizonWorldConfig:
-    """Phase 3 long-horizon procedural world (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    """Phase 3 long-horizon procedural world (``docs/IMPLEMENTATION_PLAN.md``
     section 7) -- room/corridor/junction/loop/dead-end grid-lattice maze,
     seed-deterministic, train/validation/test seed pools kept separate from
     (and independent of) ``scenario``'s own pools (the existing arena/circle
@@ -1488,7 +1595,7 @@ class WallSegmentPoolConfig:
 
 @dataclass
 class GlobalRLConfig:
-    """Phase 4 Global RL MVP (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    """Phase 4 Global RL MVP (``docs/IMPLEMENTATION_PLAN.md``
     section 8) -- discrete candidate-subgoal action space, masked-DQN
     network sizing, replay/agent hyperparameters, and the option-level
     Global reward weights (section 8.7/14). Consumed only by
@@ -1575,7 +1682,7 @@ class GlobalRLConfig:
     # below is on).
     predicted_risk_penalty_scale: float = 0.0
 
-    # -- Phase 5 ablation flags (docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md
+    # -- Phase 5 ablation flags (docs/IMPLEMENTATION_PLAN.md
     # section 9.9) -- each toggles ONE additional observation/reward input
     # on the SAME code path (never a separate branch), so ablations B-G
     # differ only in which of these are True. All default False, so a
@@ -1692,7 +1799,7 @@ class GlobalRLConfig:
 
 @dataclass
 class MemoryConfig:
-    """Phase 5 topological memory (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md``
+    """Phase 5 topological memory (``docs/IMPLEMENTATION_PLAN.md``
     section 9.3/9.4) -- flat YAML-facing section that
     ``training/train_hierarchical_dqn.py``'s ``memory_config_from`` splits
     into ``navigation.memory.node_manager.NodeManagerConfig`` and
@@ -1804,7 +1911,7 @@ class GlobalFeasibilityConfig:
 @dataclass
 class HierarchicalTrainingConfig:
     """Phase 4 ROS-free hierarchical training-loop knobs
-    (``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 8.9) --
+    (``docs/IMPLEMENTATION_PLAN.md`` section 8.9) --
     separate from :class:`GlobalRLConfig` (network/replay/reward) and
     :class:`HierarchyConfig` (Phase 2 subgoal lifecycle, reused as-is by
     Phase 4). Opt-in (default ``enabled=False``); consumed only by
@@ -1927,6 +2034,7 @@ class Profile:
     start_pose: StartPoseConfig = field(default_factory=StartPoseConfig)
     obstacle_pool: ObstaclePoolConfig = field(default_factory=ObstaclePoolConfig)
     sensor_noise: SensorNoiseConfig = field(default_factory=SensorNoiseConfig)
+    environment_v2: EnvironmentV2Config = field(default_factory=EnvironmentV2Config)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -1948,7 +2056,7 @@ class Profile:
             self.robot, self.action_space, self.trajectory, self.dynamics,
             self.observation, self.risk, self.counterfactual,
             self.hyperparameters, self.sac_hyperparameters, self.algorithm, self.scenario, self.start_pose,
-            self.obstacle_pool, self.sensor_noise, self.training,
+            self.obstacle_pool, self.sensor_noise, self.environment_v2, self.training,
             self.evaluation, self.reward, self.domain_randomization, self.runtime,
             self.mission, self.localization, self.mapping, self.hierarchy,
             self.long_horizon_world, self.wall_segment_pool, self.global_rl, self.hierarchical_training,
@@ -1956,6 +2064,18 @@ class Profile:
         ):
             section.validate()
         # Cross-section consistency checks that no single section can do alone.
+        if self.global_rl.enabled and not math.isclose(
+            self.global_rl.robot_footprint_radius_m,
+            self.robot.collision_radius_m,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            raise ConfigError(
+                "global_rl.robot_footprint_radius_m must equal "
+                "robot.collision_radius_m so Local collision checks, map/action-mask "
+                "inflation and Global feasibility use one attested footprint; got "
+                f"{self.global_rl.robot_footprint_radius_m} != {self.robot.collision_radius_m}"
+            )
         if self.features.risk_critic and not self.risk.enabled:
             raise ConfigError("features.risk_critic=true requires risk.enabled=true")
         if self.features.counterfactual_risk and not self.counterfactual.enabled:
@@ -1972,6 +2092,19 @@ class Profile:
             )
         if self.counterfactual.enabled and not self.risk.enabled:
             raise ConfigError("counterfactual.enabled=true requires risk.enabled=true (nothing to rank candidates by)")
+        if self.action_space.mode != "trajectory" and (
+            self.features.risk_critic or self.features.counterfactual_risk
+            or self.risk.enabled or self.counterfactual.enabled
+        ):
+            raise ConfigError(
+                f"action_space.mode={self.action_space.mode!r} has no trajectory-risk/counterfactual "
+                "training contract -- risk and counterfactual features must be disabled"
+            )
+        if self.action_space.mode == "direct_control" and self.features.ackermann_rollout:
+            raise ConfigError(
+                "action_space.mode='direct_control' must set features.ackermann_rollout=false; "
+                "the direct command is assessed by common formal-benchmark metrics"
+            )
         # environment_node.py's _on_reset branches `if is_fixed_benchmark: ...
         # elif domain_randomization.enabled: ...` -- the fixed-benchmark
         # branch always wins, so domain_randomization is silently NEVER
@@ -1984,6 +2117,16 @@ class Profile:
                 "domain_randomization.enabled=true -- the fixed-benchmark reset branch always "
                 "takes precedence, so domain_randomization would be silently ignored for the "
                 "entire run"
+            )
+        if self.environment_v2.enabled and self.obstacle_pool.enabled and not self.evaluation.benchmark:
+            raise ConfigError(
+                "environment_v2.enabled=true requires obstacle_pool.enabled=false because the legacy pool "
+                "contains cylinders only and cannot preserve v2 shape geometry"
+            )
+        if self.environment_v2.enabled and self.scenario.dynamic_obstacle_count != 0:
+            raise ConfigError(
+                "environment_v2 owns dynamic-obstacle counts through its curriculum; set "
+                "scenario.dynamic_obstacle_count=0"
             )
         # features.curriculum has no wired consumer anywhere in this package
         # (curriculum staging lives entirely in the separate drl_agent

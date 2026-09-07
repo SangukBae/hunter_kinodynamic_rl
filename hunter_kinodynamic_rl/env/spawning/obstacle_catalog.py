@@ -1,5 +1,5 @@
 """Reads drl_obstacle_assets's ``config/obstacle_catalog.yaml`` (dependency,
-not copied -- see docs/SOURCE_MAP.md) and picks a catalog entry whose
+not copied -- see docs/IMPLEMENTATION_PLAN.md) and picks a catalog entry whose
 ``radius`` best matches a scenario obstacle's requested radius, so Gazebo
 spawns reuse the SAME model library drl_agent's curriculum uses instead of
 a from-scratch asset set (section 3.3 / section 26)."""

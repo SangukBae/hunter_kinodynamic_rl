@@ -104,6 +104,10 @@ def aggregate(episodes: List[dict]) -> Dict[str, float]:
     command_steps = sum(e.get("physical_command_steps", e.get("steps", 0)) for e in episodes)
     feasibility_violations = sum(e.get("curvature_feasibility_violations", 0) for e in episodes)
     nav_times = [e["navigation_time_sec"] for e in episodes if e.get("navigation_time_sec") is not None]
+    time_to_goal = [
+        e["navigation_time_sec"] for e in episodes
+        if e.get("success") and e.get("navigation_time_sec") is not None
+    ]
     collision_free_rates = [r for r in (_episode_collision_free_rate(e) for e in episodes) if r is not None]
 
     return {
@@ -116,6 +120,8 @@ def aggregate(episodes: List[dict]) -> Dict[str, float]:
         "navigation_time_steps_mean": _mean([e.get("steps", 0) for e in episodes]),
         "navigation_time_sec_mean": _mean(nav_times) if nav_times else None,
         "navigation_time_sec_valid_count": len(nav_times),
+        "time_to_goal_sec_mean": _mean(time_to_goal) if time_to_goal else None,
+        "time_to_goal_sec_valid_count": len(time_to_goal),
         "path_length_m_mean": _mean([e.get("path_length_m", 0.0) for e in episodes]),
         "goal_progress_m_mean": _mean(goal_progress) if goal_progress else None,
         "goal_progress_ratio_mean": _mean(goal_progress_ratio) if goal_progress_ratio else None,

@@ -73,7 +73,7 @@ from hunter_kinodynamic_rl.rl.algorithms.kinodynamic_tqc.agent import Agent as R
 from hunter_kinodynamic_rl.rl.algorithms.sac.agent import Agent as SACAgent
 from hunter_kinodynamic_rl.rl.algorithms.tqc.agent import Agent as VanillaAgent
 from hunter_kinodynamic_rl.rl.checkpointing import manager
-from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
+from hunter_kinodynamic_rl.trajectory.action_space import action_dim_for_mode
 from hunter_kinodynamic_rl.training.trainer_base import EnvServiceError, EnvironmentClient
 
 
@@ -99,7 +99,7 @@ class RestoreResult:
 def build_effective_profile(manifest: dict, eval_profile_name: str):
     """Reconstruct the checkpoint's OWN training-time architecture from its
     manifest's resolved_config, then layer the requested evaluation
-    profile's evaluation/reward/scenario/runtime/sensor_noise sections on
+    profile's evaluation/reward/scenario/runtime/sensor_noise/environment_v2 sections on
     top -- never its action_space/features/risk/counterfactual/
     hyperparameters, which would silently mismatch the checkpoint's actual
     weights.
@@ -153,13 +153,15 @@ def build_effective_profile(manifest: dict, eval_profile_name: str):
         # evaluation profile's -- both the live environment override and
         # this run's own recorded fingerprint would then be wrong.
         sensor_noise=eval_overrides.sensor_noise,
+        environment_v2=eval_overrides.environment_v2,
     )
     effective.validate()
     print(f"evaluation architecture restored from training profile {checkpoint_profile_name!r} "
           f"(features.risk_critic={effective.features.risk_critic}, "
           f"features.counterfactual_risk={effective.features.counterfactual_risk}, "
           f"action_space.mode={effective.action_space.mode!r}); "
-          f"benchmark/reward/scenario/runtime/sensor_noise taken from requested profile {eval_profile_name!r}")
+          f"benchmark/reward/scenario/runtime/sensor_noise/environment_v2 taken from requested profile "
+          f"{eval_profile_name!r}")
     return effective
 
 
@@ -170,7 +172,7 @@ def expected_dims(profile) -> tuple:
     report (section P0-1) rather than blindly trusted."""
     history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
     state_dim = profile.observation.lidar_bins * history_len + profile.observation.robot_state_dim
-    return state_dim, ACTION_DIM
+    return state_dim, action_dim_for_mode(profile.action_space)
 
 
 def build_agent(profile, dims):
@@ -351,6 +353,8 @@ def environment_client_kwargs(profile) -> dict:
     return {
         "telemetry_wait_timeout_sec": profile.runtime.risk_telemetry_wait_timeout_sec,
         "reset_marker_wait_timeout_sec": profile.runtime.risk_telemetry_reset_marker_timeout_sec,
+        "wheelbase_m": profile.robot.wheelbase_m,
+        "track_width_m": profile.robot.track_width_m,
     }
 
 

@@ -115,7 +115,7 @@ def horizon_from_trajectory(horizon_m: float, v_ref_mps: float, dynamics_cfg: Dy
     ``max(l_derived_horizon_sec(...), min_safety_horizon_sec)``.
 
     Two effects, deliberately BOTH present (found missing the second one in
-    code review -- see docs/ARCHITECTURE.md's "L semantics" section):
+    code review -- see docs/TRACTOR_TQC_MODEL_SPEC.md's "L semantics" section):
 
     1. A policy that commits to a LONGER L is scored on a longer
        future-risk window (:func:`l_derived_horizon_sec`) -- this is what

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Live Gazebo verification script for the item-1 (Gazebo physics-step
-reality-check) fix -- see docs/verification/2026-08-26_item1-4_fixes.md
+reality-check) fix -- see docs/verification/README.md
 for the full writeup, exact command used to invoke this, and its actual
 captured output.
 

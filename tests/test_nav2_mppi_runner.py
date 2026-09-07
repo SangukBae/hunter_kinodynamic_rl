@@ -77,11 +77,12 @@ def test_robot_config_max_curvature_matches_min_turning_r_pin_precisely():
     schema-level derivation (max_curvature = tan(limit)/wheelbase) is what
     the pinned YAML literal encodes, using the exact hunter_se.yaml values
     quoted in nav2_mppi_params.yaml's header comment."""
-    robot = RobotConfig(wheelbase_m=0.547696, steering_limit_deg=21.58,
-                         max_forward_speed_mps=2.0, accel_limit_mps2=1.0, brake_decel_mps2=1.0)
+    robot = RobotConfig(wheelbase_m=0.550, steering_limit_deg=19.0666770666,
+                         max_forward_speed_mps=4.8 / 3.6,
+                         accel_limit_mps2=1.0, brake_decel_mps2=1.0)
     robot.validate()
     min_turning_r = 1.0 / robot.max_curvature
-    assert min_turning_r == pytest.approx(1.3847, abs=1e-3)
+    assert min_turning_r == pytest.approx(1.5913, abs=1e-3)
 
 
 # --------------------------------------------------------- P1-9: navigation_time_sec units

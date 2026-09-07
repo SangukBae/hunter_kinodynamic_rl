@@ -3,7 +3,7 @@ module in this package sits on top of.
 
 Convention (matches drl_agent's pure_pursuit.ackermann_rollout /
 ackermann_swept_path, kept identical so the two systems' geometry agrees --
-see docs/SOURCE_MAP.md): robot-local frame, x forward, y left, yaw CCW+.
+see docs/IMPLEMENTATION_PLAN.md): robot-local frame, x forward, y left, yaw CCW+.
 
     yaw_rate = v * tan(delta) / wheelbase
     kappa    = tan(delta) / wheelbase

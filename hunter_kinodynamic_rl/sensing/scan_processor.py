@@ -20,6 +20,27 @@ import math
 import numpy as np
 
 
+def center_range_to_footprint_clearance(
+    center_range_m: float, collision_radius_m: float
+) -> float:
+    """Convert a center-referenced LiDAR range to collision-envelope clearance.
+
+    Gazebo contact means that the collision envelopes intersect, i.e. surface
+    clearance is zero or negative.  A raw LiDAR range is measured from the
+    sensor/robot center and therefore cannot be compared directly with that
+    contact event or a clearance threshold.  The improved Hunter SE uses its
+    conservative bounding-circle radius to put both signals in the same
+    distance-to-envelope convention.
+    """
+    center_range = float(center_range_m)
+    radius = float(collision_radius_m)
+    if not math.isfinite(radius) or radius <= 0.0:
+        raise ValueError("collision_radius_m must be finite and > 0")
+    if math.isnan(center_range):
+        return float("inf")
+    return center_range - radius
+
+
 def bin_scan_sector(
     ranges: np.ndarray, angle_min: float, angle_increment: float,
     sector_center: float, sector_width: float, num_bins: int, max_range: float,

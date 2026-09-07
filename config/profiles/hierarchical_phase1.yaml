@@ -1,6 +1,6 @@
 # Phase 1 verification profile (mission frame / localization / mapping only
 # -- no Global RL, no subgoal hierarchy; see
-# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 5.9). Used by
+# docs/IMPLEMENTATION_PLAN.md section 5.9). Used by
 # `ros2 run hunter_kinodynamic_rl mission_map_node.py --ros-args -p profile:=hierarchical_phase1`
 # to check mission pose/goal/occupancy/unknown/visited in RViz. Every
 # action_space/hyperparameters/training field below is inherited unchanged

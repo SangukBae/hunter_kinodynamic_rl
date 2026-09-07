@@ -2,7 +2,7 @@
 ``risk_target`` + explicit validity mask + counterfactual candidate fields.
 
 This is a deliberately SIMPLER buffer than drl_agent's ``rl/replay/buffer.py``
-(no LAP/PER, no risk-balanced stratified sampling) -- see docs/SOURCE_MAP.md
+(no LAP/PER, no risk-balanced stratified sampling) -- see docs/IMPLEMENTATION_PLAN.md
 for why: this package's research contribution is the risk-aware TRAINING
 OBJECTIVE, not a replay-sampling scheme.
 

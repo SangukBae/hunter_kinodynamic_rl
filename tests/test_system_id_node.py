@@ -195,7 +195,10 @@ def test_real_odometry_and_joint_state_messages_update_the_recorder_with_correct
 
     assert recorder._latest_xy == pytest.approx((1.0, 2.0))
     assert recorder._latest_v_mps == pytest.approx(1.5)
-    assert recorder._latest_center_steering_rad == pytest.approx(0.11)
+    # The two arbitrary wheel readings are deliberately not a perfect
+    # Ackermann pair.  The recorder averages their inferred curvatures,
+    # rather than incorrectly averaging the angles themselves.
+    assert recorder._latest_center_steering_rad == pytest.approx(0.11117797294973218)
     assert before <= recorder._latest_odom_monotonic_time <= after
     assert before <= recorder._latest_joint_state_monotonic_time <= after
 
@@ -249,7 +252,7 @@ def test_real_async_out_of_order_receipt_still_tracks_each_topic_independently(r
     )
     assert reason is None
     assert snap is not None
-    assert snap.steering_rad == pytest.approx(0.21)
+    assert snap.steering_rad == pytest.approx(0.2134756053166832)
 
 
 # ------------------------------------------------------- item-2 (system-ID stale-data fix): node-level valid/reason

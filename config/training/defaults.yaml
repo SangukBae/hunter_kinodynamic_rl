@@ -1,7 +1,7 @@
 # Baseline defaults shared by every profile (see config/profiles/*.yaml for
 # the per-experiment overrides). Numbers mirror drl_agent's proven TQC
 # hyperparameters/train config where this is meant to be a like-for-like
-# comparison (see docs/SOURCE_MAP.md) -- not re-derived from scratch.
+# comparison (see docs/IMPLEMENTATION_PLAN.md) -- not re-derived from scratch.
 action_space:
   mode: trajectory
   kappa_scale: 1.0
@@ -143,7 +143,7 @@ reward:
 # Hierarchical navigation Phase 1 (mission frame / localization / mapping) --
 # consumed only by hunter_kinodynamic_rl/navigation/, never by the existing
 # local-only env/training path. See
-# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 5.7.
+# docs/IMPLEMENTATION_PLAN.md section 5.7.
 mission:
   position_tolerance_m: 0.6
   heading_tolerance_rad: 3.141592653589793

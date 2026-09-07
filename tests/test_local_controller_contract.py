@@ -2,6 +2,8 @@
 controller itself has neither dependency; only ``config.loader.load_profile``
 and pure trajectory/guard math are exercised here)."""
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,36 @@ def test_build_observation_shape_matches_lidar_bins_times_history_plus_robot_sta
     history_len = profile.observation.frame_stack if profile.features.temporal_context else 1
     expected_len = profile.observation.lidar_bins * history_len + profile.observation.robot_state_dim
     assert result.observation.shape == (expected_len,)
+
+
+def test_improved_model_reports_footprint_clearance_without_changing_policy_lidar_bins():
+    baseline_profile = _profile()
+    improved_profile = dataclasses.replace(
+        baseline_profile,
+        robot=dataclasses.replace(
+            baseline_profile.robot,
+            name="hunter_se_improved",
+            collision_radius_m=0.58,
+        ),
+    )
+    ranges, angle_min, angle_increment = _scan(baseline_profile)
+    ranges[180] = 0.82
+    robot_state = RobotState(
+        x=0.0, y=0.0, yaw=0.0, v=0.0, yaw_rate=0.0, steering=0.0
+    )
+
+    baseline = LocalPolicyController(baseline_profile).build_observation(
+        ranges, angle_min, angle_increment, robot_state, 1.0, 0.0
+    )
+    improved = LocalPolicyController(improved_profile).build_observation(
+        ranges, angle_min, angle_increment, robot_state, 1.0, 0.0
+    )
+
+    assert np.array_equal(baseline.obs_state, improved.obs_state)
+    assert np.array_equal(baseline.environment_state, improved.environment_state)
+    assert np.array_equal(baseline.observation, improved.observation)
+    assert baseline.nearest_obstacle_dist_m == pytest.approx(0.82)
+    assert improved.nearest_obstacle_dist_m == pytest.approx(0.82 - 0.58)
 
 
 def test_observation_goal_terms_are_computed_from_the_passed_subgoal_not_leaked_elsewhere():

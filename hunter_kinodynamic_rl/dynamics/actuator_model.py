@@ -8,7 +8,7 @@ the same idea, restructured here to operate on a full incremental control
 SEQUENCE (not just one start/end target) so ackermann_rollout.py can drive it
 with an arbitrary per-substep target profile (needed once a trajectory
 primitive commands a non-constant speed near the horizon start). See
-docs/SOURCE_MAP.md for the exact relationship to the original.
+docs/IMPLEMENTATION_PLAN.md for the exact relationship to the original.
 """
 
 from __future__ import annotations

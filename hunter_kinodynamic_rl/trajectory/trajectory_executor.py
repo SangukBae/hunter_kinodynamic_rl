@@ -34,7 +34,7 @@ def execute(
     if isinstance(command, action_space.LegacyWaypointCommand):
         # section P0-4 (baseline/reference parity): calls the SAME
         # hybrid_action_to_command drl_agent itself uses (verbatim-copied
-        # into pure_pursuit.py -- see docs/SOURCE_MAP.md), with drl_agent's
+        # into pure_pursuit.py -- see docs/IMPLEMENTATION_PLAN.md), with drl_agent's
         # own controller constants (action_cfg.legacy_*), instead of the
         # SUPERSEDED waypoint_to_command() low_speed_distance_m ramp this
         # branch previously hand-rolled (a real, confirmed parity gap: wrong
@@ -61,5 +61,12 @@ def execute(
             yield_creep_speed_mps=action_cfg.legacy_yield_creep_mps,
         )
         return VehicleCommand(speed_mps=limits.clamp_speed(speed), steering_rad=limits.clamp_steering(steering))
+
+    if isinstance(command, action_space.DirectControlCommand):
+        limits = RobotLimits(robot)
+        return VehicleCommand(
+            speed_mps=limits.clamp_speed(command.speed_mps),
+            steering_rad=limits.clamp_steering(command.steering_rad),
+        )
 
     raise TypeError(f"unhandled decoded action type: {type(command)!r}")

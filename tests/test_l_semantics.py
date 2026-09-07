@@ -1,7 +1,7 @@
 """Proves L (trajectory horizon) is NOT a dead action dimension: it must
 change the rollout's TIME horizon, the risk assessment horizon, and
 therefore the risk outcome for a fixed obstacle scene -- see
-docs/ARCHITECTURE.md's "L semantics" section for the full design."""
+docs/TRACTOR_TQC_MODEL_SPEC.md's "L semantics" section for the full design."""
 
 import math
 

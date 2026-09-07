@@ -1,32 +1,36 @@
 # AgileX Hunter SE physical parameters.
 #
-# Sources (verified against the running system, not assumed):
-#   wheelbase_m, steering_limit_deg -- ros2_ws/src/hunter_se_gazebo/config/hunter_se_cmd_prefilter.yaml
-#     (wheelbase_m: 0.547696, steering_limit_deg: 21.58 -- matches
-#     vehicle_steering_limit_deg in drl_agent's environment.yaml)
-#   wheel_radius_m                  -- hunter_se_gazebo/urdf/mobile_robot/hunter_se_wheel.xacro (0.136)
+# Source: docs/HUNTER_SE_USER_MANUAL.pdf, section 1.2 (technical
+# specifications) and section 5.1 (product-dimension drawing).
+#   wheelbase / track / overall size / mass / steering / speed -- section 1.2
+#   wheel diameter (275 mm) and ground clearance (about 120 mm) -- section 5.1
+#
+# The Gazebo URDF, Ackermann plugin, and command prefilter use the same values.
+# Parameters absent from the manual remain simulator/actuator calibration values:
 #   accel_limit_mps2/brake_decel_mps2/steering_rate_deg_s/speed_lag_tau_sec
-#                                    -- hunter_se_cmd_prefilter.yaml (the actual command
-#                                       shaper the robot runs through -- see dynamics/actuator_model.py)
-#   track_width_m, length/width/height, mass -- AgileX Hunter SE datasheet nominal
-#     values (see docs/RESEARCH_PROTOCOL.md); NOT yet corrected by real-robot
-#     system identification (see system_identification.py / docs/SIM2REAL.md).
+#   -- hunter_se_cmd_prefilter.yaml (the actual command shaper; see
+#      dynamics/actuator_model.py). Validate these later by real-robot system ID.
 robot:
+  # Frozen reproduction baseline. New research uses hunter_se_improved.yaml.
   name: hunter_se
-  wheelbase_m: 0.547696
-  track_width_m: 0.503404
-  wheel_radius_m: 0.136
-  length_m: 0.760
-  width_m: 0.400
-  height_m: 0.140
+  wheelbase_m: 0.550
+  track_width_m: 0.460
+  wheel_radius_m: 0.1375
+  length_m: 0.820
+  width_m: 0.640
+  height_m: 0.310
   mass_kg: 42.0
-  steering_limit_deg: 21.58
-  max_forward_speed_mps: 2.0
+  # Bicycle-model / center steering command limit. With L=0.55 m and
+  # track=0.46 m, this produces the manual's 22 deg inner-wheel limit and
+  # approximately 1.90 m outer-front-wheel turning radius.
+  steering_limit_deg: 19.0666770666
+  # Manual maximum speed: 4.8 km/h = 1.333... m/s.
+  max_forward_speed_mps: 1.3333333333
   min_forward_speed_mps: 0.0
   accel_limit_mps2: 6.0
   brake_decel_mps2: 6.0
   steering_rate_deg_s: 200.0
   speed_lag_tau_sec: 0.05
-  # Bounding-circle collision footprint -- half the diagonal of the 0.76 x
-  # 0.40 m body footprint (~0.43 m), rounded up for a small margin.
-  collision_radius_m: 0.45
+  # Bounding circle for the manual's 0.82 x 0.64 m overall footprint:
+  # 0.5 * hypot(0.82, 0.64) = 0.5201 m, rounded up for a safety margin.
+  collision_radius_m: 0.53

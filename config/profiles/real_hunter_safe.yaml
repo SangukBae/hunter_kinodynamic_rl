@@ -2,6 +2,8 @@
 # training happens only in simulation). Conservative speed/lookahead bounds
 # on top of the full proposed system. Every safety guard in
 # env/safety/action_guard.py is mandatory here, not optional.
+robot_file: hunter_se_improved.yaml
+
 action_space:
   mode: trajectory
   v_min_mps: 0.0
@@ -16,7 +18,7 @@ features:
 
 # section P0-4: must match the deployed checkpoint's own training-time
 # value EXACTLY (build_effective_profile's architecture-compatibility
-# check) -- kinodynamic_tqc_counterfactual.yaml (the checkpoint this
+# check) -- kinodynamic_tqc_improved.yaml (the checkpoint this
 # profile is designed to deploy) uses the 8D (+L-memory) trajectory-mode
 # observation contract.
 observation:

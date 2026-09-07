@@ -1,6 +1,6 @@
 # Example / stability-experiment profile demonstrating the three
 # curriculum-independent features ported from drl_agent (see
-# docs/ARCHITECTURE.md's "Safe start pose / obstacle pool / sensor noise"
+# docs/TRACTOR_TQC_MODEL_SPEC.md's "Safe start pose / obstacle pool / sensor noise"
 # section):
 #
 #   1. Safe start position + initial-yaw sampling (start_pose)

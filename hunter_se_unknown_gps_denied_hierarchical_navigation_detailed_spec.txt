@@ -27,8 +27,8 @@ Unknown GPS-Denied Long-Horizon Hunter SE Navigation
 --------------------------------------------
 이 문서는 최종 시스템의 설계 요구와 연구 질문을 정의한다. 현재 구현 완료 여부의
 정본은 docs/CURRENT_STATUS.md, 단계별 구현 상태는
-docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md, 실행 명령은
-docs/RUNBOOK_HIERARCHICAL_NAVIGATION.md를 따른다. 설계가 적혀 있다는 사실은 코드,
+docs/IMPLEMENTATION_PLAN.md, 실행 명령은
+docs/IMPLEMENTATION_PLAN.md를 따른다. 설계가 적혀 있다는 사실은 코드,
 학습 또는 live 검증이 끝났다는 뜻이 아니다.
 
 논문 전략은 두 단계로 분리한다.

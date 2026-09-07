@@ -121,7 +121,7 @@ class _ResidualCriticBody(nn.Module):
     original plain ``nn.Sequential`` so baseline state_dicts and numerics are
     byte-for-byte unchanged. A residual critic changes the critic state_dict, so
     it is a FRESH-RUN architecture (an old plain-critic checkpoint will not load
-    strictly) — see docs/experiments/tqc_scaling_improvement_plan.md.
+    strictly) — see docs/CHECKPOINT_AND_COMPATIBILITY.md.
     """
 
     def __init__(self, in_dim, hdim, n_quantiles, ActivMod,

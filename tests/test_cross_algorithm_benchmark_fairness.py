@@ -13,7 +13,7 @@ fairness machinery items 1/2 add) against a duck-typed fake environment
 -- ``run_episode``/``run_benchmark`` only ever call methods/attributes on
 ``env`` duck-typed, never anything Gazebo-specific), so it needs no Gazebo/
 rclpy-executor infrastructure at all. See
-``docs/FINAL_COMPLETION_REPORT.md``'s "remaining limitations" section for
+``docs/EXPERIMENT_REGISTRY.md``'s "remaining limitations" section for
 the explicit disclosure that a live-Gazebo TQC-vs-SAC run was NOT attempted
 this round, and why.
 """

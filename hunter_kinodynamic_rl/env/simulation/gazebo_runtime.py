@@ -13,7 +13,7 @@ fix is to NEVER call ``spin_once``/``spin_until_future_complete`` from inside
 ``/reset`` or ``/step``; instead poll ``future.done()`` with ``time.sleep()``
 while the OTHER executor worker threads keep servicing the response and the
 scan/odom subscription callbacks in the background. See
-docs/SOURCE_MAP.md and the ``cf_st_step_executor_hang`` note this mirrors.
+docs/IMPLEMENTATION_PLAN.md and the ``cf_st_step_executor_hang`` note this mirrors.
 
 ``multi_step_advance``/the ``runtime.deterministic_stepping`` opt-in
 (section P0-7) revisit an approach `drl_agent` had EXCLUDED for hanging --

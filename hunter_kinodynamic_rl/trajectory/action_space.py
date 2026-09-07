@@ -1,6 +1,6 @@
 """Normalized [-1, 1] policy action <-> physical trajectory-command mapping.
 
-Two contracts (selected by ``config.action_space.mode``), matching section 10
+Three contracts (selected by ``config.action_space.mode``), matching section 10
 / 11 of the research brief:
 
   trajectory (primary):
@@ -13,6 +13,10 @@ Two contracts (selected by ``config.action_space.mode``), matching section 10
     action[1] -> theta   in [-legacy_theta_max_rad, +legacy_theta_max_rad]
     action[2] -> yield scalar in [-1, 1]
 
+  direct_control (Local L0 fair action-representation baseline):
+    action[0] -> forward speed in [v_min, v_max]
+    action[1] -> center steering in [-steering_limit, +steering_limit]
+
 Both are pure functions: no ROS, no state, so they are covered directly by
 unit tests and reused unchanged in nodes/, evaluation/, and real-robot deploy.
 """
@@ -24,7 +28,12 @@ from dataclasses import dataclass
 from hunter_kinodynamic_rl.config.schema import ActionSpaceConfig, RobotConfig
 
 
-ACTION_DIM = 3
+TRAJECTORY_ACTION_DIM = 3
+LEGACY_WAYPOINT_ACTION_DIM = 3
+DIRECT_CONTROL_ACTION_DIM = 2
+# Backward-compatible name used by the hierarchy, whose frozen Local contract
+# is deliberately trajectory-only.
+ACTION_DIM = TRAJECTORY_ACTION_DIM
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,24 @@ class LegacyWaypointCommand:
     r: float
     theta: float
     yield_scalar: float
+
+
+@dataclass(frozen=True)
+class DirectControlCommand:
+    speed_mps: float
+    steering_rad: float
+
+
+def action_dim_for_mode(action_cfg_or_mode) -> int:
+    """Return the policy output dimension for a configured action contract."""
+    mode = action_cfg_or_mode.mode if hasattr(action_cfg_or_mode, "mode") else str(action_cfg_or_mode)
+    if mode == "direct_control":
+        return DIRECT_CONTROL_ACTION_DIM
+    if mode == "trajectory":
+        return TRAJECTORY_ACTION_DIM
+    if mode == "legacy_waypoint":
+        return LEGACY_WAYPOINT_ACTION_DIM
+    raise ValueError(f"unknown action_space.mode {mode!r}")
 
 
 def _lerp(a_norm: float, lo: float, hi: float) -> float:
@@ -56,8 +83,8 @@ def _inv_lerp(value: float, lo: float, hi: float) -> float:
 def normalized_to_trajectory_command(action, action_cfg: ActionSpaceConfig,
                                       robot: RobotConfig) -> TrajectoryCommand:
     """action in [-1, 1]^3 -> physically bounded [kappa, v_ref, L]."""
-    if len(action) != ACTION_DIM:
-        raise ValueError(f"trajectory action must have length {ACTION_DIM}, got {len(action)}")
+    if len(action) != TRAJECTORY_ACTION_DIM:
+        raise ValueError(f"trajectory action must have length {TRAJECTORY_ACTION_DIM}, got {len(action)}")
     kappa_max = robot.max_curvature * action_cfg.kappa_scale
     v_max = action_cfg.v_max_mps if action_cfg.v_max_mps is not None else robot.max_forward_speed_mps
 
@@ -68,12 +95,29 @@ def normalized_to_trajectory_command(action, action_cfg: ActionSpaceConfig,
 
 
 def normalized_to_legacy_waypoint_command(action, action_cfg: ActionSpaceConfig) -> LegacyWaypointCommand:
-    if len(action) != ACTION_DIM:
-        raise ValueError(f"legacy_waypoint action must have length {ACTION_DIM}, got {len(action)}")
+    if len(action) != LEGACY_WAYPOINT_ACTION_DIM:
+        raise ValueError(
+            f"legacy_waypoint action must have length {LEGACY_WAYPOINT_ACTION_DIM}, got {len(action)}"
+        )
     r = _lerp(action[0], action_cfg.legacy_r_min_m, action_cfg.legacy_r_max_m)
     theta = _lerp(action[1], -action_cfg.legacy_theta_max_rad, action_cfg.legacy_theta_max_rad)
     yield_scalar = max(-1.0, min(1.0, float(action[2])))
     return LegacyWaypointCommand(r=r, theta=theta, yield_scalar=yield_scalar)
+
+
+def normalized_to_direct_control_command(
+    action, action_cfg: ActionSpaceConfig, robot: RobotConfig,
+) -> DirectControlCommand:
+    """Map a 2-D normalized action directly to Hunter speed and steering."""
+    if len(action) != DIRECT_CONTROL_ACTION_DIM:
+        raise ValueError(
+            f"direct_control action must have length {DIRECT_CONTROL_ACTION_DIM}, got {len(action)}"
+        )
+    v_max = action_cfg.v_max_mps if action_cfg.v_max_mps is not None else robot.max_forward_speed_mps
+    return DirectControlCommand(
+        speed_mps=_lerp(action[0], action_cfg.v_min_mps, v_max),
+        steering_rad=_lerp(action[1], -robot.steering_limit_rad, robot.steering_limit_rad),
+    )
 
 
 def trajectory_command_to_normalized(cmd: TrajectoryCommand, action_cfg: ActionSpaceConfig,
@@ -98,4 +142,6 @@ def decode_action(action, action_cfg: ActionSpaceConfig, robot: RobotConfig):
         return normalized_to_trajectory_command(action, action_cfg, robot)
     if action_cfg.mode == "legacy_waypoint":
         return normalized_to_legacy_waypoint_command(action, action_cfg)
+    if action_cfg.mode == "direct_control":
+        return normalized_to_direct_control_command(action, action_cfg, robot)
     raise ValueError(f"unknown action_space.mode {action_cfg.mode!r}")

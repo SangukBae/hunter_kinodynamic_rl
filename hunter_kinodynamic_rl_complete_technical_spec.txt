@@ -97,7 +97,7 @@ ros2_ws/src/
 - 기존 profile 덮어쓰기 금지
 - 기존 파일 삭제 금지
 - 파괴적 git 명령 금지
-- 기존 코드를 신규 패키지에 가져올 경우 provenance를 `docs/SOURCE_MAP.md`에 기록
+- 기존 코드를 신규 패키지에 가져올 경우 provenance를 `docs/IMPLEMENTATION_PLAN.md`에 기록
 - 신규 reference TQC는 기존 TQC와 parity test 수행
 
 

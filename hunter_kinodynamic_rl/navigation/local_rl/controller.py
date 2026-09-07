@@ -28,7 +28,10 @@ from hunter_kinodynamic_rl.env.observation.observation_builder import (
     RobotState, build_observation, build_robot_state_vector,
 )
 from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLimits, guard
-from hunter_kinodynamic_rl.sensing.scan_processor import front_and_full_state
+from hunter_kinodynamic_rl.robot.hunter_se import uses_footprint_clearance
+from hunter_kinodynamic_rl.sensing.scan_processor import (
+    center_range_to_footprint_clearance, front_and_full_state,
+)
 from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack
 from hunter_kinodynamic_rl.trajectory import trajectory_executor
 from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM, LegacyWaypointCommand, TrajectoryCommand, decode_action
@@ -53,11 +56,15 @@ class LocalTemporalContext:
 @dataclass(frozen=True)
 class LocalObservationResult:
     """``observation`` is what the policy network consumes; ``obs_state``/
-    ``environment_state`` (front-sector / full-360 LiDAR bins, see
+    ``environment_state`` (front-sector / full-360 raw LiDAR bins, see
     ``sensing/scan_processor.py``) and ``nearest_obstacle_dist_m`` are
     exposed separately since callers (the safety guard, replanning's
     "known occupied" / risk checks) need them independent of the stacked
-    policy observation."""
+    policy observation.  For the frozen baseline, the last field preserves
+    the historical center-range meaning.  For ``hunter_se_improved`` it is
+    surface clearance from the configured collision envelope, so zero has
+    the same meaning as a Gazebo contact event.  Policy observation bins stay
+    byte-compatible raw ranges in both variants."""
 
     observation: np.ndarray
     obs_state: np.ndarray
@@ -141,7 +148,14 @@ class LocalPolicyController:
             robot_state_dim=obs_cfg.robot_state_dim,
         )
         observation = build_observation(lidar_frame, robot_state_vector)
-        nearest = float(environment_state.min()) if environment_state.size else float("inf")
+        nearest_range = (
+            float(environment_state.min()) if environment_state.size else float("inf")
+        )
+        nearest = nearest_range
+        if uses_footprint_clearance(self.profile.robot):
+            nearest = center_range_to_footprint_clearance(
+                nearest_range, self.profile.robot.collision_radius_m
+            )
         return LocalObservationResult(
             observation=observation, obs_state=obs_state, environment_state=environment_state,
             nearest_obstacle_dist_m=nearest,

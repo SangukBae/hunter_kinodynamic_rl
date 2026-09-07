@@ -1,14 +1,15 @@
+robot_file: hunter_se_improved.yaml
+
 # Phase 4 Global RL MVP verification profile (see
-# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 8). Exercises
+# docs/IMPLEMENTATION_PLAN.md section 8). Exercises
 # every opt-in section the hierarchical stack needs together: Phase 1
 # mission/localization/mapping, Phase 3 long_horizon_world/wall_segment_pool,
 # and this phase's own global_rl/hierarchical_training.
 #
-# 2026-08-31: action_space/features/observation/risk/counterfactual below
-# are NOT defaults.yaml's -- they are copied VERBATIM from
-# kinodynamic_tqc_arbitrary_subgoal.yaml (the profile
-# hierarchical_training.local_checkpoint_dir/name below actually points
-# at). LiveGazeboLocalExecutor builds its RiskAgent/LocalPolicyController
+# action_space/features/observation/risk/counterfactual below are NOT
+# defaults.yaml's -- they match local_l5_counterfactual.yaml, the only
+# pre-registered Stage-2 hierarchy Local promotion row.
+# LiveGazeboLocalExecutor builds its RiskAgent/LocalPolicyController
 # from THIS profile, so these sections must match the frozen checkpoint's
 # own training-time architecture EXACTLY (same state_dim, same
 # risk_critic/counterfactual_risk wiring) -- a mismatch here fails
@@ -113,7 +114,7 @@ global_rl:
   fallback_mode: backtrack
   fallback_backtrack_distance_m: 2.0
   rollout_sample_count: 8
-  robot_footprint_radius_m: 0.45
+  robot_footprint_radius_m: 0.58
   map_crop_size_cells: 96
   goal_distance_norm_m: 30.0
   max_speed_norm_mps: 1.5
@@ -147,16 +148,8 @@ global_rl:
 
 hierarchical_training:
   enabled: true
-  # 2026-08-31: points at a REAL trained checkpoint --
-  # runtime/experiments/local_frozen is a symlink to
-  # 20260831_005836_kinodynamic_tqc_arbitrary_subgoal_seed0 (the
-  # kinodynamic_tqc_arbitrary_subgoal profile, section 6.6's arbitrary
-  # short-range subgoal distribution). "best"/"latest" (no "final" --
-  # training was stopped at global_step=10274/150000, training_steps=7274
-  # gradient updates, to free Gazebo for Phase 3/4 live wiring
-  # verification within this session; see the plan doc's 2026-08-31 status
-  # notes and the session's closing report for the exact, honest
-  # performance level this represents -- NOT a claim of full convergence).
+  # The current legacy path is intentionally rejected until the Stage-2
+  # runner publishes an accepted L5/seed-0/final generation here.
   local_checkpoint_dir: "runtime/experiments/local_frozen/checkpoints"
   # defect-fix item 5: unified to "final" -- the ONE canonical Local
   # promotion tag across every profile (matches every hierarchical_phase5_*
@@ -165,7 +158,7 @@ hierarchical_training:
   # never wrote (it only ever creates/updates a "final" symlink), so a
   # promoted checkpoint was silently invisible to this profile.
   local_checkpoint_name: "final"
-  local_training_profile_name: kinodynamic_tqc_arbitrary_subgoal
+  local_training_profile_name: local_l5_counterfactual
   # Supported live=True path. CUDA-authored checkpoints are explicitly
   # remapped to CPU by LiveGazeboLocalExecutor; this avoids the observed
   # in-process CUDA/rclpy publisher-context failure during the bounded smoke.

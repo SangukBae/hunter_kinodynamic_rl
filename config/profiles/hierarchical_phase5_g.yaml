@@ -1,5 +1,7 @@
+robot_file: hunter_se_improved.yaml
+
 # Phase 5 ablation G: FULL hierarchical system (see
-# docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md section 9.9) --
+# docs/IMPLEMENTATION_PLAN.md section 9.9) --
 # topological memory + local feasibility feedback + global risk feedback,
 # all together, on top of the same Phase 4 global_rl/hierarchical_training
 # base hierarchical_phase4.yaml uses. See hierarchical_phase5_b.yaml,
@@ -91,7 +93,7 @@ global_rl:
   fallback_mode: backtrack
   fallback_backtrack_distance_m: 2.0
   rollout_sample_count: 8
-  robot_footprint_radius_m: 0.45
+  robot_footprint_radius_m: 0.58
   map_crop_size_cells: 96
   goal_distance_norm_m: 30.0
   max_speed_norm_mps: 1.5
@@ -132,7 +134,7 @@ hierarchical_training:
   enabled: true
   local_checkpoint_dir: "runtime/experiments/local_frozen/checkpoints"
   local_checkpoint_name: "final"
-  local_training_profile_name: kinodynamic_tqc_arbitrary_subgoal
+  local_training_profile_name: local_l5_counterfactual
   max_local_steps_per_option: 150
   max_global_options_per_mission: 40
   long_horizon_level: 1

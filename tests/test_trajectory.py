@@ -48,6 +48,25 @@ def test_legacy_waypoint_action_bounds():
     assert cmd.theta == pytest.approx(0.524)
 
 
+def test_direct_control_action_dimension_and_extremes():
+    robot = make_robot()
+    cfg = ActionSpaceConfig(mode="direct_control", v_min_mps=0.0, v_max_mps=1.5)
+    assert action_space.action_dim_for_mode(cfg) == 2
+    cmd_min = action_space.normalized_to_direct_control_command([-1.0, -1.0], cfg, robot)
+    cmd_max = action_space.normalized_to_direct_control_command([1.0, 1.0], cfg, robot)
+    assert cmd_min.speed_mps == pytest.approx(0.0)
+    assert cmd_min.steering_rad == pytest.approx(-robot.steering_limit_rad)
+    assert cmd_max.speed_mps == pytest.approx(1.5)
+    assert cmd_max.steering_rad == pytest.approx(robot.steering_limit_rad)
+
+
+def test_direct_control_rejects_a_three_dimensional_action():
+    with pytest.raises(ValueError, match="length 2"):
+        action_space.normalized_to_direct_control_command(
+            [0.0, 0.0, 0.0], ActionSpaceConfig(mode="direct_control"), make_robot(),
+        )
+
+
 def test_trajectory_command_normalized_roundtrip():
     robot = make_robot()
     cfg = ActionSpaceConfig(mode="trajectory", v_min_mps=0.0)
@@ -106,6 +125,15 @@ def test_legacy_waypoint_executor_produces_bounded_command():
     )
     assert 0.0 <= cmd.speed_mps <= robot.max_forward_speed_mps + 1e-6
     assert abs(cmd.steering_rad) <= robot.steering_limit_rad + 1e-6
+
+
+def test_direct_control_executor_has_no_waypoint_or_trajectory_indirection():
+    robot = make_robot()
+    cmd = trajectory_executor.execute(
+        [0.0, 0.5], ActionSpaceConfig(mode="direct_control"), TrajectoryConfig(), robot,
+    )
+    assert cmd.speed_mps == pytest.approx(robot.max_forward_speed_mps / 2.0)
+    assert cmd.steering_rad == pytest.approx(robot.steering_limit_rad / 2.0)
 
 
 def test_v_ref_is_executed_directly_regardless_of_L():

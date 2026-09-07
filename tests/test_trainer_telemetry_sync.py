@@ -25,7 +25,7 @@ residual multi-client-marker-misattribution gap the first (telemetry-only)
 fix could not. Section P1-5 (shared-interface preservation) review found
 that change violated this project's "reuse shared infrastructure
 unmodified" requirement and reverted it: ``drl_agent_interfaces`` is
-byte-identical to ``drl_agent``'s own again (see docs/SOURCE_MAP.md).
+byte-identical to ``drl_agent``'s own again (see docs/IMPLEMENTATION_PLAN.md).
 ``reset_generation`` is learned PURELY from this package's OWN
 risk-telemetry broadcast topic once more, via
 ``telemetry_is_new_reset_marker``/``_await_new_reset_marker`` below --
@@ -137,7 +137,7 @@ def test_none_telemetry_never_matches_new_reset_marker():
 # client's marker landing strictly AFTER this client's own request was sent
 # but BEFORE this client's own marker arrives was indistinguishable from
 # "my own marker, just slow" under any purely observational heuristic. That
-# field addition was reverted (docs/SOURCE_MAP.md) because it touched a
+# field addition was reverted (docs/IMPLEMENTATION_PLAN.md) because it touched a
 # SHARED interface this project requires stay unmodified. The tests below
 # cover the reinstated telemetry-only design's actual guarantee: exactly
 # one client calling ``/reset`` on a given environment_node instance at a

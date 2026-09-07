@@ -1,7 +1,7 @@
 """Mission-start frame: a fixed coordinate frame captured at the robot's
 pose the instant a mission begins, so a user-specified relative goal and the
 accumulated partial map stay meaningful as the robot moves and rotates (see
-``docs/HIERARCHICAL_NAVIGATION_IMPLEMENTATION_PLAN.md`` section 5.3).
+``docs/IMPLEMENTATION_PLAN.md`` section 5.3).
 
 All rotations reuse :mod:`hunter_kinodynamic_rl.common.geometry`'s
 ``to_robot_frame``/``to_world_frame`` -- mission_to_odom/robot_to_mission

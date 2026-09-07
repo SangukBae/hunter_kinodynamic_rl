@@ -12,6 +12,7 @@ from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint, architecture_fingerprint_from_resolved_config, evaluation_contract_fingerprint,
     local_training_contract_fingerprint, local_training_contract_fingerprint_from_resolved_config,
+    training_profile_fingerprint, training_profile_fingerprint_from_resolved_config,
 )
 
 
@@ -49,6 +50,13 @@ def test_architecture_fingerprint_changes_when_robot_geometry_changes():
 def test_architecture_fingerprint_changes_when_observation_changes():
     base = load_profile("kinodynamic_tqc")
     edited = dataclasses.replace(base, observation=dataclasses.replace(base.observation, lidar_bins=40))
+    assert architecture_fingerprint(base) != architecture_fingerprint(edited)
+
+
+def test_architecture_fingerprint_changes_when_trajectory_semantics_change():
+    base = load_profile("kinodynamic_tqc")
+    edited = dataclasses.replace(
+        base, trajectory=dataclasses.replace(base.trajectory, dt_sec=base.trajectory.dt_sec * 0.5))
     assert architecture_fingerprint(base) != architecture_fingerprint(edited)
 
 
@@ -91,6 +99,36 @@ def test_architecture_fingerprint_ignores_runtime_and_training_loop_changes():
         training=dataclasses.replace(base.training, seed=base.training.seed + 1, max_timesteps=1),
     )
     assert architecture_fingerprint(base) == architecture_fingerprint(edited)
+
+
+def test_training_profile_fingerprint_covers_the_complete_resolved_training_contract():
+    base = load_profile("local_l5_counterfactual")
+    resolved = dataclasses.asdict(base)
+    assert training_profile_fingerprint(base) == training_profile_fingerprint_from_resolved_config(resolved)
+
+    changed_reward = dataclasses.replace(
+        base, reward=dataclasses.replace(base.reward, collision_penalty=base.reward.collision_penalty - 1.0))
+    changed_runtime = dataclasses.replace(
+        base, runtime=dataclasses.replace(base.runtime, time_delta_sec=base.runtime.time_delta_sec * 2))
+    changed_episode_length = dataclasses.replace(
+        base,
+        training=dataclasses.replace(
+            base.training, episode_length_steps=base.training.episode_length_steps + 1,
+        ),
+    )
+    for changed in (changed_reward, changed_runtime, changed_episode_length):
+        assert training_profile_fingerprint(changed) != training_profile_fingerprint(base)
+
+    trainer_only_change = dataclasses.replace(
+        base,
+        training=dataclasses.replace(
+            base.training,
+            seed=base.training.seed + 1,
+            max_timesteps=base.training.max_timesteps + 1,
+            eval_freq=base.training.eval_freq + 1,
+        ),
+    )
+    assert training_profile_fingerprint(trainer_only_change) == training_profile_fingerprint(base)
 
 
 def test_evaluation_contract_fingerprint_changes_when_scenario_or_reward_changes():

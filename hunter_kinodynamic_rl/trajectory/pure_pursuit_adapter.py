@@ -1,6 +1,6 @@
 """Adapter: a [kappa, v_ref, L] trajectory command -> the existing Pure
 Pursuit controller (trajectory/pure_pursuit.py, copied verbatim from
-drl_agent -- see docs/SOURCE_MAP.md).
+drl_agent -- see docs/IMPLEMENTATION_PLAN.md).
 
 The STEERING command is computed by sampling a lookahead point on the
 primitive's arc and running it through the shared

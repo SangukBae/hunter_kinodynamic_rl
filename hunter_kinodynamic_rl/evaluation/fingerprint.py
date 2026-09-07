@@ -36,6 +36,10 @@ import json
 from typing import Any, Dict, List, Optional
 
 from hunter_kinodynamic_rl.config.schema import Profile
+from hunter_kinodynamic_rl.rl.replay.schema import SCHEMA_VERSION as TRANSITION_REPLAY_SCHEMA_VERSION
+
+
+ARCHITECTURE_FINGERPRINT_SCHEMA_VERSION = 2
 
 # section item-2: everything that determines a CHECKPOINT's own network
 # shape / the live environment's action-decode & observation-build
@@ -47,7 +51,7 @@ from hunter_kinodynamic_rl.config.schema import Profile
 # etc. are training-loop bookkeeping, never applied to a live evaluation
 # environment at all).
 ARCHITECTURE_SECTIONS = (
-    "action_space", "features", "observation", "robot", "dynamics",
+    "action_space", "trajectory", "features", "observation", "robot", "dynamics",
     "risk", "counterfactual", "hyperparameters", "sac_hyperparameters", "algorithm",
 )
 
@@ -76,7 +80,9 @@ ARCHITECTURE_SECTIONS = (
 # fixed benchmarks by `check_sensor_overrides_supported` -- evaluation
 # noise, if any, is controlled ONLY by the requested evaluation profile's
 # own `sensor_noise` section, delivered here).
-EVALUATION_CONTRACT_SECTIONS = ("evaluation", "reward", "scenario", "runtime", "sensor_noise")
+EVALUATION_CONTRACT_SECTIONS = (
+    "evaluation", "reward", "scenario", "runtime", "sensor_noise", "environment_v2",
+)
 
 # Phase 5 (plan section 9.11: "ablation checkpoint와 결과가 서로 다른
 # architecture fingerprint로 구분된다") -- everything that determines a
@@ -135,6 +141,55 @@ def _sections_from_profile_dict(profile_dict: Dict[str, Any], sections) -> Dict[
     return {name: profile_dict.get(name, {}) for name in sections}
 
 
+def _architecture_payload(profile_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the complete semantic identity of the legacy Local family.
+
+    The version and replay schema are explicit inputs to the hash.  This
+    deliberately invalidates older hashes: a checkpoint whose identity did
+    not cover trajectory sampling or replay terminal semantics is not safe to
+    resume under the stronger contract.
+    """
+    return {
+        "fingerprint_schema_version": ARCHITECTURE_FINGERPRINT_SCHEMA_VERSION,
+        "transition_replay_schema_version": TRANSITION_REPLAY_SCHEMA_VERSION,
+        "sections": _sections_from_profile_dict(profile_dict, ARCHITECTURE_SECTIONS),
+    }
+
+
+def training_profile_fingerprint(profile: Profile) -> str:
+    """SHA-256 of the resolved live-environment training contract.
+
+    Architecture and Local-subgoal fingerprints intentionally cover only
+    their narrower compatibility contracts.  Starting a training run needs
+    a stronger assertion: the trainer and the already-running environment
+    must agree on reward, timing, randomization, sensor noise and episode
+    limits as well.  Trainer-owned bookkeeping fields (seed, total steps,
+    warm-up, checkpoint/evaluation cadence and logging) do not affect the
+    live environment and are deliberately excluded; ``episode_length_steps``
+    is the sole ``training`` field the environment consumes.
+    """
+    return training_profile_fingerprint_from_resolved_config(dataclasses.asdict(profile))
+
+
+def training_profile_fingerprint_from_resolved_config(resolved_config: Dict[str, Any]) -> str:
+    """Resolved-config counterpart of :func:`training_profile_fingerprint`."""
+    payload = dict(resolved_config)
+    # Backward compatibility for the frozen v1 contract: profiles and old
+    # checkpoint manifests that predate environment_v2 must hash identically
+    # to profiles carrying its default-disabled section.  Enabled v2 content
+    # remains part of the training identity in full.
+    environment_v2 = payload.get("environment_v2")
+    if isinstance(environment_v2, dict) and not environment_v2.get("enabled", False):
+        payload.pop("environment_v2", None)
+    training = resolved_config.get("training")
+    if not isinstance(training, dict) or "episode_length_steps" not in training:
+        raise KeyError(
+            "training_profile_fingerprint: resolved config is missing training.episode_length_steps"
+        )
+    payload["training"] = {"episode_length_steps": training["episode_length_steps"]}
+    return sha256_of_obj(payload)
+
+
 def architecture_fingerprint(profile: Profile) -> str:
     """SHA-256 of ``profile``'s architecture-relevant sections. Two
     profiles (or a profile and a checkpoint's own frozen
@@ -142,7 +197,7 @@ def architecture_fingerprint(profile: Profile) -> str:
     produce IDENTICAL agent network shapes and action/observation
     semantics -- not just "the same profile name"."""
     profile_dict = dataclasses.asdict(profile)
-    return sha256_of_obj(_sections_from_profile_dict(profile_dict, ARCHITECTURE_SECTIONS))
+    return sha256_of_obj(_architecture_payload(profile_dict))
 
 
 def evaluation_contract_fingerprint(profile: Profile) -> str:
@@ -151,7 +206,14 @@ def evaluation_contract_fingerprint(profile: Profile) -> str:
     world size). Every model evaluated through the same requested
     ``--profile`` must produce the SAME value here."""
     profile_dict = dataclasses.asdict(profile)
-    return sha256_of_obj(_sections_from_profile_dict(profile_dict, EVALUATION_CONTRACT_SECTIONS))
+    payload = _sections_from_profile_dict(profile_dict, EVALUATION_CONTRACT_SECTIONS)
+    # Do not alter any existing v1 evaluation fingerprint.  Once enabled,
+    # the complete v2 environment contract affects benchmark difficulty and
+    # is therefore included as a separate, explicit identity component.
+    environment_v2 = profile_dict.get("environment_v2", {})
+    if not (isinstance(environment_v2, dict) and environment_v2.get("enabled", False)):
+        payload.pop("environment_v2", None)
+    return sha256_of_obj(payload)
 
 
 def hierarchical_architecture_fingerprint_from_resolved_config(resolved_config: Dict[str, Any]) -> str:
@@ -166,7 +228,7 @@ def architecture_fingerprint_from_resolved_config(resolved_config: Dict[str, Any
     output, e.g. straight from a loaded ``.json`` manifest) -- avoids
     needing to round-trip it back through ``profile_from_dict`` just to
     fingerprint it."""
-    return sha256_of_obj(_sections_from_profile_dict(resolved_config, ARCHITECTURE_SECTIONS))
+    return sha256_of_obj(_architecture_payload(resolved_config))
 
 
 def _scenario_contract_dict(scenario_section: Dict[str, Any]) -> Dict[str, Any]:

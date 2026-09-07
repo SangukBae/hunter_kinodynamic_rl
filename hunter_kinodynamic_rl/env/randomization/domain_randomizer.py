@@ -126,7 +126,7 @@ def sample_draw(seed: int, cfg: DomainRandomizationConfig) -> RandomizationDraw:
 # (section P1-3/P1-5). Any OTHER key in a benchmark YAML's `dynamics:` block
 # raises -- silently ignoring an override the user asked for would make the
 # benchmark's stated OOD condition a no-op, invisibly. See
-# docs/ARCHITECTURE.md's "Domain randomization: where it actually applies"
+# docs/TRACTOR_TQC_MODEL_SPEC.md's "Domain randomization: where it actually applies"
 # section for the honest boundary this whitelist encodes: mass/friction/
 # wheel-radius/steering-gain are real RobotConfig scale factors;
 # command_latency_sec is a real N-step command delay in

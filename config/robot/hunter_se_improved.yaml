@@ -1,0 +1,34 @@
+# Improved AgileX Hunter SE research model.
+#
+# Manual envelope plus official CAD/STL hub and wheel geometry. The improved
+# track is the 0.49238 m steering-axis spacing required by Ackermann angle
+# conversion; front/rear tyre contact-centre tracks are 0.52231/0.52422 m.
+# The larger collision radius encloses the current URDF collision envelope
+# relative to base_link: hypot(front_axle_x + wheel_radius, width/2)
+# = hypot(0.340790 + 0.1375, 0.320) = 0.57547 m, rounded up to 0.58 m.
+# LiDAR safety diagnostics for this named model report surface clearance
+# (raw center range minus this radius), while policy observation bins remain
+# raw ranges for checkpoint compatibility.
+robot:
+  name: hunter_se_improved
+  wheelbase_m: 0.550
+  track_width_m: 0.49238
+  wheel_radius_m: 0.1375
+  length_m: 0.820
+  width_m: 0.640
+  height_m: 0.310
+  mass_kg: 42.0
+  # Recomputed so the inner steering joint remains limited to 22 degrees.
+  steering_limit_deg: 18.8883201008
+  max_forward_speed_mps: 1.3333333333
+  min_forward_speed_mps: 0.0
+  # Longitudinal limits match the improved command prefilter and ros2_control
+  # command path. They remove an internal simulator/rollout mismatch, but
+  # remain simulator-consistency values until measured on hardware.
+  accel_limit_mps2: 2.0
+  brake_decel_mps2: 2.0
+  # Steering response still requires real system identification; Gazebo's
+  # realized response includes tire/joint dynamics beyond this command limit.
+  steering_rate_deg_s: 200.0
+  speed_lag_tau_sec: 0.05
+  collision_radius_m: 0.58

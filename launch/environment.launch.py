@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""``ros2 launch hunter_kinodynamic_rl environment.launch.py profile:=kinodynamic_tqc``
+"""``ros2 launch hunter_kinodynamic_rl environment.launch.py``
 
 Launches ONLY the environment node -- Gazebo is launched separately via
 ``hunter_se_gazebo``'s own launch file (CLAUDE.md: "no combined launch file"
 is the established convention in this monorepo; drl_agent's env/trainer
-nodes are launched the same way, in separate terminals)."""
+nodes are launched the same way, in separate terminals). The no-argument
+default is the active improved Hunter SE RL profile; frozen baseline profiles
+remain available by explicitly passing ``profile:=...``."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from hunter_kinodynamic_rl.config.loader import DEFAULT_RL_PROFILE
+
 
 def generate_launch_description():
-    profile_arg = DeclareLaunchArgument("profile", default_value="kinodynamic_tqc")
+    profile_arg = DeclareLaunchArgument("profile", default_value=DEFAULT_RL_PROFILE)
     # section P1-1: this is the Gazebo SDF's <world name="..."> (what every
     # ros_gz service is actually namespaced under, e.g.
     # `/world/default/control`), NOT hunter_se_gazebo's own `world:=` launch

@@ -8,6 +8,16 @@ from hunter_kinodynamic_rl.config.schema import RobotConfig
 from hunter_kinodynamic_rl.robot.limits import RobotLimits
 
 
+BASELINE_MODEL_NAME = "hunter_se"
+IMPROVED_MODEL_NAME = "hunter_se_improved"
+HUNTER_SE_MODEL_NAMES = (BASELINE_MODEL_NAME, IMPROVED_MODEL_NAME)
+
+
+def uses_footprint_clearance(config: RobotConfig) -> bool:
+    """Whether LiDAR safety distances use the improved footprint reference."""
+    return config.name == IMPROVED_MODEL_NAME
+
+
 class HunterSE(RobotLimits):
     """Concrete :class:`~hunter_kinodynamic_rl.robot.interface.RobotModel`
     for the AgileX Hunter SE. Swapping robots means adding a sibling class
@@ -15,6 +25,8 @@ class HunterSE(RobotLimits):
     every other module only depends on the ``RobotModel`` Protocol."""
 
     def __init__(self, config: RobotConfig):
-        if config.name != "hunter_se":
-            raise ValueError(f"HunterSE requires robot.name == 'hunter_se', got {config.name!r}")
+        if config.name not in HUNTER_SE_MODEL_NAMES:
+            raise ValueError(
+                f"HunterSE requires robot.name in {HUNTER_SE_MODEL_NAMES}, got {config.name!r}"
+            )
         super().__init__(config)

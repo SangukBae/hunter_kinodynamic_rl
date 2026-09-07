@@ -33,6 +33,7 @@ import numpy as np  # noqa: E402
 from hunter_kinodynamic_rl.config.loader import load_profile  # noqa: E402
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler  # noqa: E402
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt  # noqa: E402
+from hunter_kinodynamic_rl.evaluation.fingerprint import training_profile_fingerprint  # noqa: E402
 from hunter_kinodynamic_rl.rl.replay.buffer import ReplayBuffer  # noqa: E402
 from hunter_kinodynamic_rl.training.trainer_base import TrainerBase  # noqa: E402
 
@@ -130,6 +131,14 @@ def _make_trainer(run_dir: str, eval_freq: int, max_timesteps: int, seed: int = 
     trainer.state_dim = 4
     trainer.action_dim = 3
     trainer.max_action = 1.0
+    trainer.training_environment_attestation = {
+        "profile_name": profile.name,
+        "training_profile_fingerprint_sha256": training_profile_fingerprint(profile),
+        "robot_state_publisher_node": "/robot_state_publisher",
+        "urdf_robot_name": profile.robot.name,
+        "state_dim": trainer.state_dim,
+        "action_dim": trainer.action_dim,
+    }
     trainer.max_candidates = 0
     trainer.env = _FakeEnv(trainer.state_dim)
     trainer.replay_buffer = ReplayBuffer(
@@ -275,6 +284,22 @@ def test_resume_rejects_same_named_profile_after_local_goal_distribution_changes
     )
     with pytest.raises(ValueError, match="Local training distribution mismatch"):
         resumed._resume_from(str(tmp_path / "distribution_change"), checkpoint_tag="latest")
+
+
+def test_resume_rejects_same_named_profile_after_reward_contract_changes(tmp_path):
+    trainer = _make_trainer(str(tmp_path / "reward_change"), eval_freq=4, max_timesteps=4, seed=3)
+    trainer.run()
+
+    resumed = _make_trainer(str(tmp_path / "reward_change"), eval_freq=4, max_timesteps=8, seed=3)
+    resumed.profile = dataclasses.replace(
+        resumed.profile,
+        reward=dataclasses.replace(
+            resumed.profile.reward,
+            collision_penalty=resumed.profile.reward.collision_penalty - 1.0,
+        ),
+    )
+    with pytest.raises(ValueError, match="resume training-profile mismatch"):
+        resumed._resume_from(str(tmp_path / "reward_change"), checkpoint_tag="latest")
 
 
 def test_checkpoint_manifest_embeds_the_full_resolved_config_not_just_profile_name(tmp_path):

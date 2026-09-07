@@ -7,8 +7,8 @@ velocity step, steering step, constant circle, stop response) by ACTIVELY
 COMMANDING the robot through a scripted /cmd_vel sequence (section P1-12 --
 this previously only PASSIVELY recorded while a human drove the robot
 manually), while recording (t, x, y, yaw, v, steering) from /odometry +
-/hunter_se/joint_states. Steering is read from the REAL Ackermann center
-steering angle (mean of the two front wheel joints), NEVER
+/hunter_se/joint_states. Steering is read as the REAL Ackermann center
+steering angle recovered from both front-wheel curvatures, NEVER
 odometry.twist.angular.z (that is YAW RATE, a different physical quantity
 -- section P1-12's core correction, mirroring the exact fix already applied
 to trainer_base.py's EnvironmentClient and environment_node.py's own
@@ -46,6 +46,7 @@ from hunter_kinodynamic_rl.dynamics.system_identification import (
     analyze_stop_test, analyze_velocity_step_response, build_identified_robot_config, samples_to_csv,
     write_identified_robot_yaml, write_results,
 )
+from hunter_kinodynamic_rl.robot.limits import wheel_angles_to_center_steering
 
 TRIAL_TYPES = ("velocity_step", "steering_step", "circle", "stop")
 
@@ -132,7 +133,8 @@ def build_brake_onset_snapshot(
 
 class SystemIdRecorder(Node):
     def __init__(self, robot_entity_name: str = "hunter_se",
-                 max_onset_snapshot_staleness_sec: float = DEFAULT_MAX_ONSET_SNAPSHOT_STALENESS_SEC):
+                 max_onset_snapshot_staleness_sec: float = DEFAULT_MAX_ONSET_SNAPSHOT_STALENESS_SEC,
+                 wheelbase_m: float = 0.550, track_width_m: float = 0.460):
         super().__init__("hunter_kinodynamic_system_id_recorder")
         self._latest_xy = None
         self._latest_yaw = 0.0
@@ -146,6 +148,8 @@ class SystemIdRecorder(Node):
         self._latest_odom_monotonic_time: Optional[float] = None
         self._latest_joint_state_monotonic_time: Optional[float] = None
         self._max_onset_snapshot_staleness_sec = max_onset_snapshot_staleness_sec
+        self._wheelbase_m = float(wheelbase_m)
+        self._track_width_m = float(track_width_m)
         self._recording = False
         self._samples: List[Sample] = []
         self._t0 = None
@@ -186,8 +190,8 @@ class SystemIdRecorder(Node):
             self._record_sample()
 
     def _on_joint_states(self, msg: JointState) -> None:
-        """section P1-12: the REAL Ackermann center steering angle (mean of
-        the two front wheel joints) -- NEVER odometry.twist.angular.z,
+        """section P1-12: the REAL Ackermann center steering angle recovered
+        from the two front wheel joints -- NEVER odometry.twist.angular.z,
         which is yaw RATE [rad/s], not a steering ANGLE [rad] at all. This
         was the exact bug found in code review: the original recorder
         logged angular.z into a field literally named steering_rad."""
@@ -196,7 +200,9 @@ class SystemIdRecorder(Node):
             right = float(msg.position[msg.name.index("front_right_steering")])
         except (ValueError, IndexError, TypeError):
             return
-        self._latest_center_steering_rad = 0.5 * (left + right)
+        self._latest_center_steering_rad = wheel_angles_to_center_steering(
+            left, right, self._wheelbase_m, self._track_width_m
+        )
         self._latest_joint_state_monotonic_time = time.monotonic()
 
     def _record_sample(self) -> None:
@@ -358,8 +364,12 @@ def main():
     step_duration_sec = float(kv.get("step_duration_sec", "5.0"))
     robot_profile = kv.get("robot_profile", "kinodynamic_tqc")
 
+    profile = load_profile(robot_profile)
     rclpy.init()
-    node = SystemIdRecorder()
+    node = SystemIdRecorder(
+        wheelbase_m=profile.robot.wheelbase_m,
+        track_width_m=profile.robot.track_width_m,
+    )
     try:
         if trial == "all":
             results = {}
@@ -377,7 +387,7 @@ def main():
                         f"(reason={results[t].get('reason')}) -- its measurement will NOT be merged "
                         "into hunter_se_identified.yaml; the base profile's value is kept instead"
                     )
-            base_robot = load_profile(robot_profile).robot
+            base_robot = profile.robot
             identified = build_identified_robot_config(
                 base_robot, velocity_step_result=results["velocity_step"],
                 steering_step_result=results["steering_step"], circle_result=results["circle"],

@@ -2,14 +2,14 @@
 extension (rl/algorithms/kinodynamic_tqc/agent.py) builds on top of.
 
 The NETWORK definitions (``Actor``, ``Critic``, ``quantile_huber_loss``) are
-copied VERBATIM from drl_agent (hash-verified, see docs/SOURCE_MAP.md) --
+copied VERBATIM from drl_agent (hash-verified, see docs/IMPLEMENTATION_PLAN.md) --
 that is the actual "TQC math" and must not drift. This agent/training-loop
 file is a CLEAN reimplementation of the vanilla update rule (no
 aux_prediction / action_risk_head / temporal-fusion machinery, none of which
 belongs in an independent reference baseline for THIS research package), not
 a line-for-line copy of drl_agent's agent.py/update.py -- see
 tests/test_tqc_parity.py for what is checked and how, and
-docs/SOURCE_MAP.md for the exact rationale.
+docs/IMPLEMENTATION_PLAN.md for the exact rationale.
 
 Target-quantile truncation and actor-loss form follow the standard TQC
 update (Kuznetsov et al. 2020), matching drl_agent's own implementation:

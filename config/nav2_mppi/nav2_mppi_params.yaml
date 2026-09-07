@@ -29,8 +29,8 @@
 #    holonomic motion the RL agent's own action space never has access to.
 #    min_turning_r/vx_max/vx_min/footprint below are read from THIS
 #    package's own config/robot/hunter_se.yaml (min_turning_r_m =
-#    wheelbase_m / tan(steering_limit_rad) = 0.547696 / tan(21.58 deg) =
-#    1.3847, computed once and pinned as a literal here since Nav2 params
+#    wheelbase_m / tan(steering_limit_rad) = 0.550 / tan(19.066677 deg) =
+#    1.5913, computed once and pinned as a literal here since Nav2 params
 #    files are static YAML, not Python -- see
 #    tests/test_nav2_mppi_runner.py::test_min_turning_r_matches_hunter_se_geometry
 #    for the regression check against schema.py's own RobotConfig.max_curvature).
@@ -87,7 +87,7 @@ controller_server:
             # (config/robot/hunter_se.yaml) -- same physical speed range the RL
             # action space is bound to (action_space.v_min_mps=0.0, v_max defaults
             # to robot.max_forward_speed_mps).
-            vx_max: 2.0
+            vx_max: 1.3333333333
             vx_min: 0.0
             vy_max: 0.0
             wz_max: 1.44
@@ -108,7 +108,7 @@ controller_server:
             inversion_yaw_tolerance: 0.4
             motion_model: "Ackermann"
             AckermannConstraints:
-                min_turning_r: 1.3847
+                min_turning_r: 1.5913
             critics: [
                     "ConstraintCritic",
                     "ObstaclesCritic",
@@ -186,9 +186,9 @@ local_costmap:
             width: 8
             height: 8
             resolution: 0.05
-            # Half-extents of robot.length_m/width_m (0.76 x 0.40 m) -- see
+            # Half-extents of robot.length_m/width_m (0.82 x 0.64 m) -- see
             # config/robot/hunter_se.yaml.
-            footprint: "[ [0.38, 0.20], [0.38, -0.20], [-0.38, -0.20], [-0.38, 0.20] ]"
+            footprint: "[ [0.41, 0.32], [0.41, -0.32], [-0.41, -0.32], [-0.41, 0.32] ]"
             footprint_padding: 0.02
             lethal_cost_threshold: 100
             track_unknown_space: true
@@ -244,7 +244,7 @@ global_costmap:
             origin_x: -10.0
             origin_y: -10.0
             resolution: 0.05
-            footprint: "[ [0.38, 0.20], [0.38, -0.20], [-0.38, -0.20], [-0.38, 0.20] ]"
+            footprint: "[ [0.41, 0.32], [0.41, -0.32], [-0.41, -0.32], [-0.41, 0.32] ]"
             footprint_padding: 0.02
             lethal_cost_threshold: 100
             track_unknown_space: true

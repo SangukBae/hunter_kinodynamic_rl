@@ -1,6 +1,6 @@
 """section item-1 (round 2): file-based delivery of the REQUESTED evaluation
 profile's evaluation-CONTRACT sections (``reward``/``scenario``/``runtime``/
-``evaluation``/``sensor_noise``) to a LIVE ``environment_node.py`` process, mirroring the
+``evaluation``/``sensor_noise``/``environment_v2``) to a LIVE ``environment_node.py`` process, mirroring the
 existing ``scenario_override_path`` mechanism (``env/scenarios/benchmark_loader.py``)
 that already delivers exact scenario placement the same way.
 
@@ -24,7 +24,7 @@ size, reward shaping, physics step size, and whether/how much sensor noise
 is injected all directly change episode difficulty/dynamics, not just
 cosmetic config).
 
-This module writes/reads a small YAML containing exactly those five
+This module writes/reads a small YAML containing exactly those six
 sections (never the architecture-owned ones -- see
 ``evaluation/fingerprint.py``'s own ``ARCHITECTURE_SECTIONS`` vs
 ``EVALUATION_CONTRACT_SECTIONS`` split, which this module's own section
@@ -33,7 +33,7 @@ PER-EPISODE (at the top of ``/reset``, exactly like ``scenario_override_path``
 is re-read every reset) rather than requiring a full node
 reconstruction/relaunch -- a deliberately narrow, low-risk form of dynamic
 reconfiguration: only ``reward``/``scenario``/``runtime``/``evaluation``/
-``sensor_noise`` are ever replaced, never anything that would change the
+``sensor_noise``/``environment_v2`` are ever replaced, never anything that would change the
 checkpoint's own network shape or action/observation semantics.
 
 ``sensor_noise`` is completely independent of ``env/randomization/
@@ -54,7 +54,8 @@ import yaml
 
 from hunter_kinodynamic_rl.config.loader import _section_from_dict
 from hunter_kinodynamic_rl.config.schema import (
-    EvaluationConfig, Profile, RewardConfig, RuntimeConfig, ScenarioConfig, SensorNoiseConfig,
+    EnvironmentV2Config, EvaluationConfig, Profile, RewardConfig, RuntimeConfig, ScenarioConfig,
+    SensorNoiseConfig,
 )
 
 # Kept identical to evaluation/fingerprint.py's own EVALUATION_CONTRACT_SECTIONS
@@ -67,10 +68,11 @@ from hunter_kinodynamic_rl.config.schema import (
 # fingerprint.py's EVALUATION_CONTRACT_SECTIONS docstring for the full
 # rationale and how this is distinct from domain_randomizer's train-only
 # `sensor:` overrides.
-CONTRACT_SECTION_NAMES = ("reward", "scenario", "runtime", "evaluation", "sensor_noise")
+CONTRACT_SECTION_NAMES = ("reward", "scenario", "runtime", "evaluation", "sensor_noise", "environment_v2")
 _CONTRACT_SECTION_TYPES = {
     "reward": RewardConfig, "scenario": ScenarioConfig, "runtime": RuntimeConfig, "evaluation": EvaluationConfig,
     "sensor_noise": SensorNoiseConfig,
+    "environment_v2": EnvironmentV2Config,
 }
 
 

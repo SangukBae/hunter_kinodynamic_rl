@@ -137,6 +137,7 @@ from hunter_kinodynamic_rl.navigation.local_rl.controller import LocalPolicyCont
 from hunter_kinodynamic_rl.rl.algorithms.kinodynamic_tqc.agent import Agent as RiskAgent
 from hunter_kinodynamic_rl.rl.algorithms.tqc.agent import Agent as VanillaAgent
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
+from hunter_kinodynamic_rl.robot.limits import wheel_angles_to_center_steering
 from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
 
 
@@ -1051,14 +1052,17 @@ class RealPolicyNode(Node):
         self._latest_odom_time = time.monotonic()
 
     def _on_joint_states(self, msg: JointState) -> None:
-        """Mirrors environment_node.py's own steering computation exactly
-        (Ackermann center steering = mean of the two front wheel angles)."""
+        """Recover the bicycle center angle from both Ackermann joints."""
         try:
             left = float(msg.position[msg.name.index("front_left_steering")])
             right = float(msg.position[msg.name.index("front_right_steering")])
         except (ValueError, IndexError, TypeError):
             return
-        self._latest_steering_rad = 0.5 * (left + right)
+        self._latest_steering_rad = wheel_angles_to_center_steering(
+            left, right,
+            self.profile.robot.wheelbase_m,
+            self.profile.robot.track_width_m,
+        )
 
     def _publish(self, command) -> None:
         """The ONE call site that actually reaches cmd_vel_topic -- dry_run

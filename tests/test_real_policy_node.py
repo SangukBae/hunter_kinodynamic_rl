@@ -48,15 +48,23 @@ def test_missing_resolved_config_raises():
 
 
 def test_matching_checkpoint_and_deployment_profile_succeeds():
-    """kinodynamic_tqc_counterfactual.yaml (the F-tier / full system profile
+    """kinodynamic_tqc_improved.yaml (the active full-system profile
     real_hunter_safe.yaml is designed to deploy) must pass compatibility
     and restore the checkpoint's own architecture-determining features."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = load_profile("real_hunter_safe")
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert effective.features.risk_critic is True
     assert effective.features.counterfactual_risk is True
     assert effective.action_space.mode == "trajectory"
+
+
+def test_frozen_baseline_checkpoint_is_rejected_by_improved_deployment_profile():
+    """A baseline checkpoint cannot be relabelled as an improved-model result."""
+    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    requested = load_profile("real_hunter_safe")
+    with pytest.raises(CheckpointProfileMismatchError, match="robot.(steering_limit_deg|name|track_width_m)"):
+        build_effective_profile(manifest, "real_hunter_safe", requested)
 
 
 def test_risk_critic_architecture_mismatch_raises_not_warns():
@@ -96,16 +104,16 @@ def test_deployment_speed_cap_survives_a_matching_checkpoint():
     checkpoint's OWN training robot config had a higher (sim) speed --
     proving safety overrides are layered independently of the architecture
     restoration, per build_effective_profile's docstring."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = load_profile("real_hunter_safe")
-    training = load_profile("kinodynamic_tqc_counterfactual")
+    training = load_profile("kinodynamic_tqc_improved")
     assert requested.robot.max_forward_speed_mps < training.robot.max_forward_speed_mps  # sanity: sim is faster
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert effective.robot.max_forward_speed_mps == pytest.approx(requested.robot.max_forward_speed_mps)
 
 
 def test_deployment_min_safe_clearance_survives_a_matching_checkpoint():
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = load_profile("real_hunter_safe")
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert effective.risk.min_safe_clearance_m == pytest.approx(requested.risk.min_safe_clearance_m)
@@ -136,26 +144,26 @@ def _real_hunter_safe_with_robot(**overrides) -> "Profile":
 def test_real_hunter_safe_yaml_still_passes_end_to_end():
     """The shipped profile itself (only overriding max_forward_speed_mps)
     must keep working unchanged after this fix."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = load_profile("real_hunter_safe")
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert effective.robot.max_forward_speed_mps == pytest.approx(0.8)
     # every other robot field must be the CHECKPOINT's own (training-time)
     # value, not silently re-derived from the requested profile.
-    training = load_profile("kinodynamic_tqc_counterfactual")
+    training = load_profile("kinodynamic_tqc_improved")
     assert effective.robot.wheelbase_m == pytest.approx(training.robot.wheelbase_m)
     assert effective.robot.mass_kg == pytest.approx(training.robot.mass_kg)
 
 
 @pytest.mark.parametrize("field,value", [
     ("steering_rate_deg_s", 199.0),   # <= training's 200.0: allowed (slower-or-equal)
-    ("accel_limit_mps2", 5.9),        # <= training's 6.0: allowed
-    ("brake_decel_mps2", 5.9),        # <= training's 6.0: allowed
+    ("accel_limit_mps2", 1.9),        # <= training's 2.0: allowed
+    ("brake_decel_mps2", 1.9),        # <= training's 2.0: allowed
     ("speed_lag_tau_sec", 0.06),      # >= training's 0.05: allowed
-    ("collision_radius_m", 0.46),     # >= training's 0.45: allowed
+    ("collision_radius_m", 0.59),     # >= training's 0.58: allowed
 ])
 def test_conservative_robot_tunable_override_is_accepted(field, value):
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = _real_hunter_safe_with_robot(**{field: value})
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert getattr(effective.robot, field) == pytest.approx(value)
@@ -163,14 +171,14 @@ def test_conservative_robot_tunable_override_is_accepted(field, value):
 
 @pytest.mark.parametrize("field,value,training_value", [
     ("steering_rate_deg_s", 250.0, 200.0),   # FASTER than training: rejected
-    ("accel_limit_mps2", 7.0, 6.0),          # STRONGER accel than training: rejected
-    ("brake_decel_mps2", 7.0, 6.0),          # STRONGER braking than training: rejected
+    ("accel_limit_mps2", 3.0, 2.0),          # STRONGER accel than training: rejected
+    ("brake_decel_mps2", 3.0, 2.0),          # STRONGER braking than training: rejected
     ("speed_lag_tau_sec", 0.01, 0.05),       # LESS lag than training: rejected
-    ("collision_radius_m", 0.3, 0.45),       # SMALLER footprint than training: rejected
+    ("collision_radius_m", 0.3, 0.58),       # SMALLER footprint than training: rejected
 ])
 def test_optimistic_robot_tunable_override_raises_unsafe_override(field, value, training_value):
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # sanity-checked training values above
-    training = load_profile("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # sanity-checked training values above
+    training = load_profile("kinodynamic_tqc_improved")
     assert getattr(training.robot, field) == pytest.approx(training_value)
     requested = _real_hunter_safe_with_robot(**{field: value})
     with pytest.raises(UnsafeDeploymentOverrideError, match=field):
@@ -184,7 +192,7 @@ def test_direct_max_forward_speed_mps_override_is_shrink_only_even_with_v_max_mp
     action_space.v_max_mps is explicitly set (so the OLD effective-v_max
     check, which only fires when v_max_mps is None, would have missed a
     raised robot.max_forward_speed_mps entirely) -- must still raise."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # robot.max_forward_speed_mps == 2.0
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # robot.max_forward_speed_mps == 1.3333333333
     base = load_profile("real_hunter_safe")
     requested = dataclasses.replace(
         base,
@@ -209,7 +217,7 @@ def test_non_tunable_robot_field_drift_raises_architecture_mismatch(field, value
     action-decode) code path -- confirmed by grep -- so a deployment
     profile changing them is now an explicit, rejected mismatch rather
     than a silent, effect-free override."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = _real_hunter_safe_with_robot(**{field: value})
     with pytest.raises(CheckpointProfileMismatchError, match=field):
         build_effective_profile(manifest, "real_hunter_safe", requested)
@@ -229,7 +237,7 @@ def test_widened_kappa_scale_raises_unsafe_override_not_architecture_mismatch():
     Must raise UnsafeDeploymentOverrideError (a distinct type from
     architecture mismatches, but still a CheckpointProfileMismatchError /
     SystemExit, so any caller catching the base type still stops)."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # kappa_scale defaults to 1.0
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # kappa_scale defaults to 1.0
     requested = _real_hunter_safe_with_action_space(kappa_scale=1.0)
     build_effective_profile(manifest, "real_hunter_safe", requested)  # sanity: 1.0 == 1.0 is fine
 
@@ -241,21 +249,21 @@ def test_widened_kappa_scale_raises_unsafe_override_not_architecture_mismatch():
 
 
 def test_lowered_v_min_raises_unsafe_override():
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # v_min_mps defaults to 0.0
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # v_min_mps defaults to 0.0
     requested = _real_hunter_safe_with_action_space(v_min_mps=-0.1)
     with pytest.raises(UnsafeDeploymentOverrideError, match="v_min_mps"):
         build_effective_profile(manifest, "real_hunter_safe", requested)
 
 
 def test_widened_horizon_length_min_raises_unsafe_override():
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # horizon_length_min_m defaults to 0.5
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # horizon_length_min_m defaults to 0.5
     requested = _real_hunter_safe_with_action_space(horizon_length_min_m=0.1)
     with pytest.raises(UnsafeDeploymentOverrideError, match="horizon_length_min_m"):
         build_effective_profile(manifest, "real_hunter_safe", requested)
 
 
 def test_widened_horizon_length_max_raises_unsafe_override():
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # horizon_length_max_m defaults to 3.0
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # horizon_length_max_m defaults to 3.0
     requested = _real_hunter_safe_with_action_space(horizon_length_max_m=3.5)
     with pytest.raises(UnsafeDeploymentOverrideError, match="horizon_length_max_m"):
         build_effective_profile(manifest, "real_hunter_safe", requested)
@@ -266,7 +274,7 @@ def test_raised_effective_v_max_raises_unsafe_override():
     the checkpoint's own (the opposite of real_hunter_safe.yaml's actual,
     conservative 0.8 m/s cap) must be rejected -- proves this ISN'T just a
     one-directional "the field changed" check, it's actually directional."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # robot.max_forward_speed_mps == 2.0
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # robot.max_forward_speed_mps == 1.3333333333
     base = load_profile("real_hunter_safe")
     requested = dataclasses.replace(base, robot=dataclasses.replace(base.robot, max_forward_speed_mps=5.0))
     with pytest.raises(UnsafeDeploymentOverrideError, match="v_max"):
@@ -274,7 +282,7 @@ def test_raised_effective_v_max_raises_unsafe_override():
 
 
 def test_lowered_min_safe_clearance_raises_unsafe_override():
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")  # risk.min_safe_clearance_m defaults to 0.3
+    manifest = _manifest_for("kinodynamic_tqc_improved")  # risk.min_safe_clearance_m defaults to 0.3
     base = load_profile("real_hunter_safe")
     requested = dataclasses.replace(base, risk=dataclasses.replace(base.risk, min_safe_clearance_m=0.1))
     with pytest.raises(UnsafeDeploymentOverrideError, match="min_safe_clearance_m"):
@@ -283,10 +291,10 @@ def test_lowered_min_safe_clearance_raises_unsafe_override():
 
 def test_shrinking_horizon_length_max_below_training_still_succeeds():
     """The actual real_hunter_safe.yaml shape (horizon_length_max_m=1.5,
-    shorter than kinodynamic_tqc_counterfactual's default 3.0) must keep
+    shorter than kinodynamic_tqc_improved's default 3.0) must keep
     working -- this is the ALLOWED direction, not a false positive from
     the new check."""
-    manifest = _manifest_for("kinodynamic_tqc_counterfactual")
+    manifest = _manifest_for("kinodynamic_tqc_improved")
     requested = load_profile("real_hunter_safe")
     effective = build_effective_profile(manifest, "real_hunter_safe", requested)
     assert effective.action_space.horizon_length_max_m == pytest.approx(1.5)

@@ -107,6 +107,7 @@ from hunter_kinodynamic_rl.navigation.mission.mission_frame import MissionFrame,
 from hunter_kinodynamic_rl.rl.algorithms.kinodynamic_tqc.agent import Agent as RiskAgent
 from hunter_kinodynamic_rl.rl.algorithms.tqc.agent import Agent as VanillaAgent
 from hunter_kinodynamic_rl.rl.checkpointing import manager as ckpt_manager
+from hunter_kinodynamic_rl.robot.limits import wheel_angles_to_center_steering
 from hunter_kinodynamic_rl.trajectory.action_space import ACTION_DIM
 
 
@@ -535,7 +536,11 @@ class LiveGazeboLocalExecutor(Node, GazeboRuntimeMixin):
             right = float(msg.position[msg.name.index("front_right_steering")])
         except (ValueError, IndexError, TypeError):
             return
-        self._latest_steering_rad = 0.5 * (left + right)
+        self._latest_steering_rad = wheel_angles_to_center_steering(
+            left, right,
+            self.profile.robot.wheelbase_m,
+            self.profile.robot.track_width_m,
+        )
 
     def _on_contact(self, msg: Contacts) -> None:
         """item 8: real Gazebo chassis-contact collision signal -- mirrors
