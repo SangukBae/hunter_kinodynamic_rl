@@ -955,7 +955,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         guarded_speed_mps: float, guarded_steering_rad: float,
         published_speed_mps: float, published_steering_rad: float, sensor_stale: bool = False,
         plant_limited: bool = False, guard_intervened: bool = False,
-        goal_world_xy=None, reward_breakdown=None,
+        goal_world_xy=None, reward_breakdown=None, snapshot_timestamp_sec: float = float("nan"),
     ) -> None:
         """Thin wrapper: all the actual math lives in the pure, ROS-free
         ``risk_computation.compute_risk_telemetry``/``compute_common_evaluation_metrics``
@@ -982,6 +982,23 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         reset_generation = self._reset_generation
         episode_id = self._episode_seed or 0
         sim_timestamp_sec = self._latest_sim_time_sec if self._latest_sim_time_sec is not None else float("nan")
+        privileged_obstacles = [
+            rt.PrivilegedObstacleTelemetry(
+                float(obstacle.x), float(obstacle.y), float(obstacle.radius), 0,
+            ) for obstacle in static_obstacles
+        ] + [
+            rt.PrivilegedObstacleTelemetry(
+                float(obstacle.x0), float(obstacle.y0), float(obstacle.radius), 1,
+            ) for obstacle in dynamic_specs
+        ]
+        world_half_extent_m = self.profile.scenario.world_size_m / 2.0
+        snapshot_values = (*robot_pose, snapshot_timestamp_sec, world_half_extent_m)
+        privileged_snapshot_valid = all(math.isfinite(float(value)) for value in snapshot_values)
+        privileged_snapshot_valid = privileged_snapshot_valid and all(
+            math.isfinite(value)
+            for obstacle in privileged_obstacles
+            for value in (obstacle.x_world, obstacle.y_world, obstacle.radius)
+        ) and all(obstacle.radius > 0.0 and obstacle.cause in (0, 1) for obstacle in privileged_obstacles)
         try:
             # The Stage-2 Local benchmark uses procedural scenarios from the
             # explicit TEST pool rather than fixed YAML scenarios. It still
@@ -1047,6 +1064,11 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                     reward_breakdown.control_smoothness if reward_breakdown is not None else 0.0),
                 reward_trajectory_smoothness=(
                     reward_breakdown.trajectory_smoothness if reward_breakdown is not None else 0.0),
+                privileged_snapshot_valid=privileged_snapshot_valid,
+                snapshot_timestamp_sec=snapshot_timestamp_sec,
+                ego_x_world=float(robot_pose[0]), ego_y_world=float(robot_pose[1]),
+                ego_yaw_world=float(robot_pose[2]), world_half_extent_m=world_half_extent_m,
+                privileged_obstacles=privileged_obstacles,
             )
         except Exception as e:
             self.get_logger().warn(f"[risk] computation failed: {e}")
@@ -1068,6 +1090,11 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                     reward_breakdown.control_smoothness if reward_breakdown is not None else 0.0),
                 reward_trajectory_smoothness=(
                     reward_breakdown.trajectory_smoothness if reward_breakdown is not None else 0.0),
+                privileged_snapshot_valid=privileged_snapshot_valid,
+                snapshot_timestamp_sec=snapshot_timestamp_sec,
+                ego_x_world=float(robot_pose[0]), ego_y_world=float(robot_pose[1]),
+                ego_yaw_world=float(robot_pose[2]), world_half_extent_m=world_half_extent_m,
+                privileged_obstacles=privileged_obstacles,
             )
 
         self._risk_pub.publish(Float32MultiArray(data=rt.encode(telemetry)))
@@ -1630,6 +1657,9 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # proximity check, which must reflect what's known BEFORE this
         # command is applied, not the outcome AFTER it (section P0-2).
         pre_pose = self._robot_pose
+        pre_sim_timestamp_sec = (
+            self._latest_sim_time_sec if self._latest_sim_time_sec is not None else float("nan")
+        )
         pre_v, _pre_yaw_rate = self._robot_twist
         pre_steering = self._center_steering
         pre_static_obstacles = list(self._scenario.static_obstacles)
@@ -1854,6 +1884,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             plant_limited, guard_intervened,
             goal_world_xy=(self._scenario.goal_x, self._scenario.goal_y),
             reward_breakdown=reward,
+            snapshot_timestamp_sec=pre_sim_timestamp_sec,
         )
         self._prev_goal_distance = goal_distance
 

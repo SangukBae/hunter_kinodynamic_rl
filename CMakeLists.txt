@@ -64,6 +64,7 @@ install(
     hunter_kinodynamic_rl/training/tractor_scenario_plan.py
     hunter_kinodynamic_rl/training/train_tractor_tqc.py
     hunter_kinodynamic_rl/training/train_comparison_baselines.py
+    hunter_kinodynamic_rl/training/collect_formal_comparison_data.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

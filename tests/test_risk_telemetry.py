@@ -3,7 +3,8 @@ import math
 import pytest
 
 from hunter_kinodynamic_rl.env.simulation.risk_telemetry import (
-    _HEADER_LEN, CandidateTelemetry, InvalidReason, RiskTelemetry, decode, encode, invalid,
+    _HEADER_LEN, CandidateTelemetry, InvalidReason, PrivilegedObstacleTelemetry,
+    RiskTelemetry, decode, encode, invalid,
 )
 
 
@@ -34,6 +35,22 @@ def test_valid_telemetry_with_candidates_roundtrip():
     decoded = decode(encode(t))
     assert decoded == t
     assert decoded.candidates[0].event_cause == 1
+
+
+def test_privileged_preaction_snapshot_roundtrips_separately_from_policy_observation():
+    telemetry = RiskTelemetry(
+        step_id=2, valid=True, risk_target=0.1, min_clearance_m=1.0, ttc_sec=3.0,
+        collision_within_horizon=False, stopping_margin_m=0.5, unrecoverable=False,
+        safer_alternative_margin=0.0, actor_candidate_index=0,
+        privileged_snapshot_valid=True, snapshot_timestamp_sec=12.5,
+        ego_x_world=1.0, ego_y_world=-2.0, ego_yaw_world=0.3,
+        world_half_extent_m=8.0,
+        privileged_obstacles=[PrivilegedObstacleTelemetry(2.0, -2.0, 0.3, 1)],
+    )
+    decoded = decode(encode(telemetry))
+    assert decoded.privileged_snapshot_valid is True
+    assert decoded.snapshot_timestamp_sec == pytest.approx(12.5)
+    assert decoded.privileged_obstacles == telemetry.privileged_obstacles
 
 
 def test_v8_raw_risk_progress_goal_and_reward_fields_roundtrip():

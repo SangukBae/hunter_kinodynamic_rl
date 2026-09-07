@@ -136,6 +136,12 @@ CANDIDATE_FIELDS = (
     "candidate_set_sha256",
 )
 
+PRIVILEGED_LABEL_FIELDS = (
+    "privileged_snapshot_valid", "privileged_snapshot_timestamp_sec",
+    "privileged_ego_pose_world", "privileged_world_half_extent_m",
+    "privileged_obstacles_world",
+)
+
 
 def discount_from_dt(dt_sec: np.ndarray, reference_gamma: float, reference_dt_sec: float) -> np.ndarray:
     if not (0.0 < reference_gamma <= 1.0) or reference_dt_sec <= 0.0:
@@ -270,3 +276,30 @@ def validate_episode_columns(header: EpisodeHeader, columns: Mapping[str, np.nda
                     present[row, candidate] and bool(arrays["candidate_model_valid"][row, candidate])
                 ):
                     raise ValueError("valid candidate label requires present and model-valid candidate")
+    privileged_present = set(PRIVILEGED_LABEL_FIELDS) & set(arrays)
+    if privileged_present:
+        missing_privileged = sorted(set(PRIVILEGED_LABEL_FIELDS) - set(arrays))
+        if missing_privileged:
+            raise ValueError(
+                f"partial privileged label sidecars are forbidden: missing {missing_privileged}"
+            )
+        valid = arrays["privileged_snapshot_valid"].astype(bool)
+        timestamps = arrays["privileged_snapshot_timestamp_sec"].astype(np.float64)
+        poses = arrays["privileged_ego_pose_world"].astype(np.float64)
+        half_extent = arrays["privileged_world_half_extent_m"].astype(np.float64)
+        obstacles = arrays["privileged_obstacles_world"].astype(np.float64)
+        if poses.shape != (header.step_count, 3):
+            raise ValueError("privileged ego poses must be (N,3)")
+        if obstacles.ndim != 3 or obstacles.shape[0] != header.step_count or obstacles.shape[2] != 4:
+            raise ValueError("privileged obstacle states must be (N,M,4)")
+        if np.any(~np.isfinite(timestamps[valid])) or np.any(~np.isfinite(poses[valid])):
+            raise ValueError("valid privileged snapshots require finite timestamp and ego pose")
+        if np.any(~np.isfinite(half_extent[valid])) or np.any(half_extent[valid] <= 0.0):
+            raise ValueError("valid privileged snapshots require positive finite world extent")
+        if np.any(~np.isfinite(obstacles[valid])):
+            raise ValueError("valid privileged obstacle states must be finite")
+        if obstacles.shape[1] and (
+            np.any(obstacles[valid, :, 2] <= 0.0)
+            or np.any(~np.isin(obstacles[valid, :, 3].astype(np.int64), (0, 1)))
+        ):
+            raise ValueError("privileged obstacles require positive radii and static/dynamic cause")

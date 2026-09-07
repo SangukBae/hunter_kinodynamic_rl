@@ -89,7 +89,7 @@ carry a free-form string, so this is a small closed enum (the actual finite
 set of reasons this codebase ever produces one) rather than text -- see
 each member's docstring for exactly which call site produces it.
 
-Wire layout (flat float32 list), schema_version=9:
+Wire layout (flat float32 list), schema_version=10:
 
     [0]  schema_version
     [1]  step_id
@@ -164,10 +164,19 @@ Wire layout (flat float32 list), schema_version=9:
     [29..34] reward terms         (goal, collision, progress, step,
                                    control_smoothness, trajectory_smoothness)
     [35] num_candidates (N)
-    [36 .. 36+10N) per-candidate
+    [36] privileged_snapshot_valid
+    [37] snapshot_timestamp_sec (PRE-action simulator time)
+    [38..40] ego world pose x/y/yaw at the same PRE-action instant
+    [41] world_half_extent_m
+    [42] num_privileged_obstacles (M)
+    [43 .. 43+10N) per-candidate
                      [kappa, v_ref, horizon_m, risk_score, goal_progress_m,
                       min_clearance_m, ttc_sec, collision_within_horizon,
                       stopping_margin_m, event_cause] x N
+    [... .. ...+4M) privileged obstacle [x_world,y_world,radius,cause] x M
+
+The privileged suffix is persisted only as a label-generation sidecar.  It
+is never appended to the policy observation or passed to inference.
 """
 
 from __future__ import annotations
@@ -177,9 +186,10 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import List
 
-SCHEMA_VERSION = 9
-_HEADER_LEN = 36
+SCHEMA_VERSION = 10
+_HEADER_LEN = 43
 _CANDIDATE_STRIDE = 10
+_PRIVILEGED_OBSTACLE_STRIDE = 4
 
 
 class InvalidReason(IntEnum):
@@ -219,6 +229,14 @@ class CandidateTelemetry:
 
 
 @dataclass(frozen=True)
+class PrivilegedObstacleTelemetry:
+    x_world: float
+    y_world: float
+    radius: float
+    cause: int
+
+
+@dataclass(frozen=True)
 class RiskTelemetry:
     step_id: int
     valid: bool
@@ -255,6 +273,13 @@ class RiskTelemetry:
     plant_limited: bool = False
     guard_intervened: bool = False
     candidates: List[CandidateTelemetry] = field(default_factory=list)
+    privileged_snapshot_valid: bool = False
+    snapshot_timestamp_sec: float = float("nan")
+    ego_x_world: float = float("nan")
+    ego_y_world: float = float("nan")
+    ego_yaw_world: float = float("nan")
+    world_half_extent_m: float = float("nan")
+    privileged_obstacles: List[PrivilegedObstacleTelemetry] = field(default_factory=list)
 
 
 def invalid(step_id: int, emergency_stop: bool = False,
@@ -305,6 +330,10 @@ def encode(t: RiskTelemetry) -> List[float]:
         float(t.reward_step), float(t.reward_control_smoothness),
         float(t.reward_trajectory_smoothness),
         float(len(t.candidates)),
+        1.0 if t.privileged_snapshot_valid else 0.0,
+        float(t.snapshot_timestamp_sec),
+        float(t.ego_x_world), float(t.ego_y_world), float(t.ego_yaw_world),
+        float(t.world_half_extent_m), float(len(t.privileged_obstacles)),
     ]
     for c in t.candidates:
         out.extend([
@@ -312,6 +341,11 @@ def encode(t: RiskTelemetry) -> List[float]:
             c.min_clearance_m, c.ttc_sec,
             1.0 if c.collision_within_horizon else 0.0,
             c.stopping_margin_m, float(c.event_cause),
+        ])
+    for obstacle in t.privileged_obstacles:
+        out.extend([
+            float(obstacle.x_world), float(obstacle.y_world),
+            float(obstacle.radius), float(obstacle.cause),
         ])
     return out
 
@@ -323,7 +357,13 @@ def decode(data: List[float]) -> RiskTelemetry:
     if version != SCHEMA_VERSION:
         raise ValueError(f"risk_telemetry schema_version mismatch: got {version}, expected {SCHEMA_VERSION}")
     n = int(round(data[35]))
-    expected_len = _HEADER_LEN + _CANDIDATE_STRIDE * n
+    obstacle_count = int(round(data[42]))
+    if n < 0 or obstacle_count < 0:
+        raise ValueError("risk_telemetry variable-length counts must be non-negative")
+    expected_len = (
+        _HEADER_LEN + _CANDIDATE_STRIDE * n
+        + _PRIVILEGED_OBSTACLE_STRIDE * obstacle_count
+    )
     if len(data) != expected_len:
         raise ValueError(f"risk_telemetry payload length {len(data)} != expected {expected_len} for N={n}")
     candidates = [
@@ -340,6 +380,16 @@ def decode(data: List[float]) -> RiskTelemetry:
             event_cause=int(round(data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 9])),
         )
         for i in range(n)
+    ]
+    obstacle_start = _HEADER_LEN + _CANDIDATE_STRIDE * n
+    privileged_obstacles = [
+        PrivilegedObstacleTelemetry(
+            x_world=data[obstacle_start + _PRIVILEGED_OBSTACLE_STRIDE * i],
+            y_world=data[obstacle_start + _PRIVILEGED_OBSTACLE_STRIDE * i + 1],
+            radius=data[obstacle_start + _PRIVILEGED_OBSTACLE_STRIDE * i + 2],
+            cause=int(round(data[obstacle_start + _PRIVILEGED_OBSTACLE_STRIDE * i + 3])),
+        )
+        for i in range(obstacle_count)
     ]
     return RiskTelemetry(
         step_id=int(round(data[1])), valid=bool(data[2] >= 0.5), risk_target=data[3],
@@ -358,4 +408,8 @@ def decode(data: List[float]) -> RiskTelemetry:
         reward_progress=data[31], reward_step=data[32], reward_control_smoothness=data[33],
         reward_trajectory_smoothness=data[34],
         candidates=candidates,
+        privileged_snapshot_valid=bool(data[36] >= 0.5),
+        snapshot_timestamp_sec=data[37],
+        ego_x_world=data[38], ego_y_world=data[39], ego_yaw_world=data[40],
+        world_half_extent_m=data[41], privileged_obstacles=privileged_obstacles,
     )

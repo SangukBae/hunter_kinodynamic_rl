@@ -27,6 +27,7 @@ from hunter_kinodynamic_rl.trajectory.action_space import (
 
 
 LABEL_SOURCE = "nominal_preaction_rollout_summary_v1"
+REALIZED_LABEL_SOURCE = "realized_timestamp_aligned_counterfactual_v1"
 
 
 def _wrap_angle(value: float) -> float:
@@ -289,6 +290,22 @@ def _candidate_columns(
     }
 
 
+def _privileged_snapshot_columns(telemetry: rt.RiskTelemetry) -> dict[str, np.ndarray | float | bool]:
+    obstacles = np.asarray([
+        (item.x_world, item.y_world, item.radius, item.cause)
+        for item in telemetry.privileged_obstacles
+    ], dtype=np.float32).reshape(-1, 4)
+    return {
+        "privileged_snapshot_valid": bool(telemetry.privileged_snapshot_valid),
+        "privileged_snapshot_timestamp_sec": np.float64(telemetry.snapshot_timestamp_sec),
+        "privileged_ego_pose_world": np.asarray([
+            telemetry.ego_x_world, telemetry.ego_y_world, telemetry.ego_yaw_world,
+        ], dtype=np.float64),
+        "privileged_world_half_extent_m": np.float32(telemetry.world_half_extent_m),
+        "privileged_obstacles_world": obstacles,
+    }
+
+
 class TractorEpisodeRecorder:
     def __init__(self, profile, model_config: TractorConfig, reference_gamma: float = 0.99):
         self.profile = profile
@@ -327,7 +344,14 @@ class TractorEpisodeRecorder:
             "bellman_sample_valid": bellman_valid,
         })
         row.update(_candidate_columns(telemetry, action, self.profile, self.model_config))
+        row.update(_privileged_snapshot_columns(telemetry))
         self.rows.append(row)
+
+    def finalize_realized_labels(self) -> dict[str, int | float | str]:
+        """Replace nominal summaries with timestamp-aligned realized-track labels."""
+        from hunter_kinodynamic_rl.training.realized_counterfactual import relabel_rows
+
+        return relabel_rows(self.rows, self.profile, self.model_config)
 
     def columns(self) -> Mapping[str, np.ndarray]:
         if not self.rows:

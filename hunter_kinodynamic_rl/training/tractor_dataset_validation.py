@@ -77,6 +77,7 @@ def validate_dataset(
     missing_denominator = Counter()
     event_counts = Counter()
     label_sources = Counter()
+    realized_lineage_errors = []
     try:
         if not (dataset_root / "episodes").is_dir():
             raise FileNotFoundError(f"dataset episodes directory does not exist: {dataset_root / 'episodes'}")
@@ -156,6 +157,24 @@ def validate_dataset(
             if "candidate_label_source" in columns:
                 for source in np.asarray(columns["candidate_label_source"]).astype(str):
                     label_sources[str(source)] += 1
+                if np.any(
+                    np.asarray(columns["candidate_label_source"]).astype(str)
+                    == "realized_timestamp_aligned_counterfactual_v1"
+                ):
+                    required_privileged = {
+                        "privileged_snapshot_valid", "privileged_snapshot_timestamp_sec",
+                        "privileged_ego_pose_world", "privileged_world_half_extent_m",
+                        "privileged_obstacles_world",
+                    }
+                    missing_privileged = sorted(required_privileged - set(columns))
+                    if missing_privileged:
+                        realized_lineage_errors.append(
+                            f"{header.episode_id}: missing realized-track lineage {missing_privileged}"
+                        )
+                    elif not np.asarray(columns["privileged_snapshot_valid"], dtype=bool).all():
+                        realized_lineage_errors.append(
+                            f"{header.episode_id}: realized labels contain invalid privileged snapshots"
+                        )
         index = SequenceIndex.build(store, loss_window=loss_window)
         index.validate_split_isolation()
         report.window_count = len(index.windows)
@@ -210,6 +229,8 @@ def validate_dataset(
             "formal candidate supervision requires only "
             f"{formal_label_source!r}, observed {sorted(label_sources)}"
         )
+    if formal and realized_lineage_errors:
+        report.errors.extend(realized_lineage_errors)
     elif "nominal_preaction_rollout_summary_v1" in label_sources:
         report.warnings.append(
             "candidate labels are nominal-rollout development supervision, not formal realized-track evidence"
