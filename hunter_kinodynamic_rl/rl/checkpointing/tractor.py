@@ -16,7 +16,6 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc.agent import TractorAgent
 from hunter_kinodynamic_rl.rl.networks.tractor.calibration import PlattCalibration
 
 
@@ -101,7 +100,7 @@ def _resolve_generation(root: Path, tag: str) -> Path:
 def save_training_generation(
     root: str | os.PathLike[str],
     tag: str,
-    agent: TractorAgent,
+    agent,
     sampler,
     metadata: Mapping[str, Any],
     *,
@@ -140,8 +139,8 @@ def save_training_generation(
             "schema_id": CHECKPOINT_SCHEMA,
             "artifact_role": "training_checkpoint",
             "generation": generation,
-            "model_family": "TRACTOR-TQC",
-            "architecture_revision": "tractor-tqc-r1",
+            "model_family": getattr(agent, "model_family", "TRACTOR-TQC"),
+            "architecture_revision": getattr(agent, "architecture_revision", "tractor-tqc-r1"),
             "variant_id": agent.model_config.variant_id,
             "model_fingerprint": agent.model_config.fingerprint(),
             "present_components": sorted(components),
@@ -165,7 +164,7 @@ def save_training_generation(
 def load_training_generation(
     root: str | os.PathLike[str],
     tag: str,
-    agent: TractorAgent,
+    agent,
     sampler,
     *,
     scaler=None,
@@ -207,6 +206,30 @@ def load_training_generation(
         raise RuntimeError("checkpoint has scaler state but caller supplied no scaler")
     if restore_rng:
         _restore_global_rng(payload["global_rng"])
+    return manifest
+
+
+def load_inference_weights(
+    root: str | os.PathLike[str], tag: str, agent,
+) -> dict:
+    """Load only validated online weights; never restore replay, optimizers or RNG."""
+    generation = _resolve_generation(Path(root), tag)
+    manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("schema_id") != CHECKPOINT_SCHEMA or manifest.get("artifact_role") != "training_checkpoint":
+        raise RuntimeError("wrong checkpoint schema or artifact role")
+    if manifest.get("generation") != generation.name:
+        raise RuntimeError("checkpoint generation identity mismatch")
+    if manifest.get("model_fingerprint") != agent.model_config.fingerprint():
+        raise RuntimeError("checkpoint model fingerprint mismatch")
+    payload_path = generation / "training.pt"
+    if _sha256(payload_path) != manifest.get("training_payload_sha256"):
+        raise RuntimeError("checkpoint payload checksum mismatch")
+    payload = torch.load(payload_path, map_location=agent.device, weights_only=False)
+    if payload.get("schema_id") != CHECKPOINT_SCHEMA or payload.get("generation") != generation.name:
+        raise RuntimeError("checkpoint payload identity mismatch")
+    if "online" not in payload.get("components", {}):
+        raise RuntimeError("checkpoint is missing online inference weights")
+    agent.online.load_state_dict(payload["components"]["online"], strict=True)
     return manifest
 
 

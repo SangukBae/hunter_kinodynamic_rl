@@ -63,6 +63,7 @@ install(
     hunter_kinodynamic_rl/training/tractor_dataset_validation.py
     hunter_kinodynamic_rl/training/tractor_scenario_plan.py
     hunter_kinodynamic_rl/training/train_tractor_tqc.py
+    hunter_kinodynamic_rl/training/train_comparison_baselines.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

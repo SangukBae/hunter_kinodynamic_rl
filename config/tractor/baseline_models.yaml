@@ -1,0 +1,59 @@
+schema_id: tractor_comparison_baselines_v1
+input_contract_variant: a7
+parameter_match:
+  reference_method: A7
+  relative_tolerance: 0.05
+methods:
+  B1:
+    representation: flat_328d
+    interaction: none
+    risk: none
+    encoder_hidden: 256
+    latent_dim: 128
+  B2:
+    representation: flat_parameter_matched
+    interaction: none
+    risk: none
+    encoder_hidden: 416
+    latent_dim: 192
+  B3:
+    representation: recurrent_vector
+    interaction: none
+    risk: none
+    encoder_hidden: 256
+    latent_dim: 128
+    recurrent_hidden: 128
+  B4:
+    representation: factorized_ego_warped_bev
+    interaction: implicit_concat
+    risk: none
+    encoder_hidden: 256
+    latent_dim: 128
+  B5:
+    representation: factorized_ego_warped_bev
+    interaction: cross_attention
+    risk: none
+    encoder_hidden: 256
+    latent_dim: 128
+    attention_heads: 4
+  B6:
+    representation: compact_latent_world_model
+    interaction: latent_rollout
+    risk: none
+    encoder_hidden: 256
+    latent_dim: 128
+    dynamics_loss_weight: 0.25
+  B7:
+    representation: flat_328d
+    interaction: none
+    risk: cvar_return
+    encoder_hidden: 256
+    latent_dim: 128
+    cvar_fraction: 0.25
+  B8:
+    representation: flat_328d
+    interaction: none
+    risk: scalar_endpoint
+    encoder_hidden: 256
+    latent_dim: 128
+    actor_risk_weight: 1.0
