@@ -1,318 +1,246 @@
-# Research Protocol
+# TRACTOR-TQC Research Protocol
 
-This document defines the hypotheses, comparisons, statistics and claim
-boundaries for the research program in `RESEARCH_ROADMAP.md`. A listed target
-comparison is a requirement for a future result, not evidence that its profile
-or implementation already exists. Current readiness is tracked separately in
-`CURRENT_STATUS.md`.
+Status: **FROZEN as `tractor_protocol_v1` before formal runs**
+Frozen payload SHA-256: `fe2c1cfbd175c12c333173a7c9ccd25edf885fbfc18e519640c4d7e597ba9ee1`
+Scope: Local kinodynamic control first; Global is a dependent follow-up
 
-## Seeds
+## 1. Objective and non-claims
 
-Configured per-profile via `scenario.{train,validation,test}_seed_range`
-(default: train `[0, 9999]`, validation `[10000, 10999]`, test `[20000,
-20999]`) -- see `config/training/defaults.yaml`. Ranges are validated
-non-overlapping at profile-load time
-(`config/schema.py::ScenarioConfig.validate`), and
-`env/scenarios/procedural_generator.seed_split()` raises rather than
-silently misclassifying a seed outside all three ranges. **Test seeds never
-enter the replay buffer** -- the training loop (`training/trainer_base.py`)
-only ever calls `env.seed()` with seeds from
-`training.seed`-derived training draws; benchmark evaluation
-(`evaluation/benchmark_runner.py`) only ever seeds from a loaded benchmark
-scenario's own `seed` field (`config/benchmarks/*/*.yaml`, all in the
-`[20000, 20999]` test range).
+Research question:
 
-## Scenarios
+> 동일한 Hunter observation/action/guard와 학습 budget에서, candidate swept tube와
+> action-independent future occupancy의 명시적 상호작용이 flat/recurrent/world-model
+> baselines보다 candidate ranking, calibrated risk와 navigation을 개선하는가?
 
-- **Training**: procedural (`env/scenarios/procedural_generator.py`),
-  regenerated fresh every episode from `env.seed()`.
-- **Evaluation**: FIXED, hand-authored YAML files under
-  `config/benchmarks/{id,ood_geometry,ood_dynamics,dynamic}/` -- every
-  baseline runs the identical scenario set (section 32's "모든 baseline이
-  정확히 같은 scenario에서 평가되어야 한다").
+The paper does not claim to solve SLAM, prove formal safety, invent TQC/residual dynamics/attention,
+or validate Global navigation before a Local model is promoted. Reward shaping, hyperparameter tuning
+and a guard are controls—not the central novelty.
 
-## Baselines / ablation matrix
+## 2. Prerequisites
 
-| Letter | Profile | Trajectory action | Temporal | Risk prediction | Risk-aware critic/actor | Counterfactual |
-|---|---|---|---|---|---|---|
-| A | `baseline_tqc` / `legacy_waypoint_tqc` | no (legacy waypoint) | no | no | no | no |
-| B | `kinodynamic_tqc` | yes | no | no | no | no |
-| C | `kinodynamic_tqc_temporal` | yes | yes | no | no | no |
-| D | `kinodynamic_tqc_risk_supervised_only` | yes | yes | yes | no (`actor_lambda=0.0`) | no |
-| E | `kinodynamic_tqc_risk` | yes | yes | yes | yes (`actor_lambda=0.1`) | no |
-| F | `kinodynamic_tqc_counterfactual` | yes | yes | yes | yes | yes |
+Formal TRACTOR runs cannot start until [CURRENT_STATUS.md](CURRENT_STATUS.md)의 P0-01…P0-07,
+dataset validation, checkpoint interruption/resume tests and baseline contract freeze are complete.
+The current 0/30 Stage-2 matrix is run in a separate immutable root before being cited as evidence.
 
-Every row is the SAME code path (`training/train_tqc.py` for A/B/C,
-`training/train_kinodynamic_tqc.py` for D-F, selected automatically by
-`nodes/train_node.py` from `features.risk_critic`) -- ablations are config
-flags (`config/schema.py::FeatureFlags`), never a forked implementation
-(section 36).
+## 3. Falsifiable hypotheses
 
-Section 34/35's remaining two comparison points are now implemented:
+| ID | Hypothesis | Primary evidence | Failure condition |
+|---|---|---|---|
+| H1 | factorized ego-warped belief improves held-out static/dynamic future quality | occupancy IoU/F1, flow EPE, calibration | matched recurrent vector/BEV baseline not worse within CI |
+| H2 | explicit tube×occupancy product improves candidate ordering | ranking regret, NDCG, unsafe top-1 rate | implicit concat/cross-attention matches it |
+| H3 | cause-time hazard improves risk usefulness | Brier/NLL/ECE, time/cause accuracy, selective risk | scalar/endpoint risk matches calibration and ranking |
+| H4 | structural gains transfer to navigation | success, collision, SPL, time/length, interventions | no benefit across locked ID/OOD matrix |
+| H5 | gains survive equal-compute and target deployment | parameter/FLOP matched results, p99 latency | benefit disappears when budget/deadline is matched |
 
-- **Vanilla SAC** (`rl/algorithms/sac/agent.py`, `training/train_sac.py`,
-  `sac_baseline` profile, selected via `algorithm.name=sac`): standard
-  twin-Q SAC sharing this package's trajectory action space/observation/
-  reward with ablation row B, so only the algorithm differs. Fully
-  live-verified (a real training run against Gazebo produced real
-  checkpoints and a real periodic-validation event).
-- **Nav2-MPPI classical baseline** (`evaluation/nav2_mppi_runner.py`,
-  `config/nav2_mppi/`, `launch/nav2_mppi.launch.py`,
-  `nodes/nav2_mppi_eval_node.py`): prior-map-free (no AMCL/map_server -- see that
-  config file's header comment), Ackermann motion model, adapted from
-  scout_nav2's verified MPPI controller block. CODE-COMPLETE and
-  PARTIALLY live-verified only -- see `evaluation/nav2_mppi_runner.py`'s
-  module docstring for the exact live-verification status (the stack
-  configures/activates/accepts goals and its collision/telemetry pipeline
-  produces real measurements, but no live attempt achieved a full
-  goal-reaching episode; an unresolved low-effective-velocity issue would
-  need further live iteration to root-cause).
+The executable thresholds are frozen in `config/tractor/protocol.yaml`. A missing metric, denominator,
+target-hardware flag or confidence bound fails closed; it is never interpreted as a pass.
 
-The A–F table is the implemented engineering lineage. Paper figures use the
-following research ladder and must not relabel missing variants as completed:
+### Frozen primary promotion gates
 
-| Label | Required configuration | Status at roadmap adoption |
+| Metric | Absolute gate | Paired A7−B1 gate over seed-level 95% CI |
 |---|---|---|
-| L0 | direct-control SAC/TQC `(v, steering)` | dedicated fair comparison required |
-| L1 | `[kappa, v_ref, L]` trajectory action | implemented basis |
-| L2 | L1 + temporal observation | implemented basis |
-| L3 | L2 + supervised risk, no actor penalty | implemented scalar-risk basis |
-| L4 | L3 + risk actor penalty | implemented scalar-risk basis |
-| L5 | L4 + structured candidate supervision/margin weighting | implemented basis; formal training pending |
-| L6 | L5 + multi-task risk ensemble uncertainty | planned |
-| L7 | L6 + learned residual dynamics | planned |
-| L8 | L7 + residual ensemble uncertainty and uncertainty-gated direct counterfactual target | planned |
+| success rate | lower CI ≥ `0.80` | lower CI ≥ `+0.05` |
+| collision rate | upper CI ≤ `0.05` | upper CI ≤ `+0.01` non-inferiority |
+| successful time-to-goal | — | upper CI of relative change ≤ `+10%` |
+| realized minimum-clearance mean | lower CI ≥ `0.15 m` | lower CI ≥ `−0.02 m` non-inferiority |
+| runtime | target hardware, at least `10,000` decisions | p99 ≤ `100 ms`, miss rate ≤ `1%` |
 
-`[kappa,v]`, fixed-short/long `L`, adaptive `L`, and equal-capacity spline or
-Bezier variants remain required factor comparisons even though they do not map
-one-to-one onto existing A–F profiles.
+All navigation gates are joint gates. The independent training seed—not an episode—is the replication
+unit. These are preregistered research promotion criteria, not a guarantee of ICRA/IROS acceptance.
 
-## Metrics
+## 4. Baselines
 
-Computed by `evaluation/metrics.py::aggregate()` from per-episode result
-dicts: success rate, collision rate, timeout rate, Unrecoverable-State rate,
-SPL, navigation time, path length, average velocity, minimum clearance, TTC
-statistics, steering saturation rate, steering smoothness, control
-smoothness, emergency-stop count (section 37's full list).
+All core baselines share robot model, sensor history, reward/termination, action decoder, control rate,
+guard, train transitions, seeds and locked scenarios unless explicitly labelled a contract-difference
+reference.
 
-## Checkpoint policy
+| ID | Model | Purpose |
+|---|---|---|
+| B0 | current direct-control TQC reference | historical contract-difference anchor |
+| B1 | current 328D trajectory-action TQC | same-action minimum baseline |
+| B2 | parameter-matched flat MLP TQC | capacity control |
+| B3 | GRU/temporal TQC | sequence-memory control |
+| B4 | BEV belief + implicit concatenation | representation without explicit operator |
+| B5 | BEV + generic cross-attention | attention/control-operator comparison |
+| B6 | compact latent world-model RL | model-based alternative with equal data/compute report |
+| B7 | risk-sensitive/CVaR TQC | tail-return comparison |
+| B8 | scalar/endpoint risk critic | risk-representation baseline |
+| A7 | TRACTOR core | primary method |
+| A8 | TRACTOR + bounded vehicle residual | physics-support extension |
+| A9 | TRACTOR ensemble/UCB | uncertainty extension |
+| B12 | Nav2/MPPI-style classical controller | controller-specific external reference |
 
-`rl/checkpointing/manager.py` saves every `nn.Module`/`Optimizer` component
-an agent exposes via `checkpoint_components()` (actor, critic, critic
-target, optimizers, risk critic + its optimizer when present) plus a JSON
-manifest recording which components were present, training step, and seed.
-Loading a checkpoint saved WITHOUT the risk critic into a risk-aware agent
-degrades gracefully (the risk critic stays freshly-initialised, reported in
-the manifest's `skipped` list) rather than erroring -- see
-`tests/test_checkpointing.py::test_checkpoint_load_reports_skipped_component_when_absent`.
+B0/B12 are not direct architecture ablations because their action/controller contracts differ.
+Publication tables label those differences.
 
-## Domain randomization
+## 5. Training protocol
 
-Opt-in (`domain_randomization.enabled`, default false) -- see
-`config/domain_randomization/default.yaml` for the default ranges and
-`env/randomization/domain_randomizer.py` for the sampler. A `RandomizationDraw`
-is deterministic given `(seed, config)`
-(`tests/test_env_modules.py::test_randomization_is_deterministic_per_seed`).
+### Common fairness
 
-### OOD split contract
+- at least five registered seeds for every headline method;
+- identical development transitions and locked-test episodes where contract permits;
+- both fixed-update and fixed-environment-step budgets;
+- parameter count, FLOPs, wall-clock, GPU-hours and peak memory reported;
+- tuning budget and search space logged per method;
+- failure/timeout runs retained and excluded only by preregistered rules.
 
-Training randomization bounds and test-only OOD bounds must be explicit,
-non-overlapping where the hypothesis calls for extrapolation, and stored in the
-resolved experiment artifact. At minimum sweep:
+### TRACTOR stages
 
-- tire friction and robot mass/payload;
-- steering delay, rate, offset/gain and actuator dead zone;
-- acceleration/braking response and command latency;
-- LiDAR range noise, point/ray dropout and complete frame dropout;
-- odometry noise, yaw bias, covariance and accumulated pose drift;
-- held-out topology/layout family, not only unseen seeds from one generator.
+| Stage | Train | Frozen/controlled output | Exit gate |
+|---|---|---|---|
+| 0 contract repair | P0 code/tests | current baseline behavior | full regression + attestations |
+| 1 baseline freeze | B1–B8 training protocol | scenario/split/reward/action | complete baseline artifacts |
+| 2 data plane | episode store/index/sampler | schema and split | leakage/durability tests |
+| 3 representation | belief, scene forecast, vehicle residual if enabled | actor/risk headline claims | held-out identifiability |
+| 4 risk/ranking | interaction/aggregator + active risk heads | return critics/actor | calibration/ranking improvement |
+| 5 joint RL | value+risk then actor/entropy | fixed protocol | stable learning + deterministic resume |
+| 6 formal eval | no training | locked checkpoints/calibrator | complete seed×scenario matrix |
 
-Use one-axis sweeps to attribute failure and combined stress tests to measure
-robustness. The primary OOD question is whether risk/uncertainty rises before
-unsafe execution when the rollout model is wrong. A policy success curve alone
-does not answer it. Simulator fields classified as model-only may not be
-reported as physical dynamics randomization without a Gazebo-side consumer.
+Stage 3/4/5 are separate experiment lineages linked by explicit warm-start maps. Stage 5 TQC uses
+real executed transitions only. Auxiliary losses may update the registered value-path modules; actor
+updates detach belief but preserve gradients through action-conditioned scoring.
 
-## Real-robot trials
+Core phase truth table:
 
-Not run in this development session -- no real Hunter SE is available here.
-See `docs/SIM2REAL.md`.
+| Phase/transaction | Exact objective | Owner/eligible modules | Ineligible updates |
+|---|---|---|---|
+| Stage 3 representation | `w_occ L_occupancy + w_flow L_flow + w_resp L_vehicle_response` | one `optimizer_value_path` step; belief/future-scene/vehicle-response and enabled residual keys selected in the phase manifest | actor, return critics, tube/aggregator, risk heads and entropy remain frozen |
+| Stage 4 feature side | `L_R[risk_contract_id]` with risk-head weights frozen | `optimizer_value_path` steps only tube interaction+temporal aggregator | encoders/scene/residual/return critics, actor and entropy remain frozen |
+| Stage 4 head side | `L_R[risk_contract_id]` on stop-gradient interaction features | `optimizer_risk_heads` only | every value-path module, actor and entropy remain frozen |
+| Stage 5 value side | `L_TQC +` valid representation auxiliaries `+ w_rfeat L_R[risk_contract_id]` with risk-head weights frozen | one `optimizer_value_path` step over the complete online value path | risk-head, actor and entropy weights do not step |
+| Stage 5 risk side | `L_R[risk_contract_id]` on stop-gradient value features | one `optimizer_risk_heads` step | value-path, actor and entropy weights do not step |
+| Stage 5 actor | `alpha_ent log pi - lower-tail value +` registered risk/smoothness terms | one `optimizer_actor` step; value/risk weights frozen, action gradient preserved | representation, value and risk weights do not step |
+| Stage 5 entropy | registered temperature objective | `optimizer_entropy` only | all network weights remain frozen |
 
-## Paper scope and hypotheses
+Stage-4 feature/head sides and Stage-5 value/risk sides each form an atomic transaction; both prechecks
+pass and both optimizer steps
+commit before EMA. A batch with no valid risk label skips that whole transaction without consuming its
+target-action RNG. A missing auxiliary label sets only that masked auxiliary term to zero and records a
+zero valid count; it never invents a target. The core sampler is uniform over valid windows, so the
+masked risk estimators are unweighted sample means. Event-balanced training requires a separately
+registered sampling/loss contract and is not part of A7 core.
 
-The first paper, tentatively *Risk-Calibrated Counterfactual Policy Improvement
-for Kinodynamic Ackermann Navigation*, is Local-method-first. Its primary
-hypotheses are:
+`L_R` dispatches exactly by model-spec row: R0 masked MSE, R1 masked BCE, R2 survival NLL, R3 masked
+class CE, R4 competing-risk NLL, and R5/R6 that NLL plus their enabled masked severity-quantile losses.
 
-1. `[kappa, v_ref, L]` improves feasibility and smoothness over direct
-   `(v, steering)` control and fixed-horizon trajectory actions.
-2. Multi-task risk factors are calibrated, and ensemble uncertainty predicts
-   risk-model error/OOD well enough to improve conservative action selection.
-3. Physics + learned residual dynamics reduces one-step, multi-step and risk
-   rollout error relative to nominal physics without sacrificing interpretability.
-4. Progress-preserving, uncertainty-gated counterfactual targets reduce raw
-   unsafe proposals and guard dependence without collapsing progress or
-   increasing indiscriminate stops.
+Exact weights, masks, reductions, schedules, clipping and update ratios belong to the frozen training
+fingerprint. No weight is changed after locked-test inspection under the same protocol version.
 
-The second paper, tentatively *Capability-Aware Hierarchical Navigation with
-Experience Memory under Localization and Dynamics Uncertainty*, tests whether
-frozen-Local capability distributions and edge-level experience memory reduce
-infeasible subgoal selection, repeated dead-end entry and revisit distance. A
-separate hypothesis tests whether propagating pose covariance into candidate
-risk produces safer degradation under GPS-denied localization drift. Do not
-use one large Global table to substitute for proving the Local hypotheses first.
+## 6. Evaluation matrix
 
-## Required Local comparisons
+The frozen `tractor_scenario_plan_v1` contains 616 unique geometries: 352 development, 88 calibration
+and 176 locked-test instances across six static and five dynamic families. Seed intervals and canonical
+geometry hashes are disjoint across splits. The plan SHA-256 is
+`7ae919676a408ab08bdbc686a646a634a3789856f62a1d15ebaafd91fa2a8626`.
 
-| Question | Minimum comparison |
+### Scenario axes
+
+- topology: open, corridor, corner, choke point, clutter, dead end;
+- obstacle: static density, crossing, head-on, overtaking, occlusion, mixed motion;
+- vehicle: mass/friction/lag/steering/braking perturbations;
+- sensing: dropout, range noise, latency, stale frames, partial observability;
+- localization: drift, jump, covariance inflation, invalid periods;
+- goal: distance/bearing including rear/full-circle observability cases.
+
+ID varies registered ranges seen in development. OOD holds out layouts, trajectories and combinations;
+each OOD axis is reported separately before any pooled score.
+
+### Metrics
+
+| Family | Metrics |
 |---|---|
-| trajectory action vs direct control | TQC/SAC `(v, steering)`, `[kappa,v]`, `[kappa,v,L]` |
-| learned horizon | fixed short L, fixed long L, adaptive L |
-| path representation | constant-curvature and equal-capacity spline/Bezier action |
-| risk critic | no risk, supervised risk only, actor risk penalty |
-| counterfactual contribution | risk penalty only, random candidate augmentation, structured candidate supervision/weighting |
-| learned vs exact risk | exact rollout, learned critic, hybrid |
-| risk representation | scalar risk, multi-task factors, factor ensemble |
-| uncertainty use | mean only, mean + uncertainty penalty, calibrated conservative bound, abstention gate |
-| dynamics model | nominal physics, single residual, residual ensemble |
-| counterfactual target | current margin weighting, direct target without progress constraint, progress-constrained target, progress + uncertainty gate |
-| safety attribution | raw policy, guard-only, policy+guard |
-| classical navigation | Nav2 MPPI or Hybrid-A* family; document unresolved baseline failures |
+| navigation | success, collision/event rate by cause, SPL, path/time, min clearance, progress |
+| control | curvature/speed/steering smoothness, saturation, command tracking |
+| proposal/ranking | top-1 unsafe rate, ranking regret, NDCG, candidate coverage |
+| prediction | occupancy IoU/F1/NLL, dynamic flow EPE, trajectory ADE/FDE, tube coverage |
+| risk | NLL, Brier, ECE/reliability, cause/time accuracy, calibration by horizon |
+| uncertainty | risk-coverage/selective curves, OOD AUROC where labels support it |
+| operations | guard intervention, fallback cause, p50/p95/p99 latency, deadline miss, memory |
 
-TQC is the implementation base, not the claimed novelty. The proposed method
-should retain its research meaning if another off-policy continuous-control
-algorithm replaces TQC.
+Report numerator/denominator and event counts, not percentages alone. A run with insufficient event
+support cannot establish calibration or safety improvement.
 
-## Required Global comparisons
+## 7. Ablations
 
-Use the same immutable test manifest for all rows:
+Run core isolation before optional extensions:
 
-1. `G0`: frozen Local-only final-goal pursuit.
-2. classical optimistic/frontier exploration with A*/D* Lite or Hybrid-A*.
-3. `G1`: online partial-map Global RL.
-4. `G2`: G1 + visited channel.
-5. `G3`: G2 + topology/dead-end memory.
-6. `G4`: G3 + Local success probability; compare geometry-only, oracle and learned feasibility.
-7. `G5`: G4 + Local expected risk; compare no risk, oracle rollout and learned risk.
-8. `G6`: G5 + calibrated Local risk uncertainty.
-9. `G7`: G6 + localization-aware candidate risk.
-10. `G8`: full capability distribution + edge experience posterior.
+| Axis | Required comparison | Question |
+|---|---|---|
+| representation | raw vector vs recurrent vector vs factorized BEV | is spatial factorization useful? |
+| ego motion | concatenate vs warp; valid vs mask-removed | is alignment/validity causal? |
+| interaction | implicit concat, generic attention, explicit product, full operator | what produces ranking gain? |
+| tube | centreline vs deterministic footprint vs probabilistic tube | does swept uncertainty matter? |
+| future | current-only vs action-independent future | is prediction actually used? |
+| risk | scalar, endpoint, time hazard, cause-time, +severity | which structure improves calibration/action? |
+| physics | nominal vs residual vs ensemble | support value and model-bias cost |
+| learning | auxiliary-only vs actor-through-score; real vs imagined Bellman reference | gradient-path contribution |
+| compute | parameter/FLOP/candidate/horizon matched | rule out capacity/planning advantage |
 
-The B/C distinction is specifically the visited channel. Every learned B–G
-row needs its own architecture fingerprint and independently trained
-checkpoint; a heuristic or another row's checkpoint is never a substitute.
-The same rule applies to G0–G8; they are the target research ladder and do not
-rename the historical Phase-5 A–G labels.
+Every ablation changes one registered axis. If a change forces another contract change, record it as a
+compound variant and do not use it for a clean causal claim.
 
-## Risk calibration protocol
+## 8. Statistics
 
-Navigation success alone does not validate a risk critic. Report:
+- Unit of replication is the independent training seed, not an episode.
+- Report per-seed results, mean/median, 95% confidence intervals and paired differences on shared
+  scenario seeds.
+- Use bootstrap intervals over seeds/scenario groups where distributional assumptions are weak.
+- Multiple headline comparisons use a declared correction or a small preregistered primary set.
+- Safety metrics include event counts and confidence bounds; zero observed collisions is not zero risk.
+- Practical effect thresholds are decided before significance testing.
 
-- AUROC and AUPRC; accuracy is insufficient for rare collision events.
-- Brier score, Expected Calibration Error and a reliability diagram.
-- false-negative rate at every deployed risk threshold.
-- observed collision/high-risk frequency in predicted-risk bins.
-- error and latency relative to exact online rollout.
-- calibration under localization noise, actuator delay and dynamics mismatch.
-- ensemble spread versus absolute prediction error and selective-risk/coverage
-  curves when high-uncertainty predictions are rejected.
-- ID versus every one-axis OOD condition, followed by combined-stress OOD.
+## 9. Evidence ladder and claim gate
 
-The unit of analysis and label horizon must be stated. Calibration metrics must
-come from held-out test scenarios, never replay-buffer training rows. Fit any
-temperature/isotonic/conformal calibrator only on a separate validation split
-and evaluate it once on the locked test split. Report aleatoric prediction targets
-and epistemic ensemble disagreement separately; do not name an unvalidated
-standard deviation a calibrated confidence bound.
+```text
+unit/property tests
+< offline held-out prediction/ranking
+< deterministic simulation smoke
+< formal multi-seed locked simulation
+< target-device timing/HIL
+< contained real static trials
+< controlled dynamic real trials
+< GPS-denied integrated mission
+```
 
-## Dynamics-model validation protocol
+Higher levels do not automatically validate unrelated lower assumptions. A paper sentence is allowed
+only when [evidence/README.md](evidence/README.md)의 claim ledger points to immutable artifacts with
+complete provenance.
 
-Residual dynamics is validated independently of navigation return:
+## 10. Invalidating conditions
 
-- one-step MAE/RMSE for velocity, yaw rate and steering response;
-- open-loop multi-step pose/heading and endpoint error versus horizon;
-- trajectory clearance/TTC/stopping-margin error induced by the model;
-- nominal physics versus one residual model versus residual ensemble;
-- ID and test-only OOD dynamics conditions;
-- ensemble spread versus actual rollout error and inference latency.
+Results are invalid for the frozen protocol if any of the following occurs:
 
-Split temporally contiguous runs by complete trial/rosbag, not randomly by
-individual adjacent samples. A real-Hunter test trial must never be used to fit
-the residual model or its uncertainty calibrator. Preserve the nominal-only
-fallback and report when it is used.
+- split leakage or locked-test-guided tuning;
+- mixed action/footprint/reward/terminal/data semantics under one experiment ID;
+- missing seed/run, overwritten output or unverifiable source/container identity;
+- unequal train data/budget presented as a direct architecture comparison;
+- privileged simulator input reaches inference;
+- candidate or ensemble members are dropped/renormalized after failures;
+- calibration is fit on headline test data;
+- timeout/deadline failures are omitted from aggregates.
 
-## Counterfactual policy-improvement protocol
+Protocol-invalid runs remain archived with `INVALID`; they are never silently repaired or resumed into
+the same output root.
 
-For actor action $a=\pi_\theta(s)$, the selected candidate must minimize the
-conservative risk $R^+=\mu_R+\beta\sigma_R$ subject to feasibility, progress
-retention $P(a')\ge\rho P(a)$ and uncertainty $U(a')\le\epsilon_u$. Store the
-candidate set, each constraint outcome, selected candidate, risk improvement,
-progress ratio, uncertainty, activation weight and abstention reason.
+## 11. Promotion and stop criteria
 
-Compare identical candidate budgets and rollout compute. Report how often no
-candidate is feasible, how often only stop is feasible, target activation
-rate, erroneous-target rate under privileged evaluation, progress loss and
-extra latency. “Safer” is not established if the method simply selects stop
-more often.
+TRACTOR is promoted to deployment evaluation only if it passes preregistered navigation,
+calibration/OOD and p99 deadline gates without regression in guard/fallback behavior. Redesign is
+triggered when the explicit operator is not better than implicit equal-compute baselines, future belief
+is not identifiable, risk is materially miscalibrated, or gains require imagined Bellman targets.
 
-## Guard attribution protocol
+Real motion stops immediately for stale/invalid localization or sensors, manifest mismatch, command
+tracking outside the envelope, repeated deadline miss, guard escalation, geofence breach or operator
+intervention. Details are in [SIM2REAL.md](SIM2REAL.md).
 
-Record raw policy action, nominal decoded command, guarded command and actually
-published command separately. At minimum report guard intervention rate,
-policy-proposed high-risk action rate, intervention-induced stop/failure rate,
-and recovery success after emergency stop. A lower guarded collision rate is
-not evidence of a safer learned policy unless raw risk or intervention rate
-also improves.
+## 12. Publication-ready contribution gate
 
-Use the same checkpoint/manifest to report four named conditions:
+Only after complete evidence may the paper claim:
 
-1. Raw Actor;
-2. Raw Actor + Counterfactual learning;
-3. Actor + Guard;
-4. Counterfactual Actor + Guard.
+1. a new explicit tube-occupancy interaction representation;
+2. its isolated contribution over equal-budget implicit alternatives;
+3. calibrated cause-time risk and candidate-ranking improvement;
+4. navigation/runtime transfer within the exact tested simulation or real ODD.
 
-If disabling the guard is unsafe on hardware, run raw conditions only in
-simulation/replay and use proposal-level metrics on hardware. The guard remains
-mandatory on the physical robot.
-
-## Statistical design
-
-- Use at least five independent training seeds per learned method for paper
-  results; a one-seed engineering smoke is not a research result.
-- Evaluate every method on the same paired scenario IDs and immutable content
-  hashes.
-- Report 95% confidence intervals for success and collision rates.
-- Use paired bootstrap intervals or a justified non-parametric paired test for
-  SPL, time, path length, clearance and revisit metrics.
-- Report mean, median, spread and a worst-tail statistic where safety matters.
-- Classify failure as collision, timeout, stuck/no-progress, infeasible goal,
-  localization loss, planner loop or infrastructure failure.
-- Add a held-out layout family or real floor plan beyond procedural seed splits.
-- Include 50–100 m routes, consecutive dead ends/loops and nonholonomic traps
-  before making a strong long-horizon claim.
-
-## Hierarchical checkpoint and formal-result policy
-
-Graceful partial loading is useful for development, but it is forbidden for a
-formal hierarchical result. Formal artifacts require strict component loading,
-resolved config/schema hashes, immutable checkpoint SHA, Local generation and
-training-contract identity, replay/RNG schema, package provenance and a cleanly
-identified scenario manifest. Missing labels or partially completed scenarios
-make an A–G suite incomplete, not formal.
-
-For feasibility/capability rows E/F/G, evaluator failure is missing evidence,
-not a low-risk observation. The current artifact records fallback reasons, but
-the current candidate tensor has no explicit validity channel and zero-fills
-the two policy-conditioned fields. Until that schema is versioned, each formal
-run must require zero raw action/risk fallback counts and report all reasons
-per label and condition. The emitted legacy `fallback_rate` is not an
-acceptance statistic because it divides some per-candidate counts by a
-per-decision query count and can exceed one. Any nonzero fallback makes the
-formal result incomplete; retain affected-decision sensitivity analysis only
-as diagnosis. Silently treating the zero-fill as valid low risk invalidates
-the claim.
-
-The audited code-level formal gates are closed; see `CURRENT_STATUS.md` for the
-latest evidence. Formal training/results still require a fresh short
-save/resume/live smoke on the corrected release and then actual multi-seed
-execution under this protocol.
+Each contribution needs a primary table/figure, ablation, uncertainty interval, failure analysis and
+artifact link. Until then all manuscript language uses future/proposed tense.
