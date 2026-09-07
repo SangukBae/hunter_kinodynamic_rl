@@ -5,8 +5,8 @@
 이 폴더는 Hunter SE용 **Trajectory-Risk via Action-Conditioned Tube-Occupancy Reasoning with
 Truncated Quantile Critics (TRACTOR-TQC)** 연구의 설계, 구현, 평가 및 실차 전환 계약을 담는다.
 문서는 역할이 겹치지 않도록 제한했다. 기존 328D flat-MLP TQC Local baseline과 별도로
-TRACTOR-TQC의 모델부터 Environment-v2 수집·sequence replay·학습 transaction·checkpoint까지
-전용 code path가 구현돼 있다. 모델·replay·checkpoint·평가 코드의 존재와
+TRACTOR-TQC의 모델부터 formal data 수집, sequence replay, B1–B8/A7–A9 학습, calibration,
+locked evaluation과 campaign 집계까지 전용 code path가 구현돼 있다. 코드의 존재와
 회귀 통과는 성능 증거가 아니며, 학습·정식 benchmark·calibration·target-hardware 지연·실차
 결과는 별도 immutable artifact가 생기기 전까지 `UNMEASURED`다.
 
@@ -89,9 +89,9 @@ TRACTOR-TQC의 모델부터 Environment-v2 수집·sequence replay·학습 trans
 
 - prior audit의 Docker `2,138 passed`는 provenance가 불완전한 code-health snapshot이다.
 - Stage-2 L0–L5 formal matrix는 training **0/30**, benchmark **0/30**이다.
-- TRACTOR-TQC implementation, 전용 Environment-v2→sequence→agent runner, frozen protocol v1과
-  616-instance split-safe scenario plan은 존재하지만 rollout dataset/training/benchmark/calibration/
-  target timing 결과는 없다.
+- TRACTOR-TQC와 matched B1–B8 implementation, formal realized-track collector, 공통
+  training/calibration/locked-evaluation campaign, frozen protocol v1과 616-instance split-safe
+  scenario plan은 존재하지만 dataset/training/benchmark/calibration/target timing 결과는 없다.
 - 별도 `tractor_env_v2` curriculum과 48개 fixed ID/OOD scenario가 구현·checksum 고정됐지만,
   아직 navigation rollout 또는 비교 성능 증거는 아니다.
 - accepted Local을 고정한 formal Global 결과와 Hunter SE 실차 navigation 증거도 없다.
@@ -99,6 +99,6 @@ TRACTOR-TQC의 모델부터 Environment-v2 수집·sequence replay·학습 trans
 따라서 현재 허용되는 요약은 다음과 같다.
 
 > The package contains a TQC-based Local baseline, hierarchical infrastructure, and an
-> untrained regression-tested TRACTOR-TQC implementation with a dedicated sequence-training runner.
-> Formal training, comparative
+> untrained regression-tested TRACTOR-TQC and matched-baseline implementation with a formal comparison
+> runner. Formal training, comparative
 > benchmarking, calibration, target-hardware timing, and real-robot validation remain open.

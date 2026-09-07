@@ -306,8 +306,10 @@ any dropped beam, records measured transition time and planar odometry covarianc
 actual published command separately from requested action. It also stores explicit `next_*` input
 columns so a time-limit truncation can bootstrap from the real final post-step observation.
 
-Its current counterfactual severity source, `nominal_preaction_rollout_summary_v1`, provides one
-valid summary bin per candidate for development integration. Formal validation rejects that source:
-paper evidence requires `realized_timestamp_aligned_counterfactual_v1` for every formal candidate
-row. Thus a successful development training run proves wiring/checkpoint operation, not formal label
-quality or navigation performance.
+The development-only collector can still emit `nominal_preaction_rollout_summary_v1`. The formal
+comparison collector instead records a privileged pre-action world snapshot outside policy inputs and,
+after episode completion, aligns every candidate with actual future obstacle states by timestamp. It
+emits `realized_timestamp_aligned_counterfactual_v1` cause/time/censor/severity sidecars. Formal
+validation requires this source for every candidate and rejects missing lineage. The generator and gate
+are implemented, but no 616-scenario corpus has been collected; therefore label quality and navigation
+performance remain unmeasured.

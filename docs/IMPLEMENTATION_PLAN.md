@@ -1,6 +1,6 @@
 # TRACTOR-TQC Implementation and Operations Plan
 
-Status: **core and dedicated training runner landed; data/training/evidence open**
+Status: **core, matched baselines and formal comparison pipeline landed; data/training/evidence open**
 
 This document is the single code-change, integration and runbook map. It does not report completion;
 actual state belongs to [CURRENT_STATUS.md](CURRENT_STATUS.md).
@@ -17,6 +17,7 @@ actual state belongs to [CURRENT_STATUS.md](CURRENT_STATUS.md).
 | replay/checkpoint | `hunter_kinodynamic_rl/rl/replay/*`, `hunter_kinodynamic_rl/rl/checkpointing/*` |
 | localization/map/hierarchy | `hunter_kinodynamic_rl/navigation/localization/*`, `hunter_kinodynamic_rl/navigation/mapping/*`, `hunter_kinodynamic_rl/navigation/hierarchy/*` |
 | training/evaluation | `hunter_kinodynamic_rl/training/*`, `hunter_kinodynamic_rl/evaluation/*` |
+| matched baseline families | `hunter_kinodynamic_rl/rl/algorithms/comparison_baselines/*`, `config/tractor/baseline_models.yaml` |
 | robot/profile config | `config/robot/*`, `config/profiles/*` |
 
 The current `rl/networks/tqc.py` remains code-identical to its `drl_agent` source except for the
@@ -52,8 +53,9 @@ config/profiles/tractor_*.yaml
 New modules consume typed dataclasses from `contracts.py`; no dict with optional semantic fields may
 cross the `encode/propose/score` boundary.
 
-As of 2026-09-07, the listed TRACTOR network, Environment-v2 episode collector, reset-prefix replay
-adapter, ordered learning runner, checkpoint, preflight, runtime boundary and evaluation modules exist.
+As of 2026-09-07, the listed TRACTOR network, B1–B8 matched baselines, formal realized-track collector,
+reset-prefix replay adapter, ordered learning runners, checkpoint, calibration, common locked evaluator,
+campaign orchestrator, preflight and runtime boundary exist.
 Work-package completion still follows the exit gates
 below; source presence must not be interpreted as trained or paper-ready evidence.
 
@@ -73,8 +75,9 @@ Exit: targeted tests, full regression, resolved config/robot attestation and cur
 
 ### P1 — freeze baselines
 
-Create immutable B1–B8 profiles, seed schedule, train budget and locked scenario manifest. Execute the
-existing L0–L5 0/30 campaign in its own output root before TRACTOR changes can confound it.
+Immutable B1–B8 profiles, seed schedule, train budget and locked scenario manifest are implemented.
+Weights/results remain absent. The existing L0–L5 0/30 campaign stays in its own output root and is
+reported separately because it does not share the sequence-training contract.
 
 ### P2 — sequence data plane
 
@@ -168,9 +171,39 @@ dataset/index. The current live collector labels are explicitly marked
 `nominal_preaction_rollout_summary_v1`; they exercise the complete development path but are not a
 substitute for the formal realized timestamp-aligned candidate corpus.
 
-Formal runs require an explicit profile, seed, experiment ID and fresh output root. Run in `tmux`, tee
-stdout/stderr to a log, record GPU/driver/container/commit identity and verify the first checkpoint by
-loading it in a separate process. Never invent a command for a planned file that does not yet exist.
+The strict paper matrix has one orchestrator and one fresh immutable root:
+
+```bash
+# freeze manifests and expected B1–B8/A7–A9 × five-seed matrix
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 prepare
+
+# with the registered simulator/profile running: collect all 616 scenarios once
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 collect
+
+# 55 matched training runs; commands are restartable with --skip-complete
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 train --device cuda --skip-complete
+
+# calibration split only, then one locked-test pass per method/seed
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 calibrate --device cuda --skip-complete
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 evaluate --device cuda --skip-complete
+
+# fail closed unless 55 runs and 9,680 locked episode records are verified
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 aggregate \
+  --runtime-json <target-hardware-latency.json>
+ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
+  --campaign-root runtime/tractor_paper_v1 status
+```
+
+Formal runs require an explicit fresh output root. Run long stages in `tmux`, preserve stdout/stderr,
+record GPU/driver/container/commit identity and verify the first checkpoint in a separate process.
+`aggregate` reports paired seed-level B1 comparisons; it cannot turn incomplete or non-target timing
+artifacts into a pass.
 
 ## 6. Troubleshooting order
 

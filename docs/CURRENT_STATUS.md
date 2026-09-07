@@ -1,8 +1,8 @@
 # Current Status
 
 기준일: **2026-09-07 KST**
-대상: `phase1-hierarchical-navigation`, audit 당시 commit
-`42e192f2f038c8cc9f214ff15ed6f8e57c00c5f6`, dirty working tree
+대상: `phase1-hierarchical-navigation`, paper-comparison implementation through
+`584025d`, 사용자 소유 untracked media가 있는 working tree
 
 ## 결론
 
@@ -22,6 +22,9 @@
 - immutable/checksummed sequence episode store, reset-prefix index/sampler와 exact sampler resume
 - Environment v2 episode collector와 `value → risk → actor/entropy → EMA` 전용 sequence trainer
 - disjoint optimizer/EMA target/value·risk loss, atomic training checkpoint/resume와 inference-only bundle
+- B1–B8 executable architecture/optimizer/checkpoint와 A7–A9가 공유하는 immutable sequence-data training contract
+- privileged pre-action simulator snapshot에서 actual future obstacle track을 맞추는 formal counterfactual relabeler
+- calibration-only Platt fitting, locked-test common evaluator와 complete-matrix campaign orchestrator
 - frozen acceptance/scenario plan, dataset/preflight/latency, calibration/ranking/seed-level paired-statistics 및 formal matrix 검사 도구
 - opt-in `tractor_env_v2`: 5단계 curriculum, TTC/DCPA conflict, 4개 shape, 10개 motion,
   3개 interaction mode, Hunter 지향 footprint, 5× physics substep와 48개 checksum 고정 ID/OOD scenario
@@ -34,13 +37,16 @@ target-hardware timing 또는 실차 성능 증거는 아니다.
 | 항목 | 상태 | 해석 |
 |---|---|---|
 | Docker full regression | prior report `2,138 passed` | exact command/image/commit provenance가 불완전한 code-health snapshot |
-| current combined ROS+Torch regression | **`2,207 passed`** (`258.41 s`) | sourced ROS + Torch Docker, CPU-only code-health; 성능 증거 아님 |
+| current combined ROS+Torch regression | **`2,220 passed`** (`274.50 s`) | sourced ROS workspace overlay + Torch Docker, CPU-only code-health; 성능 증거 아님 |
 | Stage-2 L0–L5 training | **0/30** | five seeds × six baselines의 formal completion 없음 |
 | Stage-2 benchmark | **0/30** | locked test aggregate 없음 |
 | accepted/promoted Local | 없음 | Global formal campaign 선행조건 미충족 |
-| TRACTOR-TQC code | `IMPLEMENTED`, 새 학습 경로 포함 targeted `71 passed` | 학습 실행은 안 했으며 weights는 무작위 초기화; 성능 주장 불가 |
+| paper comparison code | B1–B8/A7–A9 train, formal label, calibration, common eval, campaign `IMPLEMENTED` | runner 존재만 확인; 학습 weights와 성능 artifact 없음 |
 | TRACTOR synthetic execution | A7/A9 default forward 완료; A9 1회 CPU E2E `142.24 ms`로 100 ms deadline 초과 | 실행성 smoke일 뿐 target hardware/p99/ROS-load gate가 아님 |
-| TRACTOR training/benchmark | **0 / 0** | 학습·calibration·locked test artifact 없음 |
+| paper comparison formal data | **0/616** | realized-track corpus를 아직 수집하지 않음 |
+| paper comparison training | **0/55** | B1–B8/A7–A9 × five seeds; checkpoint 없음 |
+| paper comparison calibration | **0/20** | A7/A8/A9/B8 × five seeds; calibration artifact 없음 |
+| paper comparison locked eval | **0/55 runs, 0/9,680 episodes** | complete matrix와 aggregate 없음 |
 | TRACTOR protocol/data plan | `tractor_protocol_v1` frozen; 616/616 geometry가 bounded Ackermann filter 통과 | 구성·분리 계약 증거이며 rollout/성능 증거 아님 |
 | TRACTOR simulation env v2 | implemented/configured; 6 suites×8 = 48 fixed scenarios | 학습·navigation rollout·성능·sim-to-real 증거 아님 |
 | v2 calibration | `engineering_prior`; application classification 검증 | measured Hunter system-ID가 아니며 mass/wheel은 model-only |
@@ -79,11 +85,12 @@ reset-prefix recurrence를 별도 계약으로 사용하며 legacy replay를 묵
 | 영역 | 현재 상태 | 핵심 경로 |
 |---|---|---|
 | A7/A8/A9 model | implemented/tested | `rl/networks/tractor/*`, `config/tractor/model*.yaml` |
+| B1–B8 comparison model | implemented/tested, untrained | `rl/algorithms/comparison_baselines/*`, `config/tractor/baseline_models.yaml` |
 | learning math/runner | value·risk·actor·EMA transaction implemented/unit-tested, not trained | `rl/algorithms/tractor_tqc/*`, `training/train_tractor_tqc.py` |
-| sequence replay/data plan | Environment v2 collector + replay adapter implemented/unit-tested, 616 fixed scenarios planned, no collected rollouts | `rl/replay/sequence_*`, `training/tractor_episode_collector.py`, `training/tractor_sequence_training.py` |
+| sequence replay/data plan | formal 616-scenario collector/relabeler + shared comparison replay implemented/unit-tested, no collected rollouts | `rl/replay/sequence_*`, `training/collect_formal_comparison_data.py`, `training/realized_counterfactual.py` |
 | checkpoint/export | implemented/unit-tested, no promoted model | `rl/checkpointing/tractor.py` |
 | runtime policy boundary | implemented/unit-tested, not wired to a live ROS node | `navigation/local_rl/tractor_policy.py` |
-| protocol/evaluation/statistics | frozen v1 + implemented/unit-tested, no formal records | `config/tractor/protocol.yaml`, `evaluation/tractor_*` |
+| protocol/evaluation/statistics | common locked evaluator, split-isolated calibration and 55-run campaign implemented/unit-tested, no formal records | `evaluation/evaluate_paper_comparison.py`, `evaluation/fit_comparison_calibration.py`, `evaluation/run_paper_comparison_campaign.py` |
 | dynamic label basis | realized displacement/actual-dt helper implemented/tested | `env/humans/dynamic_obstacle_motion.py` |
 | simulation environment v2 | implemented/configured, untrained | `env/scenarios/tractor_environment_v2.py`, `config/environment_v2/*` |
 
@@ -105,21 +112,24 @@ formal Global run과 real mission evidence는 없다. Local promotion 전에는 
 | P0-01 | **implemented/tested** | hierarchy footprint를 `0.58 m`로 통일하고 config equality fail-fast 추가 |
 | P0-02 | **implemented for TRACTOR; legacy coverage improved** | trajectory/replay revision과 전체 TRACTOR structural config fingerprint |
 | P0-03 | **implemented/tested basis** | static/dynamic manifest 분리, waypoint velocity를 realized displacement/dt로 생성 |
-| P0-04 | **generator/loss/schema implemented and scripted-tested; corpus 없음** | realized tracks로 cause/time/censor, closest-time speed severity 및 tie priority 생성 |
+| P0-04 | **formal relabeler/schema/collector implemented and tested; corpus 없음** | privileged pre-action snapshot은 저장 전용이며 realized timestamp-aligned cause/time/censor/severity를 생성 |
 | P0-05 | **implemented for TRACTOR only** | sequence schema와 Bellman control flow가 terminal/time-limit/invalid cut을 분리 |
 | P0-06 | **checkpoint/export implemented; live ROS load 미연결** | path/role/hash 선검증, atomic generation, inference-only calibrated bundle |
 | P0-07 | **TRACTOR rule implemented/tested** | front-only 미관측 셀을 정확히 unknown으로 고정하고 forward-only action 유지 |
 
 ## 다음 순서
 
-1. **완료:** current checkout full regression `2,207 passed`를 기록했다.
+1. **완료:** current checkout full regression `2,220 passed`를 기록했다.
 2. **완료:** `tractor_protocol_v1` 합격 기준과 616개 split/scenario plan을 digest-lock하고 freeze했다.
-3. **구현 완료/실행 대기:** `train_tractor_tqc.py`로 Environment v2 development episode를 수집하고 sequence replay 학습을 실행한다. 현재 collector의 `nominal_preaction_rollout_summary_v1` 라벨은 개발용이며 formal validator가 논문 증거로 거부한다.
-4. current L0–L5 baseline의 30 training과 30 benchmark를 별도 immutable output root에서 끝낸다.
-5. 사용자 승인 시 새 전용 runner로 A7 representation/value→risk→joint actor 학습을 실행한다.
-6. A7 core를 B1–B8 same-contract/equal-compute baseline과 최소 five seeds로 비교한다.
-7. `evaluation_v2_*` 48개 고정 scenario, held-out calibration, target-hardware timing을 통과한 모델만 bundle로 export한다.
-8. HIL과 contained Hunter trial 후에만 Global 연구를 시작한다.
+3. **구현 완료/실행 대기:** `run_paper_comparison_campaign.py prepare`로 protocol/scenario/data/config digest를 고정한다.
+4. simulator를 실행하고 `collect`로 352 development + 88 calibration + 176 locked-test realized-track corpus를 한 번 수집한다. 정책 입력에는 privileged snapshot이 들어가지 않는다.
+5. `train`으로 B1–B8/A7–A9 × five seeds의 55 checkpoint를 동일 development sequence와 update budget으로 만든다.
+6. `calibrate`는 calibration split만 사용해 A7/A8/A9/B8의 20 calibrator를 만든다.
+7. `evaluate`로 모든 checkpoint를 같은 176 locked scenario에서 평가하고 `aggregate`의 55-run/9,680-record 완전성 gate와 paired seed CI를 통과시킨다.
+8. target-hardware timing/HIL/contained Hunter trial을 통과한 Local만 승격하고 그 후 Global 연구를 시작한다.
+
+B0/B12와 legacy L0–L5는 행동·제어 또는 online-training 계약이 달라 위 11-method architecture
+matrix에 섞지 않고 별도 참고 결과로 보고한다.
 
 ## 현재 금지 주장
 
