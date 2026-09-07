@@ -138,10 +138,10 @@ def collect_formal_comparison_data(
                 raise RuntimeError(f"environment rejected scenario override {scenario_path}")
             rng = np.random.default_rng(int(entry["seed"]) ^ int(behavior_seed))
             start_utc = _utc_now()
-            state = env.reset()
+            state, reset_diagnostics = env.reset_with_diagnostics()
             recorder = TractorEpisodeRecorder(profile, contract["model"])
             current = make_snapshot(
-                state, contract["model"], diagnostics=None,
+                state, contract["model"], diagnostics=reset_diagnostics,
                 pose_covariance=env.latest_pose_covariance, previous=None,
                 nominal_dt_sec=profile.runtime.time_delta_sec,
             )

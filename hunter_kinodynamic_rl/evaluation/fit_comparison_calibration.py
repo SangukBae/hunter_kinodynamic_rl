@@ -30,6 +30,23 @@ from hunter_kinodynamic_rl.training.tractor_sequence_training import _row_inputs
 CALIBRATED_METHODS = ("B8", "A7", "A8", "A9")
 
 
+def calibration_split_identity(
+    dataset_root: str | Path, scenario_manifest_sha256: str,
+) -> tuple[str, list[str]]:
+    store = EpisodeStore(dataset_root)
+    items = []
+    for path in store.iter_paths():
+        header, _columns = store.load(path.stem)
+        if header.split_id == "calibration":
+            items.append((header.episode_id, sha256_file(path)))
+    if not items:
+        raise RuntimeError("dataset contains no calibration episodes")
+    return canonical_sha256({
+        "split_id": "calibration", "episodes": sorted(items),
+        "scenario_manifest_sha256": scenario_manifest_sha256,
+    }), [episode_id for episode_id, _digest in sorted(items)]
+
+
 def _candidate_set(columns, row: int, device: torch.device) -> CandidateSet:
     present = np.asarray(columns["candidate_present"])[row].astype(bool)
     present &= np.asarray(columns["candidate_model_valid"])[row].astype(bool)
@@ -137,23 +154,22 @@ def fit_comparison_calibration(
     manifest = load_inference_weights(checkpoint_root, checkpoint_tag, agent)
     checkpoint_sha = str(manifest["training_payload_sha256"])
     store = EpisodeStore(dataset_root)
-    episode_ids, episode_hashes, probabilities, targets = [], [], [], []
+    split_sha, expected_episode_ids = calibration_split_identity(
+        dataset_root, str(report.scenario_manifest_sha256),
+    )
+    episode_ids, probabilities, targets = [], [], []
     for path in store.iter_paths():
         header, columns = store.load(path.stem)
         if header.split_id != "calibration":
             continue
         episode_ids.append(header.episode_id)
-        episode_hashes.append(sha256_file(path))
         episode_probability, episode_target = extract_episode_calibration_rows(
             agent, method_id, columns,
         )
         probabilities.extend(episode_probability)
         targets.extend(episode_target)
-    split_sha = canonical_sha256({
-        "split_id": "calibration",
-        "episodes": sorted(zip(episode_ids, episode_hashes)),
-        "scenario_manifest_sha256": report.scenario_manifest_sha256,
-    })
+    if sorted(episode_ids) != expected_episode_ids:
+        raise RuntimeError("calibration episode iteration changed split identity")
     probability = torch.as_tensor(probabilities, dtype=torch.float64)
     target = torch.as_tensor(targets, dtype=torch.float64)
     before = calibration_metrics(probability, target)

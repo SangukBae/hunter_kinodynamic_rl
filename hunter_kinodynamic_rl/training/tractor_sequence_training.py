@@ -112,6 +112,15 @@ def _concat_inputs(items: Sequence[TractorInputs]) -> TractorInputs:
     return TractorInputs(**payload)
 
 
+def snapshot_to_inputs(snapshot, config: TractorConfig, device: torch.device) -> TractorInputs:
+    """Convert one runtime snapshot through the exact replay input adapter."""
+    columns = {
+        name: np.asarray([value])
+        for name, value in snapshot.input_columns().items()
+    }
+    return _row_inputs(columns, 0, config, device)
+
+
 class TractorSequenceBatchAssembler:
     """Reconstruct current-weight online/target recurrence from reset prefixes."""
 

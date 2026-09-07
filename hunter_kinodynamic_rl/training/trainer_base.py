@@ -633,6 +633,12 @@ class EnvironmentClient(Node):
         self._episode_start_sim_time_sec = self._latest_sim_time_sec
         return np.asarray(result.state, dtype=np.float32)
 
+    def reset_with_diagnostics(self) -> tuple[np.ndarray, sd.SensorDiagnostics]:
+        """Reset and return the matching step-0 sensor snapshot for rich policies."""
+        state = self.reset()
+        diagnostics = self._await_matching_sensor_diagnostics(0)
+        return state, diagnostics
+
     @property
     def latest_xy(self):
         return self._latest_xy
