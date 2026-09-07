@@ -23,12 +23,17 @@ def test_valid_telemetry_with_candidates_roundtrip():
         emergency_stop=True, guarded_speed_mps=0.5, guarded_steering_rad=0.15,
         published_speed_mps=0.0, published_steering_rad=0.15,
         candidates=[
-            CandidateTelemetry(kappa=0.1, v_ref=1.0, horizon_m=1.5, risk_score=0.3),
+            CandidateTelemetry(
+                kappa=0.1, v_ref=1.0, horizon_m=1.5, risk_score=0.3,
+                min_clearance_m=0.4, ttc_sec=0.8, collision_within_horizon=True,
+                stopping_margin_m=-0.2, event_cause=1,
+            ),
             CandidateTelemetry(kappa=-0.1, v_ref=1.0, horizon_m=1.5, risk_score=0.05),
         ],
     )
     decoded = decode(encode(t))
     assert decoded == t
+    assert decoded.candidates[0].event_cause == 1
 
 
 def test_v8_raw_risk_progress_goal_and_reward_fields_roundtrip():

@@ -1,0 +1,13 @@
+robot_file: hunter_se_improved.yaml
+scenario:
+  world_size_m: 12.0
+  dynamic_obstacle_count: 0
+environment_v2:
+  enabled: true
+  curriculum_dynamic_counts: [0, 1, 2, 4, 6]
+  topology_families: [corridor, doorway, intersection, s_curve, warehouse]
+runtime:
+  deterministic_stepping: true
+evaluation:
+  benchmark: v2_ood_geometry_12m
+  episodes_per_scenario: 1

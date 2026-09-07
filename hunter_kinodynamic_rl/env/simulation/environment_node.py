@@ -40,10 +40,11 @@ from std_msgs.msg import Float32MultiArray
 from drl_agent_interfaces.srv import GetDimensions, Reset, Seed, Step
 
 from hunter_kinodynamic_rl.common.geometry import goal_distance_and_heading
-from hunter_kinodynamic_rl.config.loader import load_profile
+from hunter_kinodynamic_rl.config.loader import DEFAULT_RL_PROFILE, load_profile
 from hunter_kinodynamic_rl.config.schema import Profile
 from hunter_kinodynamic_rl.env.humans.dynamic_obstacle_motion import (
-    MotionPattern, RandomWaypointState, apply_pattern, assign_pattern, position_at_elapsed_time,
+    KinematicMotionState, MotionPattern, RandomWaypointState, apply_pattern, assign_pattern, position_at_elapsed_time,
+    motion_substep_durations, realized_velocity,
 )
 from hunter_kinodynamic_rl.env.observation.observation_builder import (
     RobotState, build_observation, build_robot_state_vector,
@@ -59,33 +60,37 @@ from hunter_kinodynamic_rl.evaluation.contract_override import (
 )
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint, evaluation_contract_fingerprint, local_training_contract_fingerprint,
+    training_profile_fingerprint,
 )
 from hunter_kinodynamic_rl.env.safety.action_guard import STOP_COMMAND, SafetyLimits, guard
 from hunter_kinodynamic_rl.env.scenarios.benchmark_loader import load_scenario_file
+from hunter_kinodynamic_rl.env.scenarios.footprint_geometry import (
+    footprint_overlaps_obstacle, oriented_rectangle_boundary_clearance,
+)
 from hunter_kinodynamic_rl.env.scenarios.procedural_generator import (
     DynamicObstacleSpec, ScenarioSpec, generate_scenario,
 )
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedPoolViolation, SeedScheduler
+from hunter_kinodynamic_rl.env.scenarios.tractor_environment_v2 import generate_v2_scenario
 from hunter_kinodynamic_rl.env.simulation.gazebo_runtime import GazeboRuntimeMixin
 from hunter_kinodynamic_rl.env.simulation.gazebo_service_wait import GazeboServiceError
 from hunter_kinodynamic_rl.env.simulation import risk_telemetry as rt
 from hunter_kinodynamic_rl.env.simulation import sensor_diagnostics as sd
 from hunter_kinodynamic_rl.env.simulation import sensor_noise
 from hunter_kinodynamic_rl.env.simulation.risk_computation import (
-    compute_common_evaluation_metrics, compute_risk_telemetry,
+    compute_common_evaluation_metrics, compute_risk_telemetry, uses_common_evaluation_metrics,
 )
 from hunter_kinodynamic_rl.risk.boundary import distance_to_boundary_m
 from hunter_kinodynamic_rl.rl.checkpointing.manager import sha256_of_file
 from hunter_kinodynamic_rl.env.spawning import obstacle_pool, obstacle_spawner
 from hunter_kinodynamic_rl.env.spawning.obstacle_catalog import load_catalog
 from hunter_kinodynamic_rl.robot.hunter_se import HunterSE
+from hunter_kinodynamic_rl.robot.limits import wheel_angles_to_center_steering
 from hunter_kinodynamic_rl.sensing.scan_processor import front_and_full_state
 from hunter_kinodynamic_rl.sensing.temporal_stack import FrameStack
 from hunter_kinodynamic_rl.trajectory import trajectory_executor
-from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand, decode_action
+from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand, action_dim_for_mode, decode_action
 from hunter_kinodynamic_rl.trajectory.pure_pursuit_adapter import VehicleCommand
-
-ACTION_DIM = 3
 
 # section item-1 (round 3): the single, EXPLICIT, documented definition of
 # which `RuntimeConfig` fields an evaluation-contract override CANNOT
@@ -102,7 +107,7 @@ ACTION_DIM = 3
 # `_apply_runtime_cfg` (including a real ROS-timer recreation for
 # `watchdog_period_sec`) -- genuinely, verifiably applied, not just
 # accepted into an object nothing consults. Referenced directly by
-# `docs/BENCHMARK.md`'s own "Evaluation-contract delivery" section and by
+# `docs/RESEARCH_PROTOCOL.md`'s own "Evaluation-contract delivery" section and by
 # `tests/test_environment_node.py` -- keep all three in lock-step if this
 # set ever changes.
 #
@@ -139,7 +144,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
     def __init__(self):
         super().__init__("hunter_kinodynamic_environment")
 
-        self.declare_parameter("profile", "kinodynamic_tqc")
+        self.declare_parameter("profile", DEFAULT_RL_PROFILE)
         self.declare_parameter("world_name", "default")
         self.declare_parameter("robot_entity_name", "hunter_se")
         self.declare_parameter("mode", "train")  # train | validation | test
@@ -148,6 +153,9 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # explicit mode, which the client switches to `validation` only for
         # that bounded block and restores to `train` afterward.
         self.declare_parameter("explicit_seed_mode", "train")
+        # v2 training curriculum position supplied by TrainerBase before an
+        # explicit training seed. -1 means unset and is rejected for v2.
+        self.declare_parameter("curriculum_episode_index", -1)
         self.declare_parameter("run_seed", 0)
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("odom_topic", "/odometry")
@@ -169,6 +177,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
         profile_name = self.get_parameter("profile").value
         self.profile: Profile = load_profile(profile_name)
+        self._action_dim = action_dim_for_mode(self.profile.action_space)
         # section item-1 (round 2): the ORIGINAL, launch-time profile --
         # NEVER mutated after this line, unlike `self.profile` itself (which
         # `_resolve_evaluation_contract_override` below may replace's
@@ -223,6 +232,15 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # benchmark against the wrong distribution.
         self.declare_parameter(
             "local_training_contract_fingerprint_sha256", local_training_contract_fingerprint(self.profile))
+        # Formal training requires a stricter contract than architecture or
+        # Local-subgoal compatibility alone: reward, runtime, randomization,
+        # sensor-noise and the environment-owned episode length must also be
+        # identical between the trainer process and this already-running
+        # environment process.  Trainer-only cadence/budget fields are not
+        # part of this hash.  This launch-time value never follows
+        # evaluation-contract overrides.
+        self.declare_parameter(
+            "training_profile_fingerprint_sha256", training_profile_fingerprint(self._launch_profile))
         # section item-2 (round 2): unlike architecture_fingerprint_sha256,
         # this one DOES change -- it reflects whichever evaluation-contract
         # sections are ACTUALLY active right now (the launch-time profile's
@@ -294,6 +312,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
         self._seed_scheduler = SeedScheduler(run_seed, self.profile.scenario, self.mode)
         self._pending_explicit_seed: Optional[int] = None
+        self._pending_curriculum_episode_index: Optional[int] = None
 
         self._scenario: Optional[ScenarioSpec] = None
         self._episode_seed: Optional[int] = None
@@ -318,7 +337,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # (step_id alone resets to 0 every episode and can't disambiguate
         # this on its own). See risk_telemetry.py's module docstring.
         self._reset_generation = 0
-        self._prev_action = [0.0, 0.0, 0.0]
+        self._prev_action = [0.0] * self._action_dim
         self._prev_goal_distance = 0.0
         self._spawned_static_names: List[str] = []
         self._spawned_dynamic_names: List[str] = []
@@ -352,7 +371,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # never "now" (a "now vs now" comparison can never trip the
         # watchdog, which was found live to be a no-op check; see
         # env/safety/action_guard.py::check_command_freshness and
-        # docs/TROUBLESHOOTING.md).
+        # docs/IMPLEMENTATION_PLAN.md).
         self._last_command_time = time.monotonic()
         # Fixed-benchmark command_latency_sec override (section P1-3/P1-5):
         # 0 steps (the default for every profile that doesn't set this) means
@@ -480,8 +499,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
     def _on_joint_states(self, msg: JointState) -> None:
         """Realized front steering joint angles -> center steering via
-        Ackermann geometry (simple mean of the two virtual wheel angles,
-        matching drl_agent's own ``_update_steering_joints``). NEVER left at
+        the exact inverse Ackermann geometry. NEVER left at
         a permanent 0 -- section 7's explicit requirement."""
         try:
             left_index = msg.name.index("front_left_steering")
@@ -492,7 +510,11 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             return
         self._front_left_steering = left
         self._front_right_steering = right
-        self._center_steering = 0.5 * (left + right)
+        self._center_steering = wheel_angles_to_center_steering(
+            left, right,
+            self.profile.robot.wheelbase_m,
+            self.profile.robot.track_width_m,
+        )
 
     def _on_clock(self, msg: Clock) -> None:
         self._latest_sim_time_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
@@ -664,6 +686,36 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
     def _collision_threshold_m(self) -> float:
         return self._active_robot_config.collision_radius_m + self.profile.observation.collision_margin_m
 
+    def _v2_footprint_collision(self) -> bool:
+        """Shape-aware v2 termination check using the oriented Hunter body."""
+        robot = self._active_robot_config
+        # The attested collision circle is larger than the nominal 0.82 m
+        # body length because the wheel/axle envelope extends longitudinally.
+        # Expand the centered rectangle just enough to retain that attested
+        # corner radius while preserving the measured width.
+        half_width = 0.5 * robot.width_m
+        half_length = max(
+            0.5 * robot.length_m,
+            math.sqrt(max(robot.collision_radius_m ** 2 - half_width ** 2, 0.0)),
+        )
+        length_m = 2.0 * half_length
+        padding = self.profile.environment_v2.footprint_padding_m
+        robot_xy = (self._robot_pose[0], self._robot_pose[1])
+        if oriented_rectangle_boundary_clearance(
+            robot_xy, self._robot_pose[2], length_m, robot.width_m,
+            self.profile.scenario.world_size_m / 2.0, padding,
+        ) <= 0.0:
+            return True
+        obstacles = list(self._scenario.static_obstacles) + [
+            entry["spec"] for entry in self._dynamic_obstacles
+        ]
+        return any(
+            footprint_overlaps_obstacle(
+                robot_xy, self._robot_pose[2], length_m, robot.width_m, obstacle, padding,
+            )
+            for obstacle in obstacles
+        )
+
     def _on_watchdog_tick(self) -> None:
         """Fires every ``watchdog_period_sec`` regardless of whether a
         /step call is in flight -- if no NEW command has been published
@@ -758,7 +810,12 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             # unless it explicitly names a `motion_pattern` to resolve
             # against ITS OWN start/goal geometry (still deterministic, no
             # seed-based randomness).
-            if is_fixed:
+            if self.profile.environment_v2.enabled and spec.motion_pattern:
+                # v2 specs are already path-conditioned by the generator;
+                # resolving them a second time would destroy their TTC/DCPA.
+                pattern = MotionPattern(spec.motion_pattern)
+                resolved_spec = spec
+            elif is_fixed:
                 if spec.motion_pattern:
                     pattern = MotionPattern(spec.motion_pattern)
                     speed = math.hypot(spec.vx, spec.vy) or 0.4
@@ -772,13 +829,22 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 resolved_spec = apply_pattern(spec, pattern, start_xy, goal_xy, speed, scenario.seed, i)
             speed = math.hypot(resolved_spec.vx, resolved_spec.vy) or 0.4
             waypoint_state = None
-            if pattern == MotionPattern.RANDOM_WAYPOINT:
+            kinematic_state = None
+            if self.profile.environment_v2.enabled:
+                kinematic_state = KinematicMotionState.from_spec(
+                    resolved_spec,
+                    half_extent_m=self.profile.scenario.world_size_m / 2.0,
+                    seed=(scenario.seed * 131 + i) & 0xFFFFFFFF,
+                )
+            elif pattern == MotionPattern.RANDOM_WAYPOINT:
                 waypoint_state = RandomWaypointState(
                     x=resolved_spec.x0, y=resolved_spec.y0, speed_mps=speed,
                     half_extent_m=self.profile.scenario.world_size_m / 2.0,
                     seed=(scenario.seed * 131 + i) & 0xFFFFFFFF,
                 )
-            resolved_specs.append((resolved_spec, pattern, waypoint_state))
+                initial_vx, initial_vy = waypoint_state.current_velocity()
+                resolved_spec = dataclasses.replace(resolved_spec, vx=initial_vx, vy=initial_vy)
+            resolved_specs.append((resolved_spec, pattern, waypoint_state, kinematic_state))
 
         if use_pool and not is_fixed:
             self._spawned_dynamic_names = obstacle_pool.activate_dynamic(
@@ -787,13 +853,15 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             self._spawned_dynamic_names = obstacle_pool.activate_dynamic(self, self._obstacle_pool, [])
         else:
             self._spawned_dynamic_names = []
-            for i, (resolved_spec, _pattern, _waypoint_state) in enumerate(resolved_specs):
+            for i, (resolved_spec, _pattern, _waypoint_state, _kinematic_state) in enumerate(resolved_specs):
                 name = f"{obstacle_spawner.DYNAMIC_ENTITY_PREFIX}{i}"
                 obstacle_spawner.spawn_dynamic_obstacle_marker(
                     self, self.spawn_entity_client, i, resolved_spec.radius, resolved_spec.x0, resolved_spec.y0,
+                    shape=resolved_spec.shape, length_m=resolved_spec.length_m,
+                    width_m=resolved_spec.width_m, yaw_rad=resolved_spec.yaw_rad,
                 )
                 self._spawned_dynamic_names.append(name)
-        for resolved_spec, pattern, waypoint_state in resolved_specs:
+        for resolved_spec, pattern, waypoint_state, kinematic_state in resolved_specs:
             # "spec0" is the IMMUTABLE spawn-time reference (never
             # reassigned) constant-velocity patterns anchor their
             # elapsed-time-based position to (section P0-8); "spec" is the
@@ -801,7 +869,8 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             # by risk_computation.py's privileged snapshot and by
             # RANDOM_WAYPOINT's own stateful ticking).
             self._dynamic_obstacles.append({
-                "spec": resolved_spec, "spec0": resolved_spec, "pattern": pattern, "waypoint": waypoint_state,
+                "spec": resolved_spec, "spec0": resolved_spec, "pattern": pattern,
+                "waypoint": waypoint_state, "kinematic": kinematic_state,
             })
 
     def _tick_dynamic_obstacles(self, dt_sec: float) -> None:
@@ -831,22 +900,50 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         waypoint_dt_sec = dt_sec
         if elapsed_so_far is not None and self._prev_dynamic_tick_elapsed_sec is not None:
             waypoint_dt_sec = elapsed_so_far - self._prev_dynamic_tick_elapsed_sec
+            if not math.isfinite(waypoint_dt_sec) or waypoint_dt_sec <= 0.0:
+                waypoint_dt_sec = dt_sec
         if elapsed_so_far is not None:
             self._prev_dynamic_tick_elapsed_sec = elapsed_so_far
 
         for i, entry in enumerate(self._dynamic_obstacles):
             spec = entry["spec"]
-            if entry["pattern"] == MotionPattern.RANDOM_WAYPOINT and entry["waypoint"] is not None:
+            yaw = spec.yaw_rad
+            if entry.get("kinematic") is not None:
+                x, y, vx_realized, vy_realized, yaw = entry["kinematic"].tick(
+                    dt_sec, ego_xy=(self._robot_pose[0], self._robot_pose[1]),
+                )
+                label_dt = dt_sec
+            elif entry["pattern"] == MotionPattern.RANDOM_WAYPOINT and entry["waypoint"] is not None:
                 x, y = entry["waypoint"].tick(waypoint_dt_sec)
             elif elapsed_so_far is not None:
                 x, y = position_at_elapsed_time(entry["spec0"], elapsed_so_far + dt_sec)
             else:
                 x, y = spec.x0 + spec.vx * dt_sec, spec.y0 + spec.vy * dt_sec
-            entry["spec"] = DynamicObstacleSpec(x0=x, y0=y, vx=spec.vx, vy=spec.vy, radius=spec.radius)
+            if entry.get("kinematic") is None:
+                label_dt = waypoint_dt_sec if entry["pattern"] == MotionPattern.RANDOM_WAYPOINT else dt_sec
+                vx_realized, vy_realized = realized_velocity((spec.x0, spec.y0), (x, y), label_dt)
+                if math.hypot(vx_realized, vy_realized) > 1e-9:
+                    yaw = math.atan2(vy_realized, vx_realized)
+            ax_realized = (vx_realized - spec.vx) / label_dt
+            ay_realized = (vy_realized - spec.vy) / label_dt
+            motion_time_sec = (
+                entry["kinematic"].elapsed_sec if entry.get("kinematic") is not None
+                else spec.motion_time_sec + label_dt
+            )
+            entry["spec"] = dataclasses.replace(
+                spec, x0=x, y0=y, vx=vx_realized, vy=vy_realized,
+                yaw_rad=yaw, accel_x_mps2=ax_realized, accel_y_mps2=ay_realized,
+                motion_time_sec=motion_time_sec,
+            )
+            entry["realized_velocity_dt_sec"] = label_dt
             name = self._spawned_dynamic_names[i]
             try:
-                self.set_entity_pose_ignition(name, x, y, 0.0, 0.0, 0.0, 0.0, 1.0)
+                self.set_entity_pose_ignition(
+                    name, x, y, 0.0, 0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0),
+                )
             except GazeboServiceError as e:
+                if self.profile.environment_v2.enabled:
+                    raise RuntimeError(f"tractor_env_v2 failed to move {name}: {e}") from e
                 self.get_logger().warn(f"[obstacle] failed to move {name}: {e}")
 
     # --------------------------------------------------------- risk telemetry
@@ -886,7 +983,14 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         episode_id = self._episode_seed or 0
         sim_timestamp_sec = self._latest_sim_time_sec if self._latest_sim_time_sec is not None else float("nan")
         try:
-            if self._is_fixed_benchmark:
+            # The Stage-2 Local benchmark uses procedural scenarios from the
+            # explicit TEST pool rather than fixed YAML scenarios. It still
+            # needs the same realized-command risk yardstick for L0-L5;
+            # otherwise rows without learned trajectory risk would report
+            # invalid/zero high-risk outcomes and the comparison is unfair.
+            if uses_common_evaluation_metrics(
+                self._is_fixed_benchmark, str(self.get_parameter("explicit_seed_mode").value),
+            ):
                 # section item-1 (fixed-benchmark fairness): common,
                 # architecture-independent metrics -- see
                 # risk_computation.compute_common_evaluation_metrics's
@@ -982,6 +1086,19 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             self.get_logger().error(f"/seed rejected: invalid explicit_seed_mode: {e}")
             response.success = False
             return response
+        if self.profile.environment_v2.enabled and explicit_mode == "train":
+            curriculum_index = int(self.get_parameter("curriculum_episode_index").value)
+            if curriculum_index < 0:
+                self.get_logger().error(
+                    "/seed rejected: tractor_env_v2 training requires curriculum_episode_index >= 0 "
+                    "to be set before every explicit seed"
+                )
+                response.success = False
+                return response
+            self._pending_curriculum_episode_index = curriculum_index
+            self.set_parameters([Parameter(
+                "curriculum_episode_index", Parameter.Type.INTEGER, -1,
+            )])
         self._pending_explicit_seed = seed
         response.success = True
         return response
@@ -1145,6 +1262,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 reward=self._launch_profile.reward, scenario=self._launch_profile.scenario,
                 runtime=self._launch_profile.runtime, evaluation=self._launch_profile.evaluation,
                 sensor_noise=self._launch_profile.sensor_noise,
+                environment_v2=self._launch_profile.environment_v2,
             )
         candidate_profile.validate()
         for field_name in RUNTIME_FIELDS_FIXED_AT_LAUNCH:
@@ -1180,9 +1298,19 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             benchmark_scenario = load_scenario_file(override_path)
             return (benchmark_scenario.spec, benchmark_scenario.spec.seed, True,
                     benchmark_scenario.dynamics_overrides, benchmark_scenario.sensor_overrides)
+        episode_index = self._seed_scheduler.episode_index
+        episode_mode = self.mode
         if self._pending_explicit_seed is not None:
             seed = self._pending_explicit_seed
             self._pending_explicit_seed = None
+            episode_mode = str(self.get_parameter("explicit_seed_mode").value)
+            if episode_mode == "train" and self.profile.environment_v2.enabled:
+                if self._pending_curriculum_episode_index is None:
+                    raise RuntimeError(
+                        "tractor_env_v2 explicit training seed has no pending curriculum episode index"
+                    )
+                episode_index = self._pending_curriculum_episode_index
+                self._pending_curriculum_episode_index = None
         else:
             seed = self._seed_scheduler.next_seed()
         robot_cfg = self._active_robot_config
@@ -1197,14 +1325,21 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         if self._obstacle_pool is not None:
             size_classes = self.profile.obstacle_pool.static_size_classes_m
             static_radius_quantizer = lambda r: obstacle_pool.snap_up_to_class(r, size_classes)  # noqa: E731
-        scenario = generate_scenario(
-            seed, self.profile.scenario, robot_radius=robot_cfg.collision_radius_m,
-            min_turning_radius_m=(1.0 / max_curvature) if max_curvature > 0.0 else None,
-            wheelbase_m=robot_cfg.wheelbase_m,
-            goal_radius_m=self.profile.reward.goal_threshold_m,
-            start_pose_cfg=self.profile.start_pose,
-            static_radius_quantizer=static_radius_quantizer,
-        )
+        if self.profile.environment_v2.enabled:
+            scenario = generate_v2_scenario(
+                seed, self.profile.scenario, self.profile.environment_v2, robot_cfg,
+                self.profile.start_pose, self.profile.reward.goal_threshold_m,
+                episode_index=episode_index, mode=episode_mode,
+            )
+        else:
+            scenario = generate_scenario(
+                seed, self.profile.scenario, robot_radius=robot_cfg.collision_radius_m,
+                min_turning_radius_m=(1.0 / max_curvature) if max_curvature > 0.0 else None,
+                wheelbase_m=robot_cfg.wheelbase_m,
+                goal_radius_m=self.profile.reward.goal_threshold_m,
+                start_pose_cfg=self.profile.start_pose,
+                static_radius_quantizer=static_radius_quantizer,
+            )
         return scenario, seed, False, {}, {}
 
     def _on_reset(self, request, response):
@@ -1232,7 +1367,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         self._episode_step = 0
         self._step_id = 0
         self._is_fixed_benchmark = is_fixed
-        self._prev_action = [0.0, 0.0, 0.0]
+        self._prev_action = [0.0] * self._action_dim
         # Zero out motion/command state so a timed-out post-reset sensor wait
         # (wait_for_fresh_sensors below) falls back to a sane "stationary"
         # snapshot instead of silently carrying over the PREVIOUS episode's
@@ -1278,6 +1413,17 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             except ValueError as e:
                 raise RuntimeError(f"reset failed: unsupported benchmark override: {e}") from e
             self._command_delay_steps = command_latency_steps(dynamics_overrides, self.time_delta)
+            # Preserve which fixed system overrides must activate the same
+            # real command-path branches used by procedural randomization.
+            # In particular, a scaled accel/brake config alone is inert
+            # unless the speed rate limiter is selected below.
+            self._active_domain_rand_draw = RandomizationDraw(
+                mass_scale=float(dynamics_overrides.get("mass_scale", 1.0)),
+                friction_scale=float(dynamics_overrides.get("friction_scale", 1.0)),
+                wheel_radius_scale=float(dynamics_overrides.get("wheel_radius_scale", 1.0)),
+                steering_gain=float(dynamics_overrides.get("steering_gain", 1.0)),
+                command_latency_sec=float(dynamics_overrides.get("command_latency_sec", 0.0)),
+            )
         elif self.profile.domain_randomization.enabled:
             draw = sample_draw(seed, self.profile.domain_randomization)
             self._active_robot_config = apply_to_robot_config(self.profile.robot, draw)
@@ -1301,7 +1447,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # axes actually reach the live Gazebo plant vs stay model/
         # observation-only (code review: no silent no-op randomization flag
         # -- a run's logs must make this boundary visible, not just
-        # docs/ARCHITECTURE.md). steering_gain is reclassified here (not by
+        # docs/TRACTOR_TQC_MODEL_SPEC.md). steering_gain is reclassified here (not by
         # classify_draw_fields itself, which has no FeatureFlags access) --
         # see domain_randomizer.py's GAZEBO_APPLIED_FIELDS docstring.
         draw_classification = None
@@ -1452,7 +1598,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # ``drl_agent_interfaces/srv/Reset.srv`` is intentionally left
         # UNMODIFIED (see that file and trainer_base.EnvironmentClient.reset()
         # /_await_new_reset_marker for the full rationale, and
-        # docs/SOURCE_MAP.md for the narrowed guarantee this implies: exactly
+        # docs/IMPLEMENTATION_PLAN.md for the narrowed guarantee this implies: exactly
         # one client may call ``/reset`` on a given environment_node instance
         # at a time). This is hunter_kinodynamic_rl's OWN topic
         # (``/hunter_kinodynamic_rl/risk_telemetry``), not a shared
@@ -1614,20 +1760,15 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
 
         prev_scan_updates = self.scan_update_count
         prev_odom_updates = self.odom_update_count
-        # Move dynamic obstacles to their end-of-tick target position BEFORE
-        # the physics advance (not after) -- teleporting AFTER propagate_state
-        # would mean the obstacle sat STATIC at its OLD position for the
-        # entire physics/sensor-render window this tick, so the LiDAR scan
-        # waited for below would reflect a one-tick-stale obstacle position
-        # relative to what the risk/observation pipeline believes it's at.
-        # This is a zero-order-hold approximation (the obstacle jumps once
-        # per tick rather than moving continuously WITHIN the tick), not a
-        # substep interpolation -- see docs/ARCHITECTURE.md's "Dynamic
-        # obstacle synchronization" section for the full trade-off and why
-        # full substep teleporting was not attempted in this session.
-        self._tick_dynamic_obstacles(self.time_delta)
+        # Move dynamic obstacles before each physics advance. v1 uses one
+        # zero-order-hold update exactly as before; v2 interleaves configured
+        # substeps so acceleration/turning obstacles do not teleport across
+        # the whole control interval in a single jump.
         try:
-            self.propagate_state(self.time_delta)
+            substeps = self.profile.environment_v2.motion_substeps if self.profile.environment_v2.enabled else 1
+            for substep_dt in motion_substep_durations(self.time_delta, substeps):
+                self._tick_dynamic_obstacles(substep_dt)
+                self.propagate_state(substep_dt)
         except GazeboServiceError as e:
             raise RuntimeError(f"step failed: Gazebo physics advance error: {e}") from e
         sensors_fresh = self.wait_for_fresh_sensors(
@@ -1665,7 +1806,10 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         post_boundary_dist = distance_to_boundary_m(
             self._robot_pose[0], self._robot_pose[1], self.profile.scenario.world_size_m / 2.0)
         min_obstacle_dist = min(min_obstacle_dist, post_boundary_dist)
-        collided = min_obstacle_dist < self._collision_threshold_m()
+        if self.profile.environment_v2.enabled and self.profile.environment_v2.use_oriented_robot_footprint:
+            collided = self._v2_footprint_collision()
+        else:
+            collided = min_obstacle_dist < self._collision_threshold_m()
 
         goal_distance, _heading_err = goal_distance_and_heading(
             self._robot_pose[0], self._robot_pose[1], self._robot_pose[2],
@@ -1740,7 +1884,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         response.environment_dim = self.profile.observation.lidar_bins * self._frame_stack.history_len
         response.agent_dim = self.profile.observation.robot_state_dim
         response.state_dim = response.environment_dim + response.agent_dim
-        response.action_dim = ACTION_DIM
+        response.action_dim = self._action_dim
         response.max_action = 1.0
         return response
 

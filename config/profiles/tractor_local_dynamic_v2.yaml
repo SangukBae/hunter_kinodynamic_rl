@@ -1,0 +1,105 @@
+# Opt-in simulation curriculum for the proposed TRACTOR-TQC local policy.
+# The frozen tractor_protocol_v1 profiles/files are intentionally unchanged.
+robot_file: hunter_se_improved.yaml
+
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+  curriculum: false  # v2 curriculum is implemented by environment_v2, not this legacy flag
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+  actor_lambda: 0.1
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  include_stop_candidate: true
+
+scenario:
+  feasibility_check: ackermann
+  world_size_m: 16.0
+  min_obstacles: 2
+  max_obstacles: 10
+  dynamic_obstacle_count: 0
+  goal_sampling_mode: robot_relative_band
+  goal_distance_range_m: [2.0, 6.0]
+  goal_direction_sectors_deg: [[-180.0, 180.0]]
+  goal_infeasible_fraction: 0.15
+
+environment_v2:
+  enabled: true
+  contract_version: tractor_env_v2
+  curriculum_episode_boundaries: [0, 250, 1000, 3000, 6000]
+  curriculum_dynamic_counts: [0, 1, 2, 4, 8]
+  curriculum_static_limits: [2, 4, 6, 8, 10]
+  curriculum_speed_ratio_caps: [0.0, 0.5, 0.75, 1.0, 1.0]
+  evaluation_level: 4
+  topology_families: [open, corridor, doorway, intersection, s_curve, warehouse, clutter]
+  obstacle_shapes: [cylinder, box, cart, l_shape]
+  motion_patterns: [crossing, head_on, cut_in, parallel, random_waypoint, stop_go,
+                    accelerate_decelerate, sine_swerve, bounce, u_turn]
+  interaction_modes: [nonreactive, yielding, reciprocal]
+  conflict_fraction: 0.65
+  conflict_ttc_range_sec: [1.0, 4.0]
+  conflict_dcpa_range_m: [0.0, 0.25]
+  dynamic_speed_ratio_range: [0.2, 1.0]
+  dynamic_accel_limit_range_mps2: [0.25, 1.0]
+  dynamic_turn_rate_range_rad_s: [0.25, 1.2]
+  motion_substeps: 5
+  use_oriented_robot_footprint: true
+  footprint_padding_m: 0.05
+
+obstacle_pool:
+  enabled: false
+
+domain_randomization:
+  enabled: true
+  mass_scale_range: [0.9, 1.1]
+  friction_scale_range: [0.7, 1.1]
+  wheel_radius_scale_range: [0.97, 1.03]
+  steering_gain_range: [0.85, 1.15]
+  steering_delay_sec_range: [0.0, 0.08]
+  velocity_response_scale_range: [0.8, 1.1]
+  command_latency_sec_range: [0.0, 0.05]
+  lidar_range_noise_std_m_range: [0.0, 0.02]
+  lidar_dropout_prob_range: [0.0, 0.02]
+  odometry_noise_std_range: [0.0, 0.01]
+  sensor_frame_drop_prob_range: [0.0, 0.01]
+
+sensor_noise:
+  enabled: true
+  lidar_range_noise_std_m: 0.005
+  lidar_bias_m: 0.0
+  lidar_dropout_prob: 0.005
+  localization_xy_noise_std_m: 0.01
+  localization_yaw_noise_std_rad: 0.005
+  localization_drift_theta: 0.2
+  localization_drift_xy_sigma_m: 0.005
+  localization_drift_yaw_sigma_rad: 0.002
+  localization_latency_steps: 1
+  velocity_noise_std_mps: 0.01
+  yaw_rate_noise_std_radps: 0.005
+  steering_noise_std_rad: 0.003
+
+runtime:
+  deterministic_stepping: true
+  gazebo_max_step_size_sec: 0.001
+  physics_step_calibration_tolerance_sec: 0.0002
+
+training:
+  max_timesteps: 150000
+  timesteps_before_training: 3000
+  eval_freq: 10000
+  eval_episodes: 10
+  episode_length_steps: 600
+  seed: 0

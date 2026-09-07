@@ -52,6 +52,12 @@ class StaticObstacle:
     x: float
     y: float
     radius: float
+    # v2-only physical geometry.  ``radius`` always remains the conservative
+    # circumscribed radius consumed by legacy feasibility/risk code.
+    shape: str = "cylinder"
+    length_m: float = 0.0
+    width_m: float = 0.0
+    yaw_rad: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,20 @@ class DynamicObstacleSpec:
     # "let the seed-based assign_pattern() choose" for a procedural one --
     # see environment_node.py::_spawn_scenario_obstacles.
     motion_pattern: Optional[str] = None
+    # Optional v2 geometry/kinematics metadata. Existing v1 constructors and
+    # benchmark YAMLs omit every field and therefore retain their old values.
+    shape: str = "cylinder"
+    length_m: float = 0.0
+    width_m: float = 0.0
+    yaw_rad: float = 0.0
+    accel_limit_mps2: float = 0.0
+    turn_rate_rad_s: float = 0.0
+    interaction_mode: str = "nonreactive"
+    target_ttc_sec: Optional[float] = None
+    target_dcpa_m: Optional[float] = None
+    accel_x_mps2: float = 0.0
+    accel_y_mps2: float = 0.0
+    motion_time_sec: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -114,6 +134,12 @@ class ScenarioSpec:
     # point, verified grid-BFS-unreachable from start) or None (feasible,
     # or infeasible-fraction not selected this attempt).
     infeasibility_kind: Optional[str] = None
+    # Versioned environment metadata is diagnostic/stratification data only;
+    # it is never included in the policy observation.
+    environment_version: str = "legacy_v1"
+    curriculum_level: int = 0
+    topology: str = "legacy_random"
+    conflict_obstacle_count: int = 0
 
 
 class SeedSplitError(ValueError):

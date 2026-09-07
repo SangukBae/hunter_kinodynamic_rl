@@ -39,16 +39,20 @@ def build_privileged_obstacles(
     """Static obstacles: ``vx=vy=0``, the scenario's own conservative
     ``radius`` (the same radius used for collision-free placement -- see
     ``procedural_generator.generate_scenario``'s clearance checks, and
-    ``docs/ARCHITECTURE.md``'s note on the gap between this radius and the
+    ``docs/TRACTOR_TQC_MODEL_SPEC.md``'s note on the gap between this radius and the
     actual spawned Gazebo asset geometry). Dynamic obstacles: world-frame
     ``(x0, y0, vx, vy)`` rotated (not translated -- velocity is a vector)
     into the robot's CURRENT heading frame."""
     out: List[DynamicObstacle] = []
     for obstacle in static_obstacles:
         lx, ly = to_robot_frame(obstacle.x - robot_x, obstacle.y - robot_y, robot_yaw)
-        out.append(DynamicObstacle(x0=lx, y0=ly, vx=0.0, vy=0.0, radius=obstacle.radius))
+        out.append(DynamicObstacle(
+            x0=lx, y0=ly, vx=0.0, vy=0.0, radius=obstacle.radius, cause=0,
+        ))
     for spec in dynamic_specs:
         lx, ly = to_robot_frame(spec.x0 - robot_x, spec.y0 - robot_y, robot_yaw)
         lvx, lvy = to_robot_frame(spec.vx, spec.vy, robot_yaw)
-        out.append(DynamicObstacle(x0=lx, y0=ly, vx=lvx, vy=lvy, radius=spec.radius))
+        out.append(DynamicObstacle(
+            x0=lx, y0=ly, vx=lvx, vy=lvy, radius=spec.radius, cause=1,
+        ))
     return out

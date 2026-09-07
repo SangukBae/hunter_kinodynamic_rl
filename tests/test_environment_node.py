@@ -29,7 +29,7 @@ def _stub_gazebo(node: KinodynamicEnvironmentNode, reset_world_delay_sec: float 
     service response with a fast, deterministic stand-in -- this test suite
     is about the NODE's own reset/step orchestration logic, not Gazebo
     integration (which is covered by live Docker/Gazebo runs instead, see
-    docs/ARCHITECTURE.md)."""
+    docs/TRACTOR_TQC_MODEL_SPEC.md)."""
     node.pause_world = lambda paused: None
     node.reset_world = lambda: time.sleep(reset_world_delay_sec)
     node.set_entity_pose_ignition = lambda *a, **kw: None
@@ -1132,7 +1132,7 @@ def test_privileged_obstacle_ground_truth_never_leaks_into_the_policy_observatio
     scenario's privileged obstacle ground truth (static_obstacles /
     dynamic obstacle specs) -- only risk_telemetry (a SEPARATE, privileged-
     only channel never fed back into the policy's own observation, see
-    ARCHITECTURE.md's "Training vs. inference" section) may use it. Proven
+    TRACTOR_TQC_MODEL_SPEC.md's "Training vs. inference" section) may use it. Proven
     BEHAVIORALLY, not just by code inspection: two scenarios with
     IDENTICAL robot pose/goal/prev-action/LiDAR reading but WILDLY
     different obstacle configurations (none vs. several placed directly on

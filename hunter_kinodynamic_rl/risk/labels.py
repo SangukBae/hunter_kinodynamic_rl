@@ -26,6 +26,7 @@ class DynamicObstacle:
     vx: float = 0.0
     vy: float = 0.0
     radius: float = 0.3
+    cause: int = 1
 
     def position_at(self, t_sec: float):
         return (self.x0 + self.vx * t_sec, self.y0 + self.vy * t_sec)
@@ -41,3 +42,4 @@ class RiskLabel:
     stopping_margin_m: float
     steering_saturation: bool
     risk_score: float  # normalized [0, 1], 1 = worst
+    event_cause: int = -1  # 0 static, 1 dynamic, 2 boundary/unknown, -1 no event

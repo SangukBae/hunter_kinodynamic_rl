@@ -32,6 +32,16 @@ from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand
 from hunter_kinodynamic_rl.trajectory.pure_pursuit_adapter import VehicleCommand
 
 
+def uses_common_evaluation_metrics(is_fixed_benchmark: bool, explicit_seed_mode: str) -> bool:
+    """Return whether the episode needs an architecture-independent yardstick.
+
+    Stage-2 Local scenarios are procedural, not fixed-file scenarios, but
+    explicit test-pool mode is equally formal. It must score every action
+    representation from the realized vehicle command.
+    """
+    return bool(is_fixed_benchmark or explicit_seed_mode == "test")
+
+
 def _goal_local_xy(robot_pose, goal_world_xy):
     if goal_world_xy is None:
         return None
@@ -102,7 +112,12 @@ def compute_risk_telemetry(
             candidates=[
                 rt.CandidateTelemetry(kappa=c.command.kappa, v_ref=c.command.v_ref,
                                       horizon_m=c.command.horizon_m, risk_score=c.risk.risk_score,
-                                      goal_progress_m=c.goal_progress_m)
+                                      goal_progress_m=c.goal_progress_m,
+                                      min_clearance_m=c.risk.min_clearance_m,
+                                      ttc_sec=c.risk.time_to_collision_sec,
+                                      collision_within_horizon=c.risk.collision_within_horizon,
+                                      stopping_margin_m=c.risk.stopping_margin_m,
+                                      event_cause=c.risk.event_cause)
                 for c in scored
             ],
         )
@@ -222,7 +237,12 @@ def compute_common_evaluation_metrics(
         candidates=[
             rt.CandidateTelemetry(kappa=c.command.kappa, v_ref=c.command.v_ref,
                                   horizon_m=c.command.horizon_m, risk_score=c.risk.risk_score,
-                                  goal_progress_m=c.goal_progress_m)
+                                  goal_progress_m=c.goal_progress_m,
+                                  min_clearance_m=c.risk.min_clearance_m,
+                                  ttc_sec=c.risk.time_to_collision_sec,
+                                  collision_within_horizon=c.risk.collision_within_horizon,
+                                  stopping_margin_m=c.risk.stopping_margin_m,
+                                  event_cause=c.risk.event_cause)
             for c in scored
         ],
     )

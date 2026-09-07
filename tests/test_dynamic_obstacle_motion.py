@@ -4,6 +4,7 @@ import pytest
 
 from hunter_kinodynamic_rl.env.humans.dynamic_obstacle_motion import (
     MotionPattern, RandomWaypointState, apply_pattern, assign_pattern, position_at_elapsed_time,
+    realized_velocity,
 )
 from hunter_kinodynamic_rl.env.scenarios.procedural_generator import DynamicObstacleSpec
 
@@ -72,6 +73,16 @@ def test_position_at_elapsed_time_at_zero_elapsed_returns_spawn_point():
     spec0 = DynamicObstacleSpec(x0=3.0, y0=-1.0, vx=1.0, vy=1.0, radius=0.3)
     x, y = position_at_elapsed_time(spec0, elapsed_sec=0.0)
     assert (x, y) == (3.0, -1.0)
+
+
+def test_realized_velocity_uses_displacement_and_actual_dt():
+    assert realized_velocity((1.0, -1.0), (1.3, -0.8), 0.2) == pytest.approx((1.5, 1.0))
+
+
+def test_random_waypoint_current_velocity_matches_active_target():
+    state = RandomWaypointState(x=0.0, y=0.0, speed_mps=0.4, half_extent_m=5.0, seed=9)
+    vx, vy = state.current_velocity()
+    assert math.hypot(vx, vy) == pytest.approx(0.4)
 
 
 def test_position_at_elapsed_time_avoids_iterative_floating_point_drift():

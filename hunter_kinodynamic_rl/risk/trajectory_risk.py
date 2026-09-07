@@ -77,6 +77,15 @@ def assess_trajectory(
         rollout, ego_radius, obstacles, risk_cfg.ttc_horizon_sec, t0_state=initial_state,
     )
 
+    cause_ttc = []
+    for cause in (0, 1):
+        selected = [obstacle for obstacle in obstacles if obstacle.cause == cause]
+        if selected:
+            cause_ttc.append((ttc_mod.time_to_collision_continuous(
+                rollout, ego_radius, selected, risk_cfg.ttc_horizon_sec,
+                t0_state=initial_state,
+            ), cause))
+
     if robot_world_pose is not None and world_half_extent_m is not None:
         boundary_clearance = boundary_mod.min_boundary_clearance_continuous(
             rollout, ego_radius, robot_world_pose, world_half_extent_m,
@@ -90,6 +99,14 @@ def assess_trajectory(
         clearance = min(clearance, boundary_clearance)
         collision_time = min(collision_time, boundary_ttc)
         collided = collided or boundary_collided
+        if boundary_collided:
+            cause_ttc.append((boundary_ttc, 2))
+
+    event_cause = -1
+    if collided and cause_ttc:
+        earliest = min(item[0] for item in cause_ttc)
+        # Frozen exact-tie priority: boundary > dynamic > static.
+        event_cause = max(cause for time_sec, cause in cause_ttc if abs(time_sec - earliest) <= 1e-9)
 
     final_v = rollout.final_state.v if rollout.points else 0.0
     nearest_ahead = clearance if clearance != float("inf") else float("inf")
@@ -115,6 +132,7 @@ def assess_trajectory(
         stopping_margin_m=margin,
         steering_saturation=saturated,
         risk_score=risk_score,
+        event_cause=event_cause,
     )
 
 

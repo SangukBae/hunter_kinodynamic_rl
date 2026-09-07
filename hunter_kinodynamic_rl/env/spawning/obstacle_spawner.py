@@ -46,6 +46,45 @@ def _cylinder_sdf(model_name: str, radius: float, height: float = 1.0) -> str:
     )
 
 
+def _box_sdf(model_name: str, length_m: float, width_m: float, height: float = 0.8) -> str:
+    size = f"{length_m:.3f} {width_m:.3f} {height:.3f}"
+    return (
+        '<sdf version="1.8">'
+        f'<model name="{model_name}"><static>true</static><link name="link">'
+        f'<collision name="collision"><geometry><box><size>{size}</size></box></geometry></collision>'
+        f'<visual name="visual"><geometry><box><size>{size}</size></box></geometry>'
+        '<material><ambient>0.25 0.45 0.75 1</ambient><diffuse>0.25 0.45 0.75 1</diffuse></material>'
+        '</visual></link></model></sdf>'
+    )
+
+
+def _l_shape_sdf(model_name: str, length_m: float, width_m: float, height: float = 0.8) -> str:
+    arm = max(0.12, min(length_m, width_m) * 0.32)
+    x_offset = -0.5 * length_m + 0.5 * arm
+    y_offset = -0.5 * width_m + 0.5 * arm
+    return (
+        '<sdf version="1.8">'
+        f'<model name="{model_name}"><static>true</static><link name="link">'
+        f'<collision name="collision_x"><pose>0 {y_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<size>{length_m:.3f} {arm:.3f} {height:.3f}</size></box></geometry></collision>'
+        f'<visual name="visual_x"><pose>0 {y_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<size>{length_m:.3f} {arm:.3f} {height:.3f}</size></box></geometry></visual>'
+        f'<collision name="collision_y"><pose>{x_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<size>{arm:.3f} {width_m:.3f} {height:.3f}</size></box></geometry></collision>'
+        f'<visual name="visual_y"><pose>{x_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<size>{arm:.3f} {width_m:.3f} {height:.3f}</size></box></geometry></visual>'
+        '</link></model></sdf>'
+    )
+
+
+def _primitive_sdf(model_name: str, shape: str, radius: float, length_m: float, width_m: float) -> str:
+    if shape == "l_shape" and length_m > 0.0 and width_m > 0.0:
+        return _l_shape_sdf(model_name, length_m, width_m)
+    if shape in ("box", "cart") and length_m > 0.0 and width_m > 0.0:
+        return _box_sdf(model_name, length_m, width_m, height=0.65 if shape == "cart" else 0.8)
+    return _cylinder_sdf(model_name, radius)
+
+
 def _catalog_include_sdf(model_name: str, uri: str) -> str:
     return (
         '<sdf version="1.8">'
@@ -99,22 +138,32 @@ def spawn_static_obstacles(
     spawned = 0
     for i, obstacle in enumerate(obstacles):
         model_name = f"{STATIC_ENTITY_PREFIX}{i}"
-        entry = closest_entry(catalog, obstacle.radius)
-        yaw = float(rng.uniform(-3.14159, 3.14159)) if (entry is not None and entry.yaw_random) else 0.0
-        sdf = _catalog_include_sdf(model_name, entry.uri) if entry is not None else _cylinder_sdf(model_name, obstacle.radius)
+        entry = closest_entry(catalog, obstacle.radius) if obstacle.shape == "cylinder" else None
+        yaw = obstacle.yaw_rad
+        if entry is not None and entry.yaw_random:
+            yaw = float(rng.uniform(-3.14159, 3.14159))
+        sdf = (
+            _catalog_include_sdf(model_name, entry.uri) if entry is not None
+            else _primitive_sdf(
+                model_name, obstacle.shape, obstacle.radius, obstacle.length_m, obstacle.width_m,
+            )
+        )
         _spawn_one(node, spawn_client, model_name, sdf, obstacle.x, obstacle.y, 0.0, yaw)
         spawned += 1
     return spawned
 
 
-def spawn_dynamic_obstacle_marker(node, spawn_client, index: int, radius: float, x: float, y: float) -> bool:
+def spawn_dynamic_obstacle_marker(
+    node, spawn_client, index: int, radius: float, x: float, y: float,
+    shape: str = "cylinder", length_m: float = 0.0, width_m: float = 0.0, yaw_rad: float = 0.0,
+) -> bool:
     """Dynamic obstacles use a plain cylinder marker (moved every tick via
     set_entity_pose_ignition, not re-spawned) -- catalog meshes are static-
     only in this package (section 26: box/cylinder preferred for dynamic
     obstacles regardless)."""
     model_name = f"{DYNAMIC_ENTITY_PREFIX}{index}"
-    sdf = _cylinder_sdf(model_name, radius)
-    return _spawn_one(node, spawn_client, model_name, sdf, x, y, 0.0, 0.0)
+    sdf = _primitive_sdf(model_name, shape, radius, length_m, width_m)
+    return _spawn_one(node, spawn_client, model_name, sdf, x, y, 0.0, yaw_rad)
 
 
 def delete_entities(node, delete_client, names: List[str]) -> None:

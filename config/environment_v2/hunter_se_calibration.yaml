@@ -1,0 +1,28 @@
+schema_id: hunter_sim_calibration_v1
+robot_model: hunter_se_improved
+status: engineering_prior
+measured_at: null
+source_artifacts: []
+note: >-
+  Initial bounded engineering priors. Replace with Hunter SE system-identification
+  artifacts and set status to measured before a formal sim-to-real campaign.
+
+domain_randomization_ranges:
+  mass_scale_range: [0.9, 1.1]
+  friction_scale_range: [0.7, 1.1]
+  wheel_radius_scale_range: [0.97, 1.03]
+  steering_gain_range: [0.85, 1.15]
+  steering_delay_sec_range: [0.0, 0.08]
+  velocity_response_scale_range: [0.8, 1.1]
+  command_latency_sec_range: [0.0, 0.05]
+  lidar_range_noise_std_m_range: [0.0, 0.02]
+  lidar_dropout_prob_range: [0.0, 0.02]
+  odometry_noise_std_range: [0.0, 0.01]
+  sensor_frame_drop_prob_range: [0.0, 0.01]
+
+application_contract:
+  gazebo_applied: [friction_scale, velocity_response_scale, steering_gain,
+                   steering_delay_sec, command_latency_sec]
+  observation_only: [lidar_range_noise_std_m, lidar_dropout_prob,
+                     odometry_noise_std, sensor_frame_drop_prob]
+  model_only: [mass_scale, wheel_radius_scale]

@@ -31,11 +31,16 @@ def _scenario_from_dict(scenario_id: str, data: dict) -> BenchmarkScenario:
     goal = data["goal"]
     static_obstacles = [StaticObstacle(**o) for o in data.get("static_obstacles", [])]
     dynamic_obstacles = [DynamicObstacleSpec(**o) for o in data.get("moving_obstacles", [])]
+    environment_metadata = data.get("environment_metadata", {}) or {}
     spec = ScenarioSpec(
         seed=int(data["seed"]),
         start_x=float(start["x"]), start_y=float(start["y"]), start_yaw=float(start.get("yaw", 0.0)),
         goal_x=float(goal["x"]), goal_y=float(goal["y"]),
         static_obstacles=static_obstacles, dynamic_obstacles=dynamic_obstacles,
+        environment_version=str(environment_metadata.get("environment_version", "legacy_v1")),
+        curriculum_level=int(environment_metadata.get("curriculum_level", 0)),
+        topology=str(environment_metadata.get("topology", "legacy_random")),
+        conflict_obstacle_count=int(environment_metadata.get("conflict_obstacle_count", 0)),
     )
     return BenchmarkScenario(
         scenario_id=scenario_id, spec=spec,

@@ -1,0 +1,48 @@
+schema_id: tractor_environment_evaluation_suites_v2
+base_profile: tractor_local_dynamic_v2
+scenarios_per_suite: 8
+suites:
+  v2_id:
+    seeds: [20000, 20007]
+    world_size_m: 16.0
+    max_static_obstacles: 10
+    dynamic_obstacle_count: 8
+    speed_ratio_range: [0.2, 1.0]
+  v2_ood_motion:
+    seeds: [20100, 20107]
+    world_size_m: 16.0
+    max_static_obstacles: 10
+    dynamic_obstacle_count: 8
+    speed_ratio_range: [1.0, 1.5]
+    motion_patterns: [stop_go, accelerate_decelerate, sine_swerve, bounce, u_turn]
+  v2_ood_density:
+    seeds: [20200, 20207]
+    world_size_m: 16.0
+    max_static_obstacles: 14
+    dynamic_obstacle_count: 12
+    speed_ratio_range: [0.4, 1.2]
+  v2_ood_geometry_12m:
+    seeds: [20300, 20307]
+    world_size_m: 12.0
+    max_static_obstacles: 10
+    dynamic_obstacle_count: 6
+    speed_ratio_range: [0.2, 1.0]
+    topology_families: [corridor, doorway, intersection, s_curve, warehouse]
+  v2_ood_geometry_24m:
+    seeds: [20400, 20407]
+    world_size_m: 24.0
+    max_static_obstacles: 14
+    dynamic_obstacle_count: 10
+    speed_ratio_range: [0.2, 1.2]
+    topology_families: [corridor, doorway, intersection, s_curve, warehouse, clutter]
+  v2_ood_system:
+    seeds: [20500, 20507]
+    world_size_m: 16.0
+    max_static_obstacles: 10
+    dynamic_obstacle_count: 8
+    speed_ratio_range: [0.2, 1.0]
+    dynamics_cycle:
+      - {friction_scale: 0.65, steering_gain: 0.80, command_latency_sec: 0.10}
+      - {friction_scale: 1.20, steering_gain: 1.20, command_latency_sec: 0.00}
+      - {mass_scale: 1.15, wheel_radius_scale: 0.95, command_latency_sec: 0.10}
+      - {mass_scale: 0.85, wheel_radius_scale: 1.05, steering_gain: 0.80}

@@ -89,7 +89,7 @@ carry a free-form string, so this is a small closed enum (the actual finite
 set of reasons this codebase ever produces one) rather than text -- see
 each member's docstring for exactly which call site produces it.
 
-Wire layout (flat float32 list), schema_version=8:
+Wire layout (flat float32 list), schema_version=9:
 
     [0]  schema_version
     [1]  step_id
@@ -164,8 +164,10 @@ Wire layout (flat float32 list), schema_version=8:
     [29..34] reward terms         (goal, collision, progress, step,
                                    control_smoothness, trajectory_smoothness)
     [35] num_candidates (N)
-    [36 .. 36+5N)  per-candidate
-                     [kappa, v_ref, horizon_m, risk_score, goal_progress_m] x N
+    [36 .. 36+10N) per-candidate
+                     [kappa, v_ref, horizon_m, risk_score, goal_progress_m,
+                      min_clearance_m, ttc_sec, collision_within_horizon,
+                      stopping_margin_m, event_cause] x N
 """
 
 from __future__ import annotations
@@ -175,9 +177,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import List
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _HEADER_LEN = 36
-_CANDIDATE_STRIDE = 5
+_CANDIDATE_STRIDE = 10
 
 
 class InvalidReason(IntEnum):
@@ -209,6 +211,11 @@ class CandidateTelemetry:
     horizon_m: float
     risk_score: float
     goal_progress_m: float = 0.0
+    min_clearance_m: float = float("nan")
+    ttc_sec: float = float("nan")
+    collision_within_horizon: bool = False
+    stopping_margin_m: float = float("nan")
+    event_cause: int = -1
 
 
 @dataclass(frozen=True)
@@ -300,7 +307,12 @@ def encode(t: RiskTelemetry) -> List[float]:
         float(len(t.candidates)),
     ]
     for c in t.candidates:
-        out.extend([c.kappa, c.v_ref, c.horizon_m, c.risk_score, c.goal_progress_m])
+        out.extend([
+            c.kappa, c.v_ref, c.horizon_m, c.risk_score, c.goal_progress_m,
+            c.min_clearance_m, c.ttc_sec,
+            1.0 if c.collision_within_horizon else 0.0,
+            c.stopping_margin_m, float(c.event_cause),
+        ])
     return out
 
 
@@ -321,6 +333,11 @@ def decode(data: List[float]) -> RiskTelemetry:
             horizon_m=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 2],
             risk_score=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 3],
             goal_progress_m=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 4],
+            min_clearance_m=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 5],
+            ttc_sec=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 6],
+            collision_within_horizon=bool(data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 7] >= 0.5),
+            stopping_margin_m=data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 8],
+            event_cause=int(round(data[_HEADER_LEN + _CANDIDATE_STRIDE * i + 9])),
         )
         for i in range(n)
     ]

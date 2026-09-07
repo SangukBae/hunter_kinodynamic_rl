@@ -19,7 +19,10 @@ import pytest
 
 from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.env.scenarios.procedural_generator import DynamicObstacleSpec, StaticObstacle
-from hunter_kinodynamic_rl.env.simulation.risk_computation import compute_risk_telemetry
+from hunter_kinodynamic_rl.env.simulation.risk_computation import (
+    compute_risk_telemetry,
+    uses_common_evaluation_metrics,
+)
 from hunter_kinodynamic_rl.trajectory.action_space import TrajectoryCommand
 
 
@@ -37,6 +40,13 @@ def _risk_profile(world_size_m: float = None):
         profile = dataclasses.replace(
             profile, scenario=dataclasses.replace(profile.scenario, world_size_m=world_size_m))
     return profile
+
+
+def test_formal_test_pool_and_fixed_scenarios_use_common_metrics():
+    assert uses_common_evaluation_metrics(False, "train") is False
+    assert uses_common_evaluation_metrics(False, "validation") is False
+    assert uses_common_evaluation_metrics(False, "test") is True
+    assert uses_common_evaluation_metrics(True, "train") is True
 
 
 # ------------------------------------------------------- P0-1: static obstacles
@@ -75,11 +85,14 @@ def test_static_only_scene_with_no_obstacles_is_bounded_by_world_wall_not_infini
 
 def test_rollout_into_static_obstacle_is_detected_as_collision_with_nonzero_risk():
     profile = _risk_profile()
-    command = TrajectoryCommand(kappa=0.0, v_ref=2.0, horizon_m=3.0)  # straight ahead, fast
+    command = TrajectoryCommand(
+        kappa=0.0, v_ref=profile.robot.max_forward_speed_mps, horizon_m=3.0
+    )  # straight ahead at the manual speed limit
     static_obstacles = [StaticObstacle(x=1.0, y=0.0, radius=0.3)]  # squarely in the path
 
     telemetry = compute_risk_telemetry(
-        command, step_id=1, robot_pose=(0.0, 0.0, 0.0), robot_v=2.0, robot_steering=0.0,
+        command, step_id=1, robot_pose=(0.0, 0.0, 0.0),
+        robot_v=profile.robot.max_forward_speed_mps, robot_steering=0.0,
         static_obstacles=static_obstacles, dynamic_specs=[],
         active_robot_config=profile.robot, profile=profile,
     )

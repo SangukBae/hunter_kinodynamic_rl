@@ -1,0 +1,11 @@
+robot_file: hunter_se_improved.yaml
+scenario:
+  world_size_m: 16.0
+  dynamic_obstacle_count: 0
+environment_v2:
+  enabled: true
+runtime:
+  deterministic_stepping: true
+evaluation:
+  benchmark: v2_ood_system
+  episodes_per_scenario: 1

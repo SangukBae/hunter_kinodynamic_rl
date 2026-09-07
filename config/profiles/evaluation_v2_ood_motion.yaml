@@ -1,0 +1,14 @@
+robot_file: hunter_se_improved.yaml
+scenario:
+  world_size_m: 16.0
+  dynamic_obstacle_count: 0
+environment_v2:
+  enabled: true
+  curriculum_speed_ratio_caps: [0.0, 0.5, 0.75, 1.0, 1.5]
+  dynamic_speed_ratio_range: [1.0, 1.5]
+  motion_patterns: [stop_go, accelerate_decelerate, sine_swerve, bounce, u_turn]
+runtime:
+  deterministic_stepping: true
+evaluation:
+  benchmark: v2_ood_motion
+  episodes_per_scenario: 1
