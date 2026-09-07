@@ -63,9 +63,11 @@ class ComparisonAgent:
 
         groups = self.parameter_groups()
         assert_disjoint_complete(self.online, groups)
-        self.representation_optimizer = torch.optim.Adam(
-            groups["representation"], lr=agent_config.representation_lr,
-        )
+        self.representation_optimizer = None
+        if groups["representation"]:
+            self.representation_optimizer = torch.optim.Adam(
+                groups["representation"], lr=agent_config.representation_lr,
+            )
         self.value_optimizer = torch.optim.Adam(groups["value"], lr=agent_config.value_lr)
         self.actor_optimizer = torch.optim.Adam(groups["actor"], lr=agent_config.actor_lr)
         self.risk_optimizer = None
@@ -124,7 +126,8 @@ class ComparisonAgent:
                     prediction[mask], next_state_online.vector.detach()[mask],
                 )
         loss = critic_loss + self.model_config.dynamics_loss_weight * dynamics_loss
-        self.representation_optimizer.zero_grad(set_to_none=True)
+        if self.representation_optimizer is not None:
+            self.representation_optimizer.zero_grad(set_to_none=True)
         self.value_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         parameters = self.parameter_groups()["representation"] + self.parameter_groups()["value"]
@@ -133,11 +136,13 @@ class ComparisonAgent:
             for parameter in parameters
         )
         if not finite:
-            self.representation_optimizer.zero_grad(set_to_none=True)
+            if self.representation_optimizer is not None:
+                self.representation_optimizer.zero_grad(set_to_none=True)
             self.value_optimizer.zero_grad(set_to_none=True)
             return {"loss/critic": float("nan"), "update/applied": 0.0}
         torch.nn.utils.clip_grad_norm_(parameters, self.config.max_gradient_norm)
-        self.representation_optimizer.step()
+        if self.representation_optimizer is not None:
+            self.representation_optimizer.step()
         self.value_optimizer.step()
         if update_target:
             self.update_target()
@@ -232,11 +237,12 @@ class ComparisonAgent:
             "online": self.online,
             "target": self.target,
             "temperature": self.temperature,
-            "representation_optimizer": self.representation_optimizer,
             "value_optimizer": self.value_optimizer,
             "actor_optimizer": self.actor_optimizer,
             "entropy_optimizer": self.entropy_optimizer,
         }
+        if self.representation_optimizer is not None:
+            components["representation_optimizer"] = self.representation_optimizer
         if self.risk_optimizer is not None:
             components["risk_optimizer"] = self.risk_optimizer
         return components

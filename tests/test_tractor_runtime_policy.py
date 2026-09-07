@@ -68,6 +68,16 @@ def test_same_snapshot_cannot_advance_recurrence_twice():
     assert torch.equal(policy._scene_hidden, hidden)
 
 
+def test_singleton_selector_reports_dispersion_as_unavailable_not_zero():
+    config = _config()
+    policy = TractorPolicy(TractorTQC(config), SelectorConfig(), _calibration())
+    selection = policy.step(1, _input(config)).selection
+    assert not selection.dispersion_available.any()
+    assert torch.isnan(selection.event_probability_std).all()
+    assert torch.isnan(selection.clearance_std).all()
+    assert torch.isnan(selection.stopping_std).all()
+
+
 def test_invalid_sensor_snapshot_forces_no_publish_fallback():
     config = _config()
     policy = TractorPolicy(TractorTQC(config), SelectorConfig(), _calibration())

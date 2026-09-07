@@ -10,6 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from hunter_kinodynamic_rl.config.comparison import ComparisonModelConfig
+from hunter_kinodynamic_rl.rl.networks.tqc import Actor as CurrentTQCActor
+from hunter_kinodynamic_rl.rl.networks.tqc import Critic as CurrentTQCCritic
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig, TractorInputs
 from hunter_kinodynamic_rl.rl.networks.tractor.belief_encoder import BeliefEncoder
 
@@ -61,6 +63,53 @@ class SquashedGaussianActor(nn.Module):
             math.log(2.0) - pre_tanh - F.softplus(-2.0 * pre_tanh)
         )).sum(-1, keepdim=True)
         return action, log_prob
+
+
+class CurrentTQCActorAdapter(nn.Module):
+    """Expose the package's current three-layer ReLU TQC actor via the common API."""
+
+    def __init__(self, cfg: ComparisonModelConfig):
+        super().__init__()
+        self.actor = CurrentTQCActor(
+            cfg.observation_dim, 3, hdim=256, activ=F.relu,
+            log_std_min=cfg.current_tqc_log_std_min,
+            log_std_max=cfg.current_tqc_log_std_max,
+        )
+
+    def distribution(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.actor.activ(self.actor.l1(state))
+        hidden = self.actor.activ(self.actor.l2(hidden))
+        hidden = self.actor.activ(self.actor.l3(hidden))
+        return self.actor.mean(hidden), self.actor.log_std(hidden).clamp(
+            self.actor.log_std_min, self.actor.log_std_max,
+        )
+
+    def sample(
+        self, state: torch.Tensor, deterministic: bool = False,
+        generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mean, log_std = self.distribution(state)
+        noise = torch.zeros_like(mean) if deterministic else torch.randn(
+            mean.shape, dtype=mean.dtype, device=mean.device, generator=generator,
+        )
+        pre_tanh = mean + log_std.exp() * noise
+        action = torch.tanh(pre_tanh)
+        log_prob = -0.5 * (
+            ((pre_tanh - mean) / log_std.exp()).square()
+            + 2.0 * log_std + math.log(2.0 * math.pi)
+        )
+        log_prob = log_prob.sum(-1, keepdim=True)
+        log_prob -= (2.0 * (
+            math.log(2.0) - pre_tanh - F.softplus(-2.0 * pre_tanh)
+        )).sum(-1, keepdim=True)
+        return action, log_prob
+
+
+class CurrentTQCObservation(nn.Module):
+    """Pass the 328D observation directly, as the current TQC does."""
+
+    def forward(self, inputs: TractorInputs) -> EncodedComparisonState:
+        return EncodedComparisonState(inputs.observation)
 
 
 class FlatEncoder(nn.Module):
@@ -172,13 +221,19 @@ class ComparisonModel(nn.Module):
             raise ValueError("baseline and A7 input dimensions differ")
         self.config = cfg
         self.input_config = input_cfg
-        if cfg.method_id == "B3":
+        if cfg.method_id == "B1":
+            self.encoder = CurrentTQCObservation()
+        elif cfg.method_id == "B3":
             self.encoder = RecurrentVectorEncoder(cfg)
         elif cfg.method_id in {"B4", "B5"}:
             self.encoder = BevEncoder(cfg, input_cfg)
         else:
             self.encoder = FlatEncoder(cfg)
-        self.actor = SquashedGaussianActor(cfg.latent_dim, cfg)
+        self.actor = (
+            CurrentTQCActorAdapter(cfg)
+            if cfg.method_id == "B1"
+            else SquashedGaussianActor(cfg.latent_dim, cfg)
+        )
         self.latent_transition = None
         if cfg.method_id == "B6":
             self.latent_transition = nn.Sequential(
@@ -189,6 +244,11 @@ class ComparisonModel(nn.Module):
         if cfg.method_id == "B5":
             self.cross_attention = CrossAttentionQuantileHeads(cfg, input_cfg.scene_channels)
             self.critics = None
+        elif cfg.method_id == "B1":
+            self.critics = CurrentTQCCritic(
+                cfg.observation_dim, 3, hdim=256, activ=F.elu,
+                n_quantiles=cfg.n_quantiles, n_critics=cfg.n_critics,
+            )
         else:
             self.critics = QuantileHeads(cfg.latent_dim, cfg)
         self.risk_head = None

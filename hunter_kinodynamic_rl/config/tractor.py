@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import fields
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, Type, TypeVar
 
@@ -20,6 +21,24 @@ from .loader import default_config_root
 
 T = TypeVar("T")
 PROTOCOL_SCHEMA_ID = "tractor_research_protocol_v1"
+
+# These are code-capability gaps, not experimental outcomes.  The formal
+# campaign must stay fail-closed until each item is implemented and its entry
+# is removed together with a regression test and a new code fingerprint.
+FORMAL_RESEARCH_IMPLEMENTATION_GAPS = (
+    "stage3_stage4_representation_and_risk_feature_objectives",
+    "stage5_atomic_value_risk_rng_transaction",
+    "full_sequence_supervision_and_lineage_schema",
+    "h1_h3_prediction_ranking_and_risk_evaluator",
+    "semantic_checkpoint_and_promotion_lineage",
+    "frozen_vehicle_sensor_localization_scenario_axes",
+    "nominal_rollout_parity_and_source_fingerprint",
+)
+
+
+def formal_research_implementation_readiness() -> dict:
+    gaps = list(FORMAL_RESEARCH_IMPLEMENTATION_GAPS)
+    return {"ready": not gaps, "gaps": gaps}
 
 
 def _strict_dataclass(cls: Type[T], values: Dict[str, Any], source: str) -> T:
@@ -44,6 +63,45 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def tractor_profile_model_mismatches(profile, model: TractorConfig) -> Dict[str, tuple[float, float]]:
+    """Return physical/action values that make model rollout unlike execution."""
+    robot = profile.robot
+    action = profile.action_space
+    dynamics = profile.dynamics
+    resolved_max_speed = (
+        robot.max_forward_speed_mps
+        if action.v_max_mps is None else float(action.v_max_mps)
+    )
+    expected = {
+        "wheelbase_m": float(robot.wheelbase_m),
+        "steering_limit_rad": float(robot.steering_limit_rad),
+        "steering_rate_rad_s": float(robot.steering_rate_rad_s),
+        "min_speed_mps": float(action.v_min_mps),
+        "max_speed_mps": resolved_max_speed,
+        "accel_limit_mps2": float(robot.accel_limit_mps2),
+        "brake_decel_mps2": float(robot.brake_decel_mps2),
+        "speed_lag_tau_sec": float(robot.speed_lag_tau_sec),
+        "min_arc_m": float(action.horizon_length_min_m),
+        "max_arc_m": float(action.horizon_length_max_m),
+        "min_horizon_sec": float(dynamics.horizon_min_sec),
+        "max_horizon_sec": float(dynamics.horizon_max_sec),
+        "min_safety_horizon_sec": float(dynamics.min_safety_horizon_sec),
+        "dt_dyn_sec": float(dynamics.dt_sec),
+        "footprint_radius_m": float(robot.collision_radius_m),
+        "max_range_m": float(profile.observation.lidar_max_range_m),
+    }
+    mismatches = {
+        name: (expected_value, float(getattr(model, name)))
+        for name, expected_value in expected.items()
+        if not math.isclose(
+            expected_value, float(getattr(model, name)), rel_tol=0.0, abs_tol=1e-9,
+        )
+    }
+    if not math.isclose(float(action.kappa_scale), 1.0, rel_tol=0.0, abs_tol=1e-12):
+        mismatches["action_space.kappa_scale"] = (float(action.kappa_scale), 1.0)
+    return mismatches
 
 
 def _protocol_payload_sha256(protocol: dict) -> str:

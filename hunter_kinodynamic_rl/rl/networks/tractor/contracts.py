@@ -357,4 +357,8 @@ class SelectionOutput:
     event_probability_ucb: torch.Tensor
     clearance_lcb: torch.Tensor
     stopping_lcb: torch.Tensor
+    event_probability_std: torch.Tensor
+    clearance_std: torch.Tensor
+    stopping_std: torch.Tensor
+    dispersion_available: torch.Tensor
     reason: Tuple[str, ...]

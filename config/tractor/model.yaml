@@ -27,13 +27,13 @@ severity_quantile_levels: [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 residual_members: 0
 risk_members: 1
 wheelbase_m: 0.55
-steering_limit_rad: 0.3296633598
-steering_rate_rad_s: 0.6108652382
+steering_limit_rad: 0.3296633759295873
+steering_rate_rad_s: 3.4906585040
 min_speed_mps: 0.0
 max_speed_mps: 1.3333333333
 accel_limit_mps2: 2.0
 brake_decel_mps2: 2.0
-speed_lag_tau_sec: 0.25
+speed_lag_tau_sec: 0.05
 min_arc_m: 0.5
 max_arc_m: 3.0
 min_horizon_sec: 0.5

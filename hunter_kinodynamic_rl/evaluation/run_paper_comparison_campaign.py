@@ -10,7 +10,10 @@ import os
 from pathlib import Path
 import tempfile
 
-from hunter_kinodynamic_rl.config.tractor import canonical_sha256, load_tractor_contract
+from hunter_kinodynamic_rl.config.comparison import load_comparison_contract
+from hunter_kinodynamic_rl.config.tractor import (
+    canonical_sha256, formal_research_implementation_readiness, load_tractor_contract,
+)
 from hunter_kinodynamic_rl.evaluation.evaluate_paper_comparison import (
     PAPER_METHODS, evaluate_method_seed,
 )
@@ -35,6 +38,26 @@ from hunter_kinodynamic_rl.training.tractor_scenario_plan import (
 
 
 CAMPAIGN_SCHEMA = "tractor_paper_comparison_campaign_v1"
+
+
+def _method_contract_sha256(config_root: str | None = None) -> dict[str, str]:
+    result = {}
+    for method in PAPER_METHODS:
+        contract = (
+            load_tractor_contract(config_root, method.lower())
+            if method.startswith("A") else load_comparison_contract(config_root, method)
+        )
+        result[method] = str(contract["contract_sha256"])
+    return result
+
+
+def _require_formal_implementation_ready() -> None:
+    readiness = formal_research_implementation_readiness()
+    if not readiness["ready"]:
+        raise RuntimeError(
+            "formal paper campaign is blocked by implementation gaps: "
+            + ", ".join(readiness["gaps"])
+        )
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -73,11 +96,13 @@ def prepare_campaign(campaign_root: str | Path, config_root: str | None = None) 
     paths["root"].mkdir(parents=True, exist_ok=True)
     scenarios = materialize_scenario_plan(paths["scenarios"], config_root)
     contract = load_tractor_contract(config_root, "a7")
+    readiness = formal_research_implementation_readiness()
     payload = {
         "schema_id": CAMPAIGN_SCHEMA,
         "protocol_version": contract["protocol"]["protocol_version"],
         "protocol_sha256": contract["protocol_sha256"],
         "methods": list(PAPER_METHODS), "calibrated_methods": list(CALIBRATED_METHODS),
+        "method_contract_sha256": _method_contract_sha256(config_root),
         "seeds": list(contract["campaign"]["seeds"]),
         "fixed_update_budget": int(contract["campaign"]["fixed_update_budget"]),
         "batch_size": int(contract["campaign"]["batch_size"]),
@@ -87,7 +112,12 @@ def prepare_campaign(campaign_root: str | Path, config_root: str | None = None) 
             len(PAPER_METHODS) * len(contract["campaign"]["seeds"])
             * int(contract["protocol"]["support_gates"]["minimum_locked_scenarios_per_seed"])
         ),
-        "evidence_status": "prepared_untrained",
+        "formal_implementation_ready": bool(readiness["ready"]),
+        "formal_implementation_gaps": list(readiness["gaps"]),
+        "evidence_status": (
+            "prepared_untrained" if readiness["ready"]
+            else "prepared_blocked_implementation_gaps"
+        ),
     }
     payload["campaign_manifest_sha256"] = canonical_sha256(payload)
     _atomic_json(paths["manifest"], payload)
@@ -103,11 +133,15 @@ def load_campaign(campaign_root: str | Path, config_root: str | None = None) -> 
     if payload.get("schema_id") != CAMPAIGN_SCHEMA or digest != canonical_sha256(check):
         raise RuntimeError("campaign manifest schema or checksum mismatch")
     contract = load_tractor_contract(config_root, "a7")
+    readiness = formal_research_implementation_readiness()
     expected = {
         "protocol_version": contract["protocol"]["protocol_version"],
         "protocol_sha256": contract["protocol_sha256"],
         "methods": list(PAPER_METHODS), "calibrated_methods": list(CALIBRATED_METHODS),
+        "method_contract_sha256": _method_contract_sha256(config_root),
         "seeds": list(contract["campaign"]["seeds"]),
+        "formal_implementation_ready": bool(readiness["ready"]),
+        "formal_implementation_gaps": list(readiness["gaps"]),
     }
     for name, value in expected.items():
         if payload.get(name) != value:
@@ -132,6 +166,7 @@ def collect_campaign_data(
     campaign_root: str | Path, *, profile_name: str = "tractor_local_dynamic",
     behavior_seed: int = 739391, config_root: str | None = None, resume: bool = False,
 ) -> dict:
+    _require_formal_implementation_ready()
     _campaign, paths = load_campaign(campaign_root, config_root)
     return collect_formal_comparison_data(
         scenario_manifest_path=paths["scenario_manifest"], dataset_root=paths["dataset"],
@@ -145,6 +180,7 @@ def train_campaign(
     batch_size: int | None = None, device: str = "cpu", config_root: str | None = None,
     skip_complete: bool = False,
 ) -> dict:
+    _require_formal_implementation_ready()
     campaign, paths = load_campaign(campaign_root, config_root)
     selected_methods, selected_seeds = _selection(campaign, methods, seeds)
     data_report = validate_dataset(
@@ -182,6 +218,7 @@ def calibrate_campaign(
     campaign_root: str | Path, *, methods=None, seeds=None, device: str = "cpu",
     config_root: str | None = None, skip_complete: bool = False,
 ) -> dict:
+    _require_formal_implementation_ready()
     campaign, paths = load_campaign(campaign_root, config_root)
     requested = methods or campaign["calibrated_methods"]
     selected_methods, selected_seeds = _selection(campaign, requested, seeds)
@@ -214,6 +251,7 @@ def evaluate_campaign(
     profile_name: str = "tractor_local_dynamic", config_root: str | None = None,
     skip_complete: bool = False,
 ) -> dict:
+    _require_formal_implementation_ready()
     campaign, paths = load_campaign(campaign_root, config_root)
     selected_methods, selected_seeds = _selection(campaign, methods, seeds)
     results = []
@@ -266,6 +304,7 @@ def aggregate_campaign(
     campaign_root: str | Path, *, runtime_json: str | Path | None = None,
     config_root: str | None = None,
 ) -> dict:
+    _require_formal_implementation_ready()
     campaign, paths = load_campaign(campaign_root, config_root)
     scenario_manifest = validate_materialized_scenario_manifest(
         paths["scenario_manifest"], config_root,
@@ -327,6 +366,8 @@ def campaign_status(campaign_root: str | Path, config_root: str | None = None) -
     ) if paths["dataset"].exists() else None
     return {
         "campaign_root": str(paths["root"]),
+        "formal_implementation_ready": bool(campaign["formal_implementation_ready"]),
+        "formal_implementation_gaps": list(campaign["formal_implementation_gaps"]),
         "formal_dataset_ready": bool(dataset and dataset.ok),
         "training_complete": training, "training_expected": len(campaign["methods"]) * len(campaign["seeds"]),
         "calibration_complete": calibration,

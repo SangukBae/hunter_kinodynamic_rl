@@ -6,6 +6,10 @@ from hunter_kinodynamic_rl.config.comparison import (
     BASELINE_METHODS, ComparisonModelConfig, load_comparison_contract,
 )
 from hunter_kinodynamic_rl.rl.algorithms.comparison_baselines import ComparisonAgent
+from hunter_kinodynamic_rl.rl.algorithms.comparison_baselines.model import (
+    CurrentTQCActorAdapter, CurrentTQCObservation,
+)
+from hunter_kinodynamic_rl.rl.networks.tqc import Critic as CurrentTQCCritic
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import (
     TractorAgent, TractorAgentConfig, TractorRiskBatch, TractorTrainingBatch,
 )
@@ -14,7 +18,7 @@ from hunter_kinodynamic_rl.rl.networks.tractor.contracts import CandidateSet
 
 
 AXES = {
-    "B1": ("flat_328d", "none", "none"),
+    "B1": ("current_tqc_328d", "none", "none"),
     "B2": ("flat_parameter_matched", "none", "none"),
     "B3": ("recurrent_vector", "none", "none"),
     "B4": ("factorized_ego_warped_bev", "implicit_concat", "none"),
@@ -46,7 +50,9 @@ def _model_config(method):
         n_scan=input_cfg.n_scan, tail_dim=input_cfg.tail_dim,
         n_critics=input_cfg.n_critics, n_quantiles=input_cfg.n_quantiles,
         log_std_min=input_cfg.log_std_min, log_std_max=input_cfg.log_std_max,
-        encoder_hidden=32, latent_dim=16, recurrent_hidden=16, attention_heads=2,
+        encoder_hidden=32,
+        latent_dim=input_cfg.observation_dim if method == "B1" else 16,
+        recurrent_hidden=16, attention_heads=2,
         cvar_fraction=0.25 if method == "B7" else 1.0,
         dynamics_loss_weight=0.25 if method == "B6" else 0.0,
         actor_risk_weight=1.0 if method == "B8" else 0.0,
@@ -99,6 +105,21 @@ def test_all_registered_baselines_execute_the_shared_action_contract():
             assert agent.online.risk_probability_from_state(state, action).shape == (2, 1)
 
 
+def test_b1_is_the_current_direct_328d_tqc_network_not_a_new_latent_mlp():
+    config = _model_config("B1")
+    agent = ComparisonAgent(
+        config, _input_config(), TractorAgentConfig(top_quantiles_to_drop_per_net=1),
+    )
+    assert isinstance(agent.online.encoder, CurrentTQCObservation)
+    assert isinstance(agent.online.actor, CurrentTQCActorAdapter)
+    assert isinstance(agent.online.critics, CurrentTQCCritic)
+    assert agent.representation_optimizer is None
+    state = agent.online.encode(_inputs())
+    assert torch.equal(state.vector, _inputs().observation)
+    assert agent.online.actor.actor.log_std_min == -20.0
+    assert agent.online.actor.actor.log_std_max == 2.0
+
+
 def test_b2_is_parameter_matched_to_a7_under_frozen_full_config():
     contract = load_comparison_contract(None, "B2")
     baseline = ComparisonAgent(contract["model"], contract["input_model"], contract["agent"])
@@ -119,6 +140,15 @@ def test_b6_value_update_and_b8_risk_update_are_real_gradient_paths():
         truncated=torch.zeros(2, 1, dtype=torch.bool),
         bellman_sample_valid=torch.ones(2, 1, dtype=torch.bool),
     )
+    b1 = ComparisonAgent(
+        _model_config("B1"), _input_config(),
+        TractorAgentConfig(top_quantiles_to_drop_per_net=1),
+    )
+    b1_critic_before = next(b1.online.critics.parameters()).detach().clone()
+    b1_metrics = b1.critic_step(batch)
+    assert b1_metrics["update/applied"] == 1.0
+    assert not torch.equal(b1_critic_before, next(b1.online.critics.parameters()))
+
     b6 = ComparisonAgent(
         _model_config("B6"), _input_config(),
         TractorAgentConfig(top_quantiles_to_drop_per_net=1),

@@ -5,11 +5,11 @@ parameter_match:
   relative_tolerance: 0.05
 methods:
   B1:
-    representation: flat_328d
+    representation: current_tqc_328d
     interaction: none
     risk: none
     encoder_hidden: 256
-    latent_dim: 128
+    latent_dim: 328
   B2:
     representation: flat_parameter_matched
     interaction: none

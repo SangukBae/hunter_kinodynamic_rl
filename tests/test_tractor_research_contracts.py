@@ -1,11 +1,14 @@
 """Config, metric and formal-matrix gates for paper evidence."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from hunter_kinodynamic_rl.config.tractor import load_tractor_contract
+from hunter_kinodynamic_rl.config.tractor import (
+    load_tractor_contract, tractor_profile_model_mismatches,
+)
 from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.evaluation.tractor_artifacts import (
     paired_method_effect, validate_complete_matrix,
@@ -40,6 +43,15 @@ def test_static_and_dynamic_profiles_are_matched_except_obstacle_motion_count():
     assert static.scenario == dynamic.scenario
 
 
+def test_tractor_rollout_physics_matches_the_live_collection_profiles():
+    model = load_tractor_contract(CONFIG_ROOT, "a7")["model"]
+    for profile_name in ("tractor_local_static", "tractor_local_dynamic"):
+        profile = load_profile(profile_name, CONFIG_ROOT)
+        assert tractor_profile_model_mismatches(profile, model) == {}
+        changed = replace(model, speed_lag_tau_sec=model.speed_lag_tau_sec + 0.01)
+        assert "speed_lag_tau_sec" in tractor_profile_model_mismatches(profile, changed)
+
+
 def test_frozen_protocol_passes_development_but_formal_requires_data_artifacts():
     development = run_tractor_preflight(config_root=CONFIG_ROOT, mode="development", variant="a7")
     assert development.ok
@@ -49,6 +61,9 @@ def test_frozen_protocol_passes_development_but_formal_requires_data_artifacts()
     formal = run_tractor_preflight(config_root=CONFIG_ROOT, mode="formal", variant="a7")
     assert not formal.ok
     assert formal.protocol_status == "frozen"
+    assert not formal.formal_implementation_ready
+    assert formal.formal_implementation_gaps
+    assert any("formal implementation gap" in error for error in formal.errors)
     assert formal.scenario_feasibility_verified
     assert any("--scenario-manifest" in error for error in formal.errors)
     assert any("dataset validation skipped" in error for error in formal.errors)

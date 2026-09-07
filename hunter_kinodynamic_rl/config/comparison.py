@@ -12,7 +12,7 @@ from hunter_kinodynamic_rl.config.tractor import load_tractor_contract
 
 
 BASELINE_SCHEMA_ID = "tractor_comparison_baselines_v1"
-BASELINE_ARCHITECTURE_REVISION = "tractor-comparison-baselines-r1"
+BASELINE_ARCHITECTURE_REVISION = "tractor-comparison-baselines-r2"
 BASELINE_METHODS = tuple(f"B{index}" for index in range(1, 9))
 
 
@@ -37,6 +37,8 @@ class ComparisonModelConfig:
     cvar_fraction: float = 1.0
     dynamics_loss_weight: float = 0.0
     actor_risk_weight: float = 0.0
+    current_tqc_log_std_min: float = -20.0
+    current_tqc_log_std_max: float = 2.0
 
     @property
     def variant_id(self) -> str:
@@ -57,7 +59,7 @@ class ComparisonModelConfig:
         if self.dynamics_loss_weight < 0.0 or self.actor_risk_weight < 0.0:
             raise ValueError("comparison loss weights must be non-negative")
         expected = {
-            "B1": ("flat_328d", "none", "none"),
+            "B1": ("current_tqc_328d", "none", "none"),
             "B2": ("flat_parameter_matched", "none", "none"),
             "B3": ("recurrent_vector", "none", "none"),
             "B4": ("factorized_ego_warped_bev", "implicit_concat", "none"),
@@ -74,6 +76,13 @@ class ComparisonModelConfig:
             raise ValueError("only B6 may use latent dynamics supervision")
         if self.method_id != "B8" and self.actor_risk_weight != 0.0:
             raise ValueError("only B8 may use a scalar endpoint-risk penalty")
+        if self.method_id == "B1" and (
+            self.current_tqc_log_std_min != -20.0
+            or self.current_tqc_log_std_max != 2.0
+        ):
+            raise ValueError("B1 must retain the current TQC actor log-std bounds [-20,2]")
+        if self.method_id == "B1" and self.latent_dim != self.observation_dim:
+            raise ValueError("B1 passes the current 328D observation directly without a latent encoder")
 
     def fingerprint(self) -> str:
         self.validate()

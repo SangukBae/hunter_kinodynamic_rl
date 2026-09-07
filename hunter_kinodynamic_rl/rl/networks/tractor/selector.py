@@ -53,9 +53,16 @@ class CandidateSelector:
         b, qm, qr, k = p_samples.shape
         p_samples = p_samples.reshape(b, qm * qr, k)
         p_mean = p_samples.mean(dim=1)
-        p_std = p_samples.std(dim=1, unbiased=True) if p_samples.shape[1] > 1 else torch.zeros_like(p_mean)
+        dispersion_available = torch.full_like(
+            p_mean, p_samples.shape[1] > 1, dtype=torch.bool,
+        )
+        p_std = (
+            p_samples.std(dim=1, unbiased=True)
+            if p_samples.shape[1] > 1 else torch.full_like(p_mean, torch.nan)
+        )
         calibrated = calibration.apply(p_mean) if calibration is not None else p_mean
-        p_ucb = (calibrated + self.cfg.probability_beta * p_std).clamp(0.0, 1.0)
+        p_bonus = torch.where(dispersion_available, p_std, torch.zeros_like(p_mean))
+        p_ucb = (calibrated + self.cfg.probability_beta * p_bonus).clamp(0.0, 1.0)
 
         clear_samples = output.clearance_quantiles[..., 0].reshape(b, qm * qr, k, -1)
         stop_samples = output.stopping_quantiles[..., 0].reshape(b, qm * qr, k, -1)
@@ -66,9 +73,12 @@ class CandidateSelector:
             clear_std = clear_point.std(1, unbiased=True)
             stop_std = stop_point.std(1, unbiased=True)
         else:
-            clear_std, stop_std = torch.zeros_like(clear_mean), torch.zeros_like(stop_mean)
-        clear_lcb = clear_mean - self.cfg.margin_beta * clear_std
-        stop_lcb = stop_mean - self.cfg.margin_beta * stop_std
+            clear_std = torch.full_like(clear_mean, torch.nan)
+            stop_std = torch.full_like(stop_mean, torch.nan)
+        clear_penalty = torch.where(dispersion_available, clear_std, torch.zeros_like(clear_mean))
+        stop_penalty = torch.where(dispersion_available, stop_std, torch.zeros_like(stop_mean))
+        clear_lcb = clear_mean - self.cfg.margin_beta * clear_penalty
+        stop_lcb = stop_mean - self.cfg.margin_beta * stop_penalty
 
         quantiles = output.return_quantiles.reshape(b, k, -1).sort(dim=-1).values
         n_tail = max(1, int(self.cfg.tail_fraction * quantiles.shape[-1] + 0.999999))
@@ -90,4 +100,17 @@ class CandidateSelector:
         action = candidates.normalized_actions.gather(1, gather_index).squeeze(1)
         action = torch.where(any_feasible[:, None], action, torch.zeros_like(action))
         reason = tuple("selected" if bool(ok) else "no_feasible_candidate" for ok in any_feasible.tolist())
-        return SelectionOutput(selected, action, feasible, score, p_ucb, clear_lcb, stop_lcb, reason)
+        return SelectionOutput(
+            selected_index=selected,
+            selected_action=action,
+            feasible=feasible,
+            score=score,
+            event_probability_ucb=p_ucb,
+            clearance_lcb=clear_lcb,
+            stopping_lcb=stop_lcb,
+            event_probability_std=p_std,
+            clearance_std=clear_std,
+            stopping_std=stop_std,
+            dispersion_available=dispersion_available,
+            reason=reason,
+        )

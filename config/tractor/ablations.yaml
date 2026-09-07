@@ -1,7 +1,7 @@
 schema_id: tractor_ablation_registry_v1
 single_axis_required: true
 methods:
-  B1: {representation: flat_328d, interaction: none, risk: none}
+  B1: {representation: current_tqc_328d, interaction: none, risk: none}
   B2: {representation: flat_parameter_matched, interaction: none, risk: none}
   B3: {representation: recurrent_vector, interaction: none, risk: none}
   B4: {representation: bev, interaction: implicit_concat, risk: none}

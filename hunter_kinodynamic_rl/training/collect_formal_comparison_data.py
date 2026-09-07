@@ -14,7 +14,9 @@ import numpy as np
 
 from hunter_kinodynamic_rl.common.seed import seed_all
 from hunter_kinodynamic_rl.config.loader import default_config_root, load_profile
-from hunter_kinodynamic_rl.config.tractor import canonical_sha256, load_tractor_contract
+from hunter_kinodynamic_rl.config.tractor import (
+    canonical_sha256, load_tractor_contract, tractor_profile_model_mismatches,
+)
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint, training_profile_fingerprint,
 )
@@ -82,6 +84,9 @@ def collect_formal_comparison_data(
     manifest = validate_materialized_scenario_manifest(scenario_manifest_path, config_root)
     profile = load_profile(profile_name, config_root)
     contract = load_tractor_contract(config_root, "a7")
+    mismatches = tractor_profile_model_mismatches(profile, contract["model"])
+    if mismatches:
+        raise ValueError(f"formal collector profile/model physical contract differs: {mismatches}")
     if profile.action_space.mode != "trajectory":
         raise ValueError("formal comparison collection requires trajectory actions")
     expected_dim = profile.observation.lidar_bins * profile.observation.frame_stack

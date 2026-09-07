@@ -21,7 +21,9 @@ import numpy as np
 
 from hunter_kinodynamic_rl.common.seed import enable_torch_determinism, seed_all
 from hunter_kinodynamic_rl.config.loader import default_config_root, load_profile
-from hunter_kinodynamic_rl.config.tractor import canonical_sha256, load_tractor_contract
+from hunter_kinodynamic_rl.config.tractor import (
+    canonical_sha256, load_tractor_contract, tractor_profile_model_mismatches,
+)
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler
 from hunter_kinodynamic_rl.env.scenarios.tractor_environment_v2 import curriculum_stage
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
@@ -65,8 +67,13 @@ def _validate_profile(profile, model_config) -> None:
         )
     if profile.counterfactual.num_candidates != model_config.num_candidates:
         raise ValueError("profile/model candidate counts differ")
-    if abs(profile.robot.wheelbase_m - model_config.wheelbase_m) > 1e-9:
-        raise ValueError("profile/model wheelbase differs")
+    mismatches = tractor_profile_model_mismatches(profile, model_config)
+    if mismatches:
+        details = ", ".join(
+            f"{name}: profile={expected!r}, model={observed!r}"
+            for name, (expected, observed) in sorted(mismatches.items())
+        )
+        raise ValueError(f"profile/model physical contract differs: {details}")
 
 
 def _episode_header(
