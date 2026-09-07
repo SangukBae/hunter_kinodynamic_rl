@@ -1,0 +1,63 @@
+schema_id: tractor_research_protocol_v1
+protocol_version: tractor_protocol_v1
+status: frozen
+frozen_utc: "2026-09-07T00:00:00Z"
+change_control: new_version_new_output_root_and_no_locked_test_reuse
+frozen_payload_sha256: fe2c1cfbd175c12c333173a7c9ccd25edf885fbfc18e519640c4d7e597ba9ee1
+
+primary_method: A7
+primary_baseline: B1
+statistics:
+  unit_of_replication: independent_training_seed
+  confidence: 0.95
+  bootstrap_samples: 10000
+  bootstrap_seed: 1729
+  minimum_unique_seeds: 5
+  required_split: locked_test
+
+# These are preregistered promotion gates, not a promise of paper acceptance.
+# Absolute bounds and paired confidence bounds must both pass when both exist.
+headline_gates:
+  - id: navigation_success
+    metric: success_rate
+    direction: maximize
+    absolute_bound: lower
+    absolute_threshold: 0.80
+    paired_transform: additive_difference
+    paired_bound: lower
+    paired_threshold: 0.05
+  - id: collision_non_regression
+    metric: collision_rate
+    direction: minimize
+    absolute_bound: upper
+    absolute_threshold: 0.05
+    paired_transform: additive_difference
+    paired_bound: upper
+    paired_threshold: 0.01
+  - id: successful_navigation_time
+    metric: time_to_goal_sec_mean
+    direction: minimize
+    absolute_bound: none
+    absolute_threshold: null
+    paired_transform: relative_change
+    paired_bound: upper
+    paired_threshold: 0.10
+  - id: realized_minimum_clearance
+    metric: min_clearance_m_mean
+    direction: maximize
+    absolute_bound: lower
+    absolute_threshold: 0.15
+    paired_transform: additive_difference
+    paired_bound: lower
+    paired_threshold: -0.02
+
+runtime_gates:
+  target_hardware_required: true
+  minimum_timed_decisions: 10000
+  p99_latency_ms_max: 100.0
+  deadline_miss_rate_max: 0.01
+
+support_gates:
+  minimum_locked_scenarios_per_seed: 176
+  require_static_and_dynamic: true
+  require_complete_method_seed_scenario_matrix: true

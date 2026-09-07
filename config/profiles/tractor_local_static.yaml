@@ -1,0 +1,43 @@
+# TRACTOR same-contract static data/learning environment. Model details live
+# in config/tractor/model*.yaml and never masquerade as legacy Profile fields.
+robot_file: hunter_se_improved.yaml
+
+action_space:
+  mode: trajectory
+
+features:
+  ackermann_rollout: true
+  temporal_context: true
+  risk_critic: true
+  counterfactual_risk: true
+
+observation:
+  frame_stack: 4
+  robot_state_dim: 8
+
+risk:
+  enabled: true
+
+counterfactual:
+  enabled: true
+  num_candidates: 8
+  include_stop_candidate: true
+
+scenario:
+  feasibility_check: ackermann
+  world_size_m: 16.0
+  min_obstacles: 2
+  max_obstacles: 10
+  dynamic_obstacle_count: 0
+  goal_sampling_mode: robot_relative_band
+  goal_distance_range_m: [2.0, 6.0]
+  goal_direction_sectors_deg: [[-180.0, 180.0]]
+  goal_infeasible_fraction: 0.15
+
+training:
+  max_timesteps: 150000
+  timesteps_before_training: 3000
+  eval_freq: 10000
+  eval_episodes: 10
+  episode_length_steps: 600
+  seed: 0

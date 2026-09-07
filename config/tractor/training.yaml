@@ -1,0 +1,31 @@
+agent:
+  representation_lr: 0.0003
+  value_lr: 0.0003
+  risk_lr: 0.0003
+  actor_lr: 0.0003
+  entropy_lr: 0.0003
+  initial_alpha: 0.2
+  target_entropy: -3.0
+  top_quantiles_to_drop_per_net: 2
+  target_tau: 0.005
+  actor_risk_weight: 1.0
+  max_gradient_norm: 20.0
+campaign:
+  protocol_status: frozen
+  protocol_version: tractor_protocol_v1
+  evidence_status: no_training_evidence
+  seeds: [11, 23, 37, 53, 71]
+  fixed_environment_steps: 150000
+  fixed_update_budget: 150000
+  batch_size: 64
+  checkpoint_interval_updates: 5000
+  evaluation_interval_updates: 10000
+  target_action_rng: target_policy_online_actor_philox_v1
+  update_order: [value_transaction, risk_transaction, actor, entropy, ema]
+loss_weights:
+  occupancy: 1.0
+  dynamic_flow: 0.5
+  vehicle_response: 0.5
+  risk_feature: 0.25
+  clearance: 0.25
+  stopping_margin: 0.25

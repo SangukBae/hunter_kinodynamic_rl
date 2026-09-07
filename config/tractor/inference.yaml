@@ -1,0 +1,16 @@
+selector:
+  tail_fraction: 0.2
+  max_event_probability: 0.35
+  minimum_clearance_m: 0.15
+  risk_penalty: 1.0
+  smoothness_penalty: 0.05
+  probability_beta: 1.0
+  margin_beta: 1.0
+runtime:
+  decision_deadline_ms: 100.0
+  proposed_p99_gate_ms: 100.0
+  proposed_max_deadline_miss_rate: 0.01
+  invalid_belief_fallback: downstream_action_guard_stop
+  no_feasible_candidate_fallback: downstream_action_guard_stop
+  require_promoted_bundle: true
+  require_calibration_for_r5_r6: true

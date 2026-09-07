@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from hunter_kinodynamic_rl.config.loader import default_config_root, deep_merge, load_profile, profile_from_dict
@@ -74,7 +76,51 @@ def test_load_profile_by_path(tmp_path):
     profile_path.write_text("action_space:\n  mode: legacy_waypoint\n")
     profile = load_profile(str(profile_path))
     assert profile.action_space.mode == "legacy_waypoint"
-    assert profile.robot.wheelbase_m == pytest.approx(0.547696)  # defaults layer still applied
+    assert profile.robot.wheelbase_m == pytest.approx(0.550)  # defaults layer still applied
+
+
+def test_improved_hunter_se_geometry_and_limits_are_the_active_training_defaults():
+    robot = load_profile("local_l1_trajectory").robot
+    assert robot.name == "hunter_se_improved"
+    assert robot.wheelbase_m == pytest.approx(0.550)
+    assert robot.track_width_m == pytest.approx(0.49238)
+    assert robot.wheel_radius_m == pytest.approx(0.1375)
+    assert (robot.length_m, robot.width_m, robot.height_m) == pytest.approx((0.820, 0.640, 0.310))
+    assert robot.mass_kg == pytest.approx(42.0)
+    assert robot.max_forward_speed_mps == pytest.approx(4.8 / 3.6)
+
+    # Training commands a bicycle-model center angle. Verify that its
+    # Ackermann inner wheel reaches the manual's 22 deg limit and that the
+    # outer steering-axis path follows the CAD-informed improved geometry.
+    center_radius = 1.0 / robot.max_curvature
+    inner_angle = math.atan(robot.wheelbase_m / (center_radius - robot.track_width_m / 2.0))
+    outer_front_radius = math.hypot(center_radius + robot.track_width_m / 2.0, robot.wheelbase_m)
+    assert math.degrees(inner_angle) == pytest.approx(22.0)
+    assert outer_front_radius == pytest.approx(1.9335514663)
+
+
+def test_direct_control_profile_has_two_dimensional_action_and_no_risk(tmp_path):
+    from hunter_kinodynamic_rl.trajectory.action_space import action_dim_for_mode
+
+    profile_path = tmp_path / "direct.yaml"
+    profile_path.write_text(
+        "action_space:\n  mode: direct_control\n"
+        "features:\n  ackermann_rollout: false\n"
+        "observation:\n  robot_state_dim: 7\n"
+    )
+    profile = load_profile(str(profile_path))
+    assert action_dim_for_mode(profile.action_space) == 2
+
+
+def test_direct_control_rejects_trajectory_risk_features(tmp_path):
+    profile_path = tmp_path / "bad_direct.yaml"
+    profile_path.write_text(
+        "action_space:\n  mode: direct_control\n"
+        "features:\n  ackermann_rollout: false\n  risk_critic: true\n"
+        "risk:\n  enabled: true\n"
+    )
+    with pytest.raises(ConfigError, match="no trajectory-risk"):
+        load_profile(str(profile_path))
 
 
 def test_load_profile_unknown_name_raises():

@@ -1,0 +1,30 @@
+schema_id: tractor_scenario_plan_v1
+plan_version: tractor_scenario_plan_v1
+protocol_version: tractor_protocol_v1
+generator_version: tractor_fixed_family_templates_v1
+world_size_m: 16.0
+expected_manifest_sha256: 7ae919676a408ab08bdbc686a646a634a3789856f62a1d15ebaafd91fa2a8626
+
+splits:
+  development:
+    seed_start: 0
+    seed_end: 9999
+    instances_per_family: 32
+    permitted_use: training_and_model_selection
+  calibration:
+    seed_start: 10000
+    seed_end: 10999
+    instances_per_family: 8
+    permitted_use: risk_calibration_only
+  locked_test:
+    seed_start: 20000
+    seed_end: 20999
+    instances_per_family: 16
+    permitted_use: final_evaluation_only
+
+static_manifest: scenarios_static.yaml
+dynamic_manifest: scenarios_dynamic.yaml
+split_group_key: scenario_geometry_sha256
+require_unique_seed_across_splits: true
+require_unique_geometry_across_splits: true
+require_ackermann_feasibility: true

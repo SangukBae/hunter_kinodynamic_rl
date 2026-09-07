@@ -1,0 +1,14 @@
+schema_id: tractor_ablation_registry_v1
+single_axis_required: true
+methods:
+  B1: {representation: flat_328d, interaction: none, risk: none}
+  B2: {representation: flat_parameter_matched, interaction: none, risk: none}
+  B3: {representation: recurrent_vector, interaction: none, risk: none}
+  B4: {representation: bev, interaction: implicit_concat, risk: none}
+  B5: {representation: bev, interaction: cross_attention, risk: none}
+  B6: {representation: compact_latent_world_model, interaction: latent_rollout, risk: none}
+  B7: {representation: flat_328d, interaction: none, risk: cvar_return}
+  B8: {representation: flat_328d, interaction: none, risk: scalar_endpoint}
+  A7: {representation: factorized_ego_warped_bev, interaction: explicit_tube_product, risk: R5}
+  A8: {parent: A7, changed_axis: vehicle_residual, residual_members: 1, risk: R5}
+  A9: {parent: A8, changed_axis: uncertainty_ensemble, residual_members: 3, risk_members: 3, risk: R6}

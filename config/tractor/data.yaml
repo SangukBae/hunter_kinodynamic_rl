@@ -1,0 +1,12 @@
+schema_id: tractor_sequence_v2
+sequence_contract: reset_prefix_exact_v1
+loss_window: 16
+sampling: uniform_valid_windows
+event_balancing: false
+normalization_source: development_split_only
+candidate_sidecar_schema: mc3_candidate_v1
+privileged_fields_allowed_in_inference: false
+lidar_fov_rad: 3.141592653589793
+rear_goal_policy: forward_only_turn_unobserved_cells_are_exact_unknown
+splits: [development, calibration, locked_test]
+cause_priority_on_exact_tie: [boundary_or_unknown, dynamic, static]

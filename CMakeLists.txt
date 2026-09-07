@@ -53,8 +53,16 @@ install(
     hunter_kinodynamic_rl/evaluation/run_live_hierarchical_benchmark.py
     hunter_kinodynamic_rl/evaluation/run_live_ablation_suite.py
     hunter_kinodynamic_rl/evaluation/live_evidence_runner.py
+    hunter_kinodynamic_rl/evaluation/run_stage2_local_baselines.py
+    hunter_kinodynamic_rl/evaluation/tractor_latency.py
+    hunter_kinodynamic_rl/evaluation/tractor_acceptance.py
+    hunter_kinodynamic_rl/evaluation/materialize_environment_v2.py
     hunter_kinodynamic_rl/training/preflight.py
     hunter_kinodynamic_rl/training/hierarchical_preflight.py
+    hunter_kinodynamic_rl/training/tractor_preflight.py
+    hunter_kinodynamic_rl/training/tractor_dataset_validation.py
+    hunter_kinodynamic_rl/training/tractor_scenario_plan.py
+    hunter_kinodynamic_rl/training/train_tractor_tqc.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

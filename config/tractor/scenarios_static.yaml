@@ -1,0 +1,10 @@
+schema_id: tractor_scenario_manifest_v1
+manifest_id: tractor_static_v1
+obstacle_contract: static_only
+scenarios:
+  - {id: open_static, topology: open, obstacle_motion: none}
+  - {id: corridor_static, topology: corridor, obstacle_motion: none}
+  - {id: corner_static, topology: corner, obstacle_motion: none}
+  - {id: choke_static, topology: choke_point, obstacle_motion: none}
+  - {id: clutter_static, topology: clutter, obstacle_motion: none}
+  - {id: dead_end_static, topology: dead_end, obstacle_motion: none}

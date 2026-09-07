@@ -1,0 +1,9 @@
+schema_id: tractor_scenario_manifest_v1
+manifest_id: tractor_dynamic_v1
+obstacle_contract: dynamic
+scenarios:
+  - {id: crossing_dynamic, topology: open, obstacle_motion: crossing}
+  - {id: head_on_dynamic, topology: corridor, obstacle_motion: head_on}
+  - {id: overtaking_dynamic, topology: corridor, obstacle_motion: overtaking}
+  - {id: occlusion_dynamic, topology: corner, obstacle_motion: occlusion}
+  - {id: mixed_dynamic, topology: clutter, obstacle_motion: mixed}
