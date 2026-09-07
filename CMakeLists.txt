@@ -56,6 +56,7 @@ install(
     hunter_kinodynamic_rl/evaluation/run_stage2_local_baselines.py
     hunter_kinodynamic_rl/evaluation/tractor_latency.py
     hunter_kinodynamic_rl/evaluation/tractor_acceptance.py
+    hunter_kinodynamic_rl/evaluation/fit_comparison_calibration.py
     hunter_kinodynamic_rl/evaluation/materialize_environment_v2.py
     hunter_kinodynamic_rl/training/preflight.py
     hunter_kinodynamic_rl/training/hierarchical_preflight.py

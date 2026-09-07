@@ -226,12 +226,16 @@ def train_from_sequence_replay(
     device: str = "cpu", config_root: str | None = None,
     resume: bool = False, checkpoint_tag: str = "latest",
     checkpoint_interval: int | None = None,
+    formal_data: bool = False, scenario_manifest_path: str | Path | None = None,
 ) -> dict:
     if updates <= 0:
         raise ValueError("updates must be positive")
     contract = load_tractor_contract(config_root, variant)
     loss_window = int(contract["data"]["loss_window"])
-    report = validate_dataset(dataset_root, loss_window=loss_window)
+    report = validate_dataset(
+        dataset_root, loss_window=loss_window, formal=formal_data,
+        scenario_manifest_path=scenario_manifest_path, config_root=config_root,
+    )
     if not report.ok:
         raise RuntimeError(f"dataset validation failed: {report.errors}")
     store = EpisodeStore(dataset_root)
@@ -280,6 +284,7 @@ def train_from_sequence_replay(
         {
             "dataset_index_sha256": index.sha256(), "contract_sha256": contract["contract_sha256"],
             "seed": seed, "evidence_status": "trained_not_held_out_evaluated",
+            "formal_dataset_validated": formal_data,
         },
     )
     return {
@@ -312,12 +317,16 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--checkpoint-interval", type=int)
     train.add_argument("--resume", action="store_true")
     train.add_argument("--checkpoint-tag", default="latest")
+    train.add_argument("--formal-data", action="store_true")
+    train.add_argument("--scenario-manifest")
     pipeline = subparsers.add_parser("pipeline", help="collect, freeze replay, then train")
     pipeline.add_argument("--episodes", type=int, required=True)
     pipeline.add_argument("--updates", type=int, required=True)
     pipeline.add_argument("--batch-size", type=int)
     pipeline.add_argument("--checkpoint-interval", type=int)
     pipeline.add_argument("--max-steps-per-episode", type=int)
+    pipeline.add_argument("--formal-data", action="store_true")
+    pipeline.add_argument("--scenario-manifest")
     subparsers.add_parser("preflight", help="read-only TRACTOR contract and device gate")
     return parser
 
@@ -341,6 +350,7 @@ def main(argv=None):
             seed=args.seed, updates=args.updates, batch_size=args.batch_size,
             device=args.device, config_root=args.config_root, resume=args.resume,
             checkpoint_tag=args.checkpoint_tag, checkpoint_interval=args.checkpoint_interval,
+            formal_data=args.formal_data, scenario_manifest_path=args.scenario_manifest,
         )
     else:
         collected = collect_development_episodes(
@@ -353,6 +363,7 @@ def main(argv=None):
             seed=args.seed, updates=args.updates, batch_size=args.batch_size,
             device=args.device, config_root=args.config_root,
             checkpoint_interval=args.checkpoint_interval,
+            formal_data=args.formal_data, scenario_manifest_path=args.scenario_manifest,
         )
         result = {"phase": "pipeline", "collect": collected, "train": trained}
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
