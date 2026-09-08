@@ -13,6 +13,7 @@ from hunter_kinodynamic_rl.env.humans.dynamic_obstacle_motion import (
 )
 from hunter_kinodynamic_rl.env.randomization.calibration_manifest import validate_calibration_manifest
 from hunter_kinodynamic_rl.env.scenarios.benchmark_loader import load_benchmark
+from hunter_kinodynamic_rl.env.scenarios.ackermann_feasibility import is_ackermann_feasible
 from hunter_kinodynamic_rl.env.scenarios.footprint_geometry import (
     circle_to_oriented_rectangle_clearance, footprint_overlaps_obstacle,
     oriented_rectangle_boundary_clearance,
@@ -87,6 +88,46 @@ def test_v2_generation_is_deterministic_and_conflict_conditioned():
             assert item.target_dcpa_m <= profile.environment_v2.conflict_dcpa_range_m[1] + 1e-9
 
 
+def test_v2_generation_rechecks_feasibility_with_dynamic_t0_occupancy(monkeypatch):
+    from hunter_kinodynamic_rl.env.scenarios import tractor_environment_v2 as v2
+
+    profile = _v2_profile()
+    real_reachable = v2.is_reachable
+    obstacle_counts = []
+
+    def _spy(start_xy, goal_xy, obstacles, world_size_m, robot_radius):
+        obstacle_counts.append(len(obstacles))
+        return real_reachable(start_xy, goal_xy, obstacles, world_size_m, robot_radius)
+
+    monkeypatch.setattr(v2, "is_reachable", _spy)
+    scenario = generate_v2_scenario(
+        20000, profile.scenario, profile.environment_v2, profile.robot,
+        profile.start_pose, profile.reward.goal_threshold_m, 6000, "test",
+    )
+    assert len(scenario.dynamic_obstacles) == 8
+    assert len(scenario.static_obstacles) + len(scenario.dynamic_obstacles) in obstacle_counts
+
+
+def test_v2_generation_retries_a_rejected_dynamic_layout(monkeypatch):
+    from hunter_kinodynamic_rl.env.scenarios import tractor_environment_v2 as v2
+
+    profile = _v2_profile()
+    real_check = v2._initial_dynamic_layout_feasible
+    calls = {"count": 0}
+
+    def _reject_once(*args, **kwargs):
+        calls["count"] += 1
+        return calls["count"] > 1 and real_check(*args, **kwargs)
+
+    monkeypatch.setattr(v2, "_initial_dynamic_layout_feasible", _reject_once)
+    scenario = generate_v2_scenario(
+        20000, profile.scenario, profile.environment_v2, profile.robot,
+        profile.start_pose, profile.reward.goal_threshold_m, 6000, "test",
+    )
+    assert calls["count"] >= 2
+    assert len(scenario.dynamic_obstacles) == 8
+
+
 def test_closest_approach_metrics_recover_constructed_crossing():
     ttc, dcpa = closest_approach_metrics((0.0, 0.0), (1.0, 0.0), (2.0, -2.0), (0.0, 1.0))
     assert ttc == pytest.approx(2.0)
@@ -150,6 +191,8 @@ def test_calibration_manifest_exposes_engineering_prior_and_model_only_axes():
 def test_materialized_v2_suites_are_disjoint_and_checksum_verified():
     root = Path(default_config_root())
     manifest = json.loads((root / "benchmarks" / "environment_v2_manifest.json").read_text())
+    plan_path = root / "environment_v2" / "evaluation_suites.yaml"
+    assert manifest["plan_sha256"] == hashlib.sha256(plan_path.read_bytes()).hexdigest()
     seen = set()
     for suite_name, suite in manifest["suites"].items():
         assert len(suite["files"]) == 8
@@ -161,6 +204,34 @@ def test_materialized_v2_suites_are_disjoint_and_checksum_verified():
     loaded = load_benchmark("v2_id")
     assert len(loaded) == 8
     assert all(item.spec.environment_version == "tractor_env_v2" for item in loaded)
+
+
+def test_materialized_v2_feasible_suites_include_dynamic_t0_occupancy():
+    root = default_config_root()
+    names = (
+        "evaluation_v2_id", "evaluation_v2_ood_motion", "evaluation_v2_ood_density",
+        "evaluation_v2_ood_geometry_12m", "evaluation_v2_ood_geometry_24m",
+        "evaluation_v2_ood_system",
+    )
+    checked = 0
+    for name in names:
+        profile = load_profile(name)
+        for item in load_benchmark(profile.evaluation.benchmark, root):
+            scenario = item.spec
+            if scenario.topology == "goal_blocked":
+                continue
+            combined = list(scenario.static_obstacles) + [
+                StaticObstacle(x=obstacle.x0, y=obstacle.y0, radius=obstacle.radius)
+                for obstacle in scenario.dynamic_obstacles
+            ]
+            assert is_ackermann_feasible(
+                scenario.start_x, scenario.start_y, scenario.start_yaw,
+                scenario.goal_x, scenario.goal_y, profile.reward.goal_threshold_m,
+                combined, profile.scenario.world_size_m, profile.robot.collision_radius_m,
+                1.0 / profile.robot.max_curvature, profile.robot.wheelbase_m,
+            ), item.scenario_id
+            checked += 1
+    assert checked == 41
 
 
 def test_all_v2_evaluation_profiles_load_with_fixed_benchmarks():

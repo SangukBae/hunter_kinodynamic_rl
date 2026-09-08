@@ -13,6 +13,8 @@ cleanly on a bare host checkout, mirroring this package's other
 ROS-dependent test files.
 """
 
+import xml.etree.ElementTree as ET
+
 import pytest
 
 rclpy = pytest.importorskip("rclpy")
@@ -39,8 +41,10 @@ class _FakeFuture:
 class _FakeClient:
     def __init__(self, result):
         self._result = result
+        self.requests = []
 
     def call_async(self, req):
+        self.requests.append(req)
         return _FakeFuture(self._result)
 
 
@@ -96,6 +100,14 @@ def test_spawn_one_returns_true_on_genuine_success():
     assert obstacle_spawner._spawn_one(node, client, "m", "<sdf/>", 0.0, 0.0, 0.0, 0.0) is True
 
 
+def test_l_shape_sdf_has_valid_six_component_poses():
+    """Every SDF pose is ``x y z roll pitch yaw``; Gazebo rejects five values."""
+    root = ET.fromstring(obstacle_spawner._l_shape_sdf("l-shape", 0.8, 0.5))
+    poses = root.findall(".//pose")
+    assert len(poses) == 4
+    assert all(len((pose.text or "").split()) == 6 for pose in poses)
+
+
 def test_spawn_static_obstacles_raises_on_the_first_failure_not_just_undercounting():
     """The core P0-3 regression: a partial spawn failure must propagate as
     an exception -- previously it just silently returned a smaller
@@ -129,6 +141,9 @@ def test_delete_entities_no_op_on_an_empty_name_list():
 
 
 def test_delete_entities_succeeds_with_genuine_confirmations():
+    from ros_gz_interfaces.msg import Entity as GzEntity
+
     node = _FakeNode(service_available=True, await_result=_Result(True))
     client = _FakeClient(_Result(True))
     obstacle_spawner.delete_entities(node, client, ["hkrl_static_0", "hkrl_static_1"])  # must not raise
+    assert [request.entity.type for request in client.requests] == [GzEntity.MODEL, GzEntity.MODEL]

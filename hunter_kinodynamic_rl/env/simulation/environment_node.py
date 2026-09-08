@@ -288,6 +288,13 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         self._active_evaluation_contract_signature: Optional[tuple] = None
         self._apply_runtime_cfg(self.profile.runtime)
         self._latest_sim_time_sec: Optional[float] = None
+        # Monotonic change time for the newest distinct /clock value.  A
+        # multi_step service response can arrive while older /clock samples
+        # are still queued in the executor; gazebo_runtime uses this stamp to
+        # drain that queue before it establishes the next step's time origin.
+        # Ignition may keep publishing an unchanged clock while paused, so a
+        # raw callback-receive timestamp would never become quiescent.
+        self._latest_clock_change_monotonic_sec: Optional[float] = None
         # section item-1 (Gazebo physics-step reality-check fix): whether
         # verify_physics_step_calibration has ACTUALLY confirmed the
         # connected Gazebo world's real physics step against
@@ -517,7 +524,10 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         )
 
     def _on_clock(self, msg: Clock) -> None:
-        self._latest_sim_time_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
+        value = msg.clock.sec + msg.clock.nanosec * 1e-9
+        if value != self._latest_sim_time_sec:
+            self._latest_clock_change_monotonic_sec = time.monotonic()
+        self._latest_sim_time_sec = value
 
     # -------------------------------------------------------- observation
     def _max_range(self) -> float:
@@ -1323,8 +1333,11 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         override_path = self.get_parameter("scenario_override_path").value
         if override_path:
             benchmark_scenario = load_scenario_file(override_path)
-            return (benchmark_scenario.spec, benchmark_scenario.spec.seed, True,
-                    benchmark_scenario.dynamics_overrides, benchmark_scenario.sensor_overrides)
+            return (
+                benchmark_scenario.spec, benchmark_scenario.spec.seed, True,
+                benchmark_scenario.dynamics_overrides, benchmark_scenario.sensor_overrides,
+                benchmark_scenario.localization_overrides,
+            )
         episode_index = self._seed_scheduler.episode_index
         episode_mode = self.mode
         if self._pending_explicit_seed is not None:
@@ -1367,7 +1380,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 start_pose_cfg=self.profile.start_pose,
                 static_radius_quantizer=static_radius_quantizer,
             )
-        return scenario, seed, False, {}, {}
+        return scenario, seed, False, {}, {}, {}
 
     def _on_reset(self, request, response):
         self._reset_generation += 1  # counts ATTEMPTS -- see __init__'s comment
@@ -1379,16 +1392,28 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         self._last_command_time = time.monotonic()
         try:
             self.pause_world(True)
-            self.reset_world()
         except GazeboServiceError as e:
             raise RuntimeError(f"reset failed: Gazebo world control error: {e}") from e
 
+        # Delete runtime-spawned entities BEFORE WorldReset(model_only).
+        # Ignition removes those entities as part of model reset; deleting
+        # them afterward made every reset emit misleading `Entity ... not
+        # found` errors and meant this fail-closed cleanup path never checked
+        # the entities while they still existed.
         try:
             self._clear_previous_obstacles()
         except GazeboServiceError as e:
             raise RuntimeError(f"reset failed: obstacle cleanup error: {e}") from e
 
-        scenario, seed, is_fixed, dynamics_overrides, sensor_overrides = self._resolve_episode_scenario()
+        try:
+            self.reset_world()
+        except GazeboServiceError as e:
+            raise RuntimeError(f"reset failed: Gazebo world control error: {e}") from e
+
+        (
+            scenario, seed, is_fixed, dynamics_overrides, sensor_overrides,
+            localization_overrides,
+        ) = self._resolve_episode_scenario()
         self._scenario = scenario
         self._episode_seed = seed
         self._episode_step = 0
@@ -1436,7 +1461,7 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
             # (section P1-3/P1-5).
             try:
                 self._active_robot_config = apply_dynamics_overrides(self.profile.robot, dynamics_overrides)
-                check_sensor_overrides_supported(sensor_overrides)
+                check_sensor_overrides_supported(sensor_overrides, localization_overrides)
             except ValueError as e:
                 raise RuntimeError(f"reset failed: unsupported benchmark override: {e}") from e
             self._command_delay_steps = command_latency_steps(dynamics_overrides, self.time_delta)
@@ -1450,7 +1475,13 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
                 wheel_radius_scale=float(dynamics_overrides.get("wheel_radius_scale", 1.0)),
                 steering_gain=float(dynamics_overrides.get("steering_gain", 1.0)),
                 command_latency_sec=float(dynamics_overrides.get("command_latency_sec", 0.0)),
+                lidar_range_noise_std_m=float(sensor_overrides.get("lidar_range_noise_std_m", 0.0)),
+                lidar_dropout_prob=float(sensor_overrides.get("lidar_dropout_prob", 0.0)),
+                sensor_frame_drop_prob=float(sensor_overrides.get("sensor_frame_drop_prob", 0.0)),
+                odometry_noise_std=float(localization_overrides.get("odometry_noise_std", 0.0)),
             )
+            if sensor_overrides or localization_overrides:
+                self._domain_rand_step_rng = np.random.RandomState((seed * 7 + 1) & 0xFFFFFFFF)
         elif self.profile.domain_randomization.enabled:
             draw = sample_draw(seed, self.profile.domain_randomization)
             self._active_robot_config = apply_to_robot_config(self.profile.robot, draw)
@@ -1478,14 +1509,18 @@ class KinodynamicEnvironmentNode(GazeboRuntimeMixin, Node):
         # classify_draw_fields itself, which has no FeatureFlags access) --
         # see domain_randomizer.py's GAZEBO_APPLIED_FIELDS docstring.
         draw_classification = None
-        if self.profile.domain_randomization.enabled:
+        if is_fixed or self.profile.domain_randomization.enabled:
             draw_classification = dict(classify_draw_fields(self._active_domain_rand_draw))
             if self.profile.features.trajectory_l_preview_blend:
                 draw_classification["steering_gain"] = "gazebo_applied"
+        logged_draw = (
+            self._active_domain_rand_draw
+            if is_fixed or self.profile.domain_randomization.enabled else None
+        )
         self.get_logger().info(
             f"[reset] reset_generation={self._reset_generation} episode seed={seed} fixed_benchmark={is_fixed} "
             f"static_obstacles={len(scenario.static_obstacles)} dynamic_obstacles={len(scenario.dynamic_obstacles)} "
-            f"domain_rand_draw={self._active_domain_rand_draw if self.profile.domain_randomization.enabled else None} "
+            f"system_draw={logged_draw} "
             f"domain_rand_classification={draw_classification} "
             f"start_pose_heading_mode={self.profile.start_pose.heading_mode} "
             f"heading_sample_attempts={scenario.heading_sample_attempts} "

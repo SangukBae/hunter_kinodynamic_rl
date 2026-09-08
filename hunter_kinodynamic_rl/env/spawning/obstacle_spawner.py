@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ros_gz_interfaces.msg import Entity as GzEntity
 from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
 
 from hunter_kinodynamic_rl.env.simulation.gazebo_service_wait import GazeboServiceError
@@ -69,9 +70,9 @@ def _l_shape_sdf(model_name: str, length_m: float, width_m: float, height: float
         f'<size>{length_m:.3f} {arm:.3f} {height:.3f}</size></box></geometry></collision>'
         f'<visual name="visual_x"><pose>0 {y_offset:.3f} 0 0 0 0</pose><geometry><box>'
         f'<size>{length_m:.3f} {arm:.3f} {height:.3f}</size></box></geometry></visual>'
-        f'<collision name="collision_y"><pose>{x_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<collision name="collision_y"><pose>{x_offset:.3f} 0 0 0 0 0</pose><geometry><box>'
         f'<size>{arm:.3f} {width_m:.3f} {height:.3f}</size></box></geometry></collision>'
-        f'<visual name="visual_y"><pose>{x_offset:.3f} 0 0 0 0</pose><geometry><box>'
+        f'<visual name="visual_y"><pose>{x_offset:.3f} 0 0 0 0 0</pose><geometry><box>'
         f'<size>{arm:.3f} {width_m:.3f} {height:.3f}</size></box></geometry></visual>'
         '</link></model></sdf>'
     )
@@ -183,6 +184,11 @@ def delete_entities(node, delete_client, names: List[str]) -> None:
     for name in names:
         req = DeleteEntity.Request()
         req.entity.name = name
+        # Ignition resolves (name, type), not name alone.  The default type
+        # is NONE (0), which produced `Entity ... type [0] not found` while
+        # the MODEL remained in the world; the service could still report
+        # success, making the old confirmation check a false positive.
+        req.entity.type = GzEntity.MODEL
         future = delete_client.call_async(req)
         result = node._await_future(future, timeout=node._gz_call_timeout_sec, op=f"delete[{name}]")
         if result is None:

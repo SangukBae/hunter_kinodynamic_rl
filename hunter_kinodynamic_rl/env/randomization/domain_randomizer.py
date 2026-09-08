@@ -186,36 +186,48 @@ def command_latency_steps(overrides: dict, time_delta_sec: float) -> int:
     return max(0, round(latency / max(time_delta_sec, 1e-6)))
 
 
-# Fixed-BENCHMARK sensor overrides stay unsupported (section P1-5's
-# disclosed gap) even though a real LiDAR/odometry-noise consumer now
-# exists for the PROCEDURAL domain-randomization path (section P1-10) --
-# THIS module's per-episode-RANDOMIZED noise (drawn from a configured range
-# every episode) is TRAIN-ONLY, so wiring a benchmark scenario's own
-# `sensor:` override into the SAME noise consumer would contradict that
-# boundary and break reproducibility across evaluation runs. A non-empty
-# `sensor:` override block in a benchmark YAML must still raise, not
-# silently do nothing.
+# Fixed-BENCHMARK sensor and localization overrides use a deliberately small
+# whitelist.  Each accepted field reaches the same observation-only consumer
+# as procedural randomization, but its value and RNG seed are frozen by the
+# materialized scenario. Unknown fields still fail closed rather than becoming
+# silently inert benchmark labels.
 #
 # This is UNRELATED to `config/schema.py`'s ``SensorNoiseConfig``
 # (``env/simulation/sensor_noise.py``) -- that is a SEPARATE, fixed-shape,
-# profile-authored noise model which the requested EVALUATION profile's own
-# `sensor_noise` section legitimately controls (see
+# profile-authored noise model which an EVALUATION profile's own `sensor_noise`
+# section legitimately controls (see
 # `evaluation/contract_override.py` / `evaluation/fingerprint.py`'s
 # `EVALUATION_CONTRACT_SECTIONS`) -- so evaluation is not unconditionally
 # "noise-free": a profile that enables `sensor_noise` deliberately makes a
 # benchmark noisy, in a fully reproducible (seeded), per-checkpoint-uniform
-# way. Only THIS module's per-episode-randomized, per-scenario override axis
-# is rejected outright for fixed benchmarks.
-def check_sensor_overrides_supported(overrides: dict) -> None:
-    if overrides:
+# way. When both are enabled, the scenario axis and profile noise compose and
+# remain separately visible through their respective configuration identities.
+SUPPORTED_SENSOR_OVERRIDE_KEYS = frozenset({
+    "lidar_range_noise_std_m", "lidar_dropout_prob", "sensor_frame_drop_prob",
+})
+SUPPORTED_LOCALIZATION_OVERRIDE_KEYS = frozenset({"odometry_noise_std"})
+
+
+def check_sensor_overrides_supported(
+    overrides: dict, localization_overrides: dict | None = None,
+) -> None:
+    unknown_sensor = set(overrides) - SUPPORTED_SENSOR_OVERRIDE_KEYS
+    unknown_localization = set(localization_overrides or {}) - SUPPORTED_LOCALIZATION_OVERRIDE_KEYS
+    if unknown_sensor or unknown_localization:
         raise ValueError(
-            f"sensor overrides {sorted(overrides)} are not supported for FIXED benchmark scenarios "
-            "(this is the TRAIN-ONLY, per-episode-randomized domain-randomization axis -- see "
-            "sample_draw/apply_lidar_noise/apply_odometry_noise; a reproducible, evaluation-profile-"
-            "controlled sensor noise model is available separately via SensorNoiseConfig / the "
-            "evaluation contract's own `sensor_noise` section) -- remove them from this scenario's "
-            "`sensor:` block."
+            "unsupported fixed sensor/localization override keys: "
+            f"sensor={sorted(unknown_sensor)}, localization={sorted(unknown_localization)}"
         )
+    probabilities = (
+        float(overrides.get("lidar_dropout_prob", 0.0)),
+        float(overrides.get("sensor_frame_drop_prob", 0.0)),
+    )
+    if any(value < 0.0 or value > 1.0 for value in probabilities):
+        raise ValueError("fixed sensor dropout probabilities must lie in [0,1]")
+    if float(overrides.get("lidar_range_noise_std_m", 0.0)) < 0.0:
+        raise ValueError("fixed LiDAR range noise must be non-negative")
+    if float((localization_overrides or {}).get("odometry_noise_std", 0.0)) < 0.0:
+        raise ValueError("fixed odometry noise must be non-negative")
 
 
 def apply_lidar_noise(ranges: np.ndarray, draw: RandomizationDraw, rng: np.random.RandomState,

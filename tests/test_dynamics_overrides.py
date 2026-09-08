@@ -62,15 +62,12 @@ def test_sensor_overrides_empty_is_supported():
     check_sensor_overrides_supported({})  # no raise
 
 
-def test_sensor_overrides_nonempty_raises_unsupported():
-    """Fixed BENCHMARKS still cannot request the TRAIN-ONLY, per-episode-
-    RANDOMIZED domain-randomization sensor axis (this would break
-    reproducibility across evaluation runs) even though a real consumer now
-    exists for the separate procedural domain-randomization path (section
-    P1-10) -- see test_domain_randomizer_consumers.py for that. This is
-    UNRELATED to SensorNoiseConfig/the evaluation contract's own
-    `sensor_noise` section (see test_fingerprint.py /
-    test_contract_override.py), which a benchmark MAY legitimately be noisy
-    under when the requested evaluation profile enables it."""
-    with pytest.raises(ValueError, match="not supported for FIXED benchmark"):
-        check_sensor_overrides_supported({"lidar_range_noise_std_m": 0.05})
+def test_fixed_sensor_and_localization_axes_are_explicitly_whitelisted():
+    check_sensor_overrides_supported(
+        {"lidar_range_noise_std_m": 0.05, "lidar_dropout_prob": 0.02},
+        {"odometry_noise_std": 0.01},
+    )
+    with pytest.raises(ValueError, match="unsupported fixed"):
+        check_sensor_overrides_supported({"invented_noise": 0.05})
+    with pytest.raises(ValueError, match="probabilities"):
+        check_sensor_overrides_supported({"lidar_dropout_prob": 1.5})

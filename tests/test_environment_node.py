@@ -59,6 +59,23 @@ def test_reset_and_step_run_end_to_end_with_stubbed_gazebo(node):
     assert len(step_resp.state) == len(reset_resp.state)
 
 
+def test_reset_deletes_spawned_obstacles_before_world_model_reset(node):
+    """WorldReset removes runtime models, so cleanup must run first."""
+    _stub_gazebo(node)
+    calls = []
+    node.pause_world = lambda paused: calls.append(("pause", paused))
+    node._clear_previous_obstacles = lambda: calls.append(("clear_obstacles", None))
+    node.reset_world = lambda: calls.append(("reset_world", None))
+
+    node._on_reset(Reset.Request(), Reset.Response())
+
+    assert calls[:3] == [
+        ("pause", True),
+        ("clear_obstacles", None),
+        ("reset_world", None),
+    ]
+
+
 def test_first_step_after_a_slow_reset_is_not_a_false_emergency_stop(node):
     """The core P0-3 regression: /reset's own (real, legitimate) Gazebo
     round-trip routinely exceeds SafetyLimits.max_command_age_sec -- here
@@ -320,6 +337,96 @@ def test_multi_step_advance_requests_pause_true_alongside_multi_step(node):
     node.multi_step_advance(n_steps=100, expected_dt_sec=0.1, confirm_timeout_sec=0.5)
 
     assert captured["pause"] is True
+
+
+def test_multi_step_waits_past_the_lower_tolerance_edge_for_the_final_clock_sample(node):
+    """A lagging /clock queue must not make this call return at expected-tol.
+
+    The old loop accepted 0.095 immediately for an expected 0.100 +/- 0.005
+    advance.  The next call then used that stale value as its origin and
+    appeared to over-step by exactly 0.005 s in live Gazebo.
+    """
+    import threading
+
+    node._latest_sim_time_sec = 5.0
+    updates_done = threading.Event()
+
+    def _fake_call_world_service(client, req, srv_name, op):
+        def _deliver_clock_queue():
+            node._latest_sim_time_sec = 5.095
+            time.sleep(0.01)
+            node._latest_sim_time_sec = 5.1
+            updates_done.set()
+
+        threading.Thread(target=_deliver_clock_queue, daemon=True).start()
+        return type("Result", (), {"success": True})()
+
+    node._call_world_service = _fake_call_world_service
+    observed = node.multi_step_advance(
+        n_steps=100, expected_dt_sec=0.1, confirm_timeout_sec=0.5,
+        tolerance_sec=0.005,
+    )
+    assert updates_done.wait(timeout=0.5)
+    assert observed == pytest.approx(0.1)
+
+
+def test_multi_step_drains_a_changing_clock_before_capturing_its_origin(node):
+    """Queued pre-request samples must be included in ``before``."""
+    import threading
+
+    node._latest_sim_time_sec = 5.0
+    node._latest_clock_change_monotonic_sec = time.monotonic()
+    baseline_seen = {}
+
+    def _finish_preexisting_clock_queue():
+        time.sleep(0.002)
+        node._latest_sim_time_sec = 5.001
+        node._latest_clock_change_monotonic_sec = time.monotonic()
+
+    update_thread = threading.Thread(target=_finish_preexisting_clock_queue, daemon=True)
+    update_thread.start()
+
+    def _fake_call_world_service(client, req, srv_name, op):
+        baseline_seen["value"] = node._latest_sim_time_sec
+        node._latest_sim_time_sec += 0.1
+        return type("Result", (), {"success": True})()
+
+    node._call_world_service = _fake_call_world_service
+    observed = node.multi_step_advance(
+        n_steps=100, expected_dt_sec=0.1, confirm_timeout_sec=0.5,
+        tolerance_sec=0.0002,
+    )
+    update_thread.join(timeout=0.5)
+    assert baseline_seen["value"] == pytest.approx(5.001)
+    assert observed == pytest.approx(0.1)
+
+
+def test_multi_step_drains_queued_clock_samples_before_deciding_over_step(node):
+    """Service completion may precede delivery of the final /clock sample."""
+    import threading
+
+    from hunter_kinodynamic_rl.env.simulation.gazebo_service_wait import GazeboServiceError
+
+    node._latest_sim_time_sec = 5.0
+    updates_done = threading.Event()
+
+    def _fake_call_world_service(client, req, srv_name, op):
+        def _deliver_clock_queue():
+            node._latest_sim_time_sec = 5.1
+            time.sleep(0.001)
+            node._latest_sim_time_sec = 5.2
+            updates_done.set()
+
+        threading.Thread(target=_deliver_clock_queue, daemon=True).start()
+        return type("Result", (), {"success": True})()
+
+    node._call_world_service = _fake_call_world_service
+    with pytest.raises(GazeboServiceError, match="over-step"):
+        node.multi_step_advance(
+            n_steps=100, expected_dt_sec=0.1, confirm_timeout_sec=0.5,
+            tolerance_sec=0.01,
+        )
+    assert updates_done.wait(timeout=0.5)
 
 
 def test_multi_step_advance_rejects_an_over_step_expected_01_actual_02(node):

@@ -1,5 +1,5 @@
 {
-  "plan_sha256": "7e55c83db634a6aa1e7e529e425e770d53ca9302c28e20739f244300098b6092",
+  "plan_sha256": "4e1dad516c774efe3e48047f6439b94b41bb151546709e2ffc77b1157c20d634",
   "schema_id": "tractor_environment_benchmark_manifest_v2",
   "suites": {
     "v2_id": {
@@ -7,12 +7,12 @@
         {
           "file": "scenario_001.yaml",
           "seed": 20000,
-          "sha256": "5323aa8d4f60c289955277d7d1e9fb2c32c8c15181e21a947b15b9ea36c7f417"
+          "sha256": "2ca6f1fb50b90e26a6e4e1fab41043ab4fb7949b7cc3fb8fc8097530adbe2d35"
         },
         {
           "file": "scenario_002.yaml",
           "seed": 20001,
-          "sha256": "e14bd6fbb902ad70a62fb3c7a6324b07477f7b43b2319e2a91feea1588572153"
+          "sha256": "62428bb7ce857029771fb89eda8a626779475ad3001e93b87bcf3af1f16e712e"
         },
         {
           "file": "scenario_003.yaml",
@@ -22,12 +22,12 @@
         {
           "file": "scenario_004.yaml",
           "seed": 20003,
-          "sha256": "5924e3cf3871487e40b4ccb1fee47bc5d26fcca92d28821755f2d363ad09d163"
+          "sha256": "4972081503b0d61d9c9bcf1c34aefc4a85a734dba5a7028a5987373f1e1e00d1"
         },
         {
           "file": "scenario_005.yaml",
           "seed": 20004,
-          "sha256": "f5d0e8aba20ed64a0f941ae719e10cc00de58318a39bd2461611d2397356eba9"
+          "sha256": "0cc1582a8f75ff07c52594509ea089caa424ee71dbdc0f547f62d0da7253b9cf"
         },
         {
           "file": "scenario_006.yaml",
@@ -37,12 +37,12 @@
         {
           "file": "scenario_007.yaml",
           "seed": 20006,
-          "sha256": "2e064c50f4680ed7b031ca32adcfd9ffd8f7e29b05751fddb8922e82ad80eb28"
+          "sha256": "78e2eafde5541599093c93265ba0affab7db824ba4a3ed3d05c2fdef72e4acad"
         },
         {
           "file": "scenario_008.yaml",
           "seed": 20007,
-          "sha256": "160f2cc1a20cacbd1341105a97cc0705b17541f6f6ef0f9a6d6ae6e488125b35"
+          "sha256": "b76d1af12f7b85811a350a8d3bba6d1ecbe874d0357498aa37f6a5f55f40502c"
         }
       ],
       "world_size_m": 16.0
@@ -52,7 +52,7 @@
         {
           "file": "scenario_001.yaml",
           "seed": 20200,
-          "sha256": "8ba073ef099cdc3490d2c07494def07a21e5e6e4699e1b1d3c840fec7dab6996"
+          "sha256": "4294c9e3c5573630456404e681a4d200969755782bd6d3886a3840d134612f19"
         },
         {
           "file": "scenario_002.yaml",
@@ -67,7 +67,7 @@
         {
           "file": "scenario_004.yaml",
           "seed": 20203,
-          "sha256": "b5b730ae168edc684bc625b962c4c86cea43ff0ed13cd5db2d5c2ef5d7c8dbe2"
+          "sha256": "0dcfe94241a4d3f93d0ce2ecaddf0c9b82eb3f69d9e3436100339033ca00ed83"
         },
         {
           "file": "scenario_005.yaml",
@@ -87,7 +87,7 @@
         {
           "file": "scenario_008.yaml",
           "seed": 20207,
-          "sha256": "a5978b7d5ce1080d3cf73b5d3e60b0bf716f552df82ec8cd647dee20ae1f58c3"
+          "sha256": "501dc736ad1d24d3b17ad28eb5d1c54e6a7f34bb533502e9299fba0d52ade82e"
         }
       ],
       "world_size_m": 16.0
@@ -97,12 +97,12 @@
         {
           "file": "scenario_001.yaml",
           "seed": 20300,
-          "sha256": "b22d06d553cfee39d350d927f81ce6d91706a0be14aa0d3e6f54edbb2656a745"
+          "sha256": "582f9cf507d1a5f5ed42d578de67332c31faec4bbee6e6f78b86edb04ebed430"
         },
         {
           "file": "scenario_002.yaml",
           "seed": 20301,
-          "sha256": "14e3917113b093bc87a4812561972f047d4771d37eb80c4156d7b9e33e771595"
+          "sha256": "2e2a4c5dfabe898cf0337cd355b08d2c70886fce9be5d92ea3fcc3b029fc5c4c"
         },
         {
           "file": "scenario_003.yaml",
@@ -112,7 +112,7 @@
         {
           "file": "scenario_004.yaml",
           "seed": 20303,
-          "sha256": "bd5ea34be809c4cd1a794d69212d7a796240050379abd3fbeccd832de52053f2"
+          "sha256": "d909c4af5e77911451718950a393a0c5df51d447359f0da9041191deda1757f2"
         },
         {
           "file": "scenario_005.yaml",
@@ -122,17 +122,17 @@
         {
           "file": "scenario_006.yaml",
           "seed": 20305,
-          "sha256": "3c046823bb37d26194b77a80a175c8bb3e8372a4578b32f45964f935399dd414"
+          "sha256": "041549e1586304cbc6601c6b81c135059a3df3caa757f60408102ad085915898"
         },
         {
           "file": "scenario_007.yaml",
           "seed": 20306,
-          "sha256": "4e5466a6aa0366232da09b8a73adcb92e4d8f63a0cd72bad02016c4990b4597f"
+          "sha256": "7b65b45399538bf0578ce935555b31371c72cdbccf231dd50496cc650f51427a"
         },
         {
           "file": "scenario_008.yaml",
           "seed": 20307,
-          "sha256": "acde459391a14123ce8bb6384371403cdfe3e7610e5fffb1b82cc57686b0bd30"
+          "sha256": "3089ee608dad391192ff3b41f8aee44630fc0ed625751174f4c0e9531ab866ff"
         }
       ],
       "world_size_m": 12.0
@@ -147,7 +147,7 @@
         {
           "file": "scenario_002.yaml",
           "seed": 20401,
-          "sha256": "a780120a366b553e53e1d4273969639d86065ade586b23630aafe824c6a8e4a9"
+          "sha256": "0e4220d942c0c3f999d1c518c57e982b3675c85ff228034d71512d7134a53793"
         },
         {
           "file": "scenario_003.yaml",
@@ -157,7 +157,7 @@
         {
           "file": "scenario_004.yaml",
           "seed": 20403,
-          "sha256": "17aa72d5aebc43d97c25f356d9b4fc1f6317edcb1fe0e8426ea786c6aad3b9eb"
+          "sha256": "dfe352d0d7c3b7d68ada00fe74022928460f3f4ef9c79ee1e0a4389e334f7388"
         },
         {
           "file": "scenario_005.yaml",
@@ -172,12 +172,12 @@
         {
           "file": "scenario_007.yaml",
           "seed": 20406,
-          "sha256": "f372b0273354cc41fcdc90f3856affd141a2e5ab2f04e361a081ea66510a577a"
+          "sha256": "d76f1f9cff81aea04d09bf514ceb0556645c9797def921fc95f9c8ac9544266a"
         },
         {
           "file": "scenario_008.yaml",
           "seed": 20407,
-          "sha256": "e19971c6dc365b3e18a205931442fe481d7813cec68ae736e107151e34d43166"
+          "sha256": "d4748b3826d698687fb42c31fc9420481405c2b89b88bc0cda90ab9431662547"
         }
       ],
       "world_size_m": 24.0
@@ -192,7 +192,7 @@
         {
           "file": "scenario_002.yaml",
           "seed": 20101,
-          "sha256": "ccb3a9d69c708e0c0a1dbe710d5471d51efda931cd0bbfcca9f4698f9a065ae3"
+          "sha256": "e0822d73924b038db1725674db1a8b8b6555dd994e34b676eeb7336a002d5717"
         },
         {
           "file": "scenario_003.yaml",
@@ -202,12 +202,12 @@
         {
           "file": "scenario_004.yaml",
           "seed": 20103,
-          "sha256": "43942d57492795b5e61220515f5fe7f30979950369caf3e6a99becad48dd83ed"
+          "sha256": "700430cf45408f13c5348337d55e1b67ac0d6a4ba634d35cb2f336bca0fbfb4e"
         },
         {
           "file": "scenario_005.yaml",
           "seed": 20104,
-          "sha256": "c3e2c34ce568e4cda8f8f03990f038ef3a28f0b64f218626e0f5c34ccbbc89df"
+          "sha256": "70655e5c8a9639914f587e213634be12b10849c6ab728c8b14c4a15eb90022cd"
         },
         {
           "file": "scenario_006.yaml",
@@ -232,7 +232,7 @@
         {
           "file": "scenario_001.yaml",
           "seed": 20500,
-          "sha256": "f03751c51c5120b028bbff911e933699befa7ccabcc015cdf634864bb9a7c549"
+          "sha256": "6584d7ca296e8d54a2c7ec720d8b38158c4c365db3163d6cb91ac0556aa1da1b"
         },
         {
           "file": "scenario_002.yaml",
@@ -242,22 +242,22 @@
         {
           "file": "scenario_003.yaml",
           "seed": 20502,
-          "sha256": "77054a81645c1f34180f78f4f21a037c5e2e664231f838af6b282657c324e459"
+          "sha256": "72af21d0fc503a4610b87c8c260559bd3f724d5ecc0ce22d14385c700a3848e6"
         },
         {
           "file": "scenario_004.yaml",
           "seed": 20503,
-          "sha256": "f29f8d34668cc701fb4e02d24b75025a45c581939b5556872f62f332885e706f"
+          "sha256": "49236f18e18b2f8ef6a50720e17b63098ab613ed3e2a33274c464298e00453ce"
         },
         {
           "file": "scenario_005.yaml",
           "seed": 20504,
-          "sha256": "1d22256333e5defe137a3473bf2882ab538f7cbdd4e4fc6745887f948624c8e7"
+          "sha256": "0ecb226194292aefc8c95f75054a0d5dd9c23832303de3ef5a7ad3224c3f4a05"
         },
         {
           "file": "scenario_006.yaml",
           "seed": 20505,
-          "sha256": "3a16518eac8b608fbe086f6ef7f147b585e27d1c25a93df829214f0403246a23"
+          "sha256": "b9e0c5eac0934c0fd4308745883876c715de5ec8fba091c60b53dda006c3dfc6"
         },
         {
           "file": "scenario_007.yaml",

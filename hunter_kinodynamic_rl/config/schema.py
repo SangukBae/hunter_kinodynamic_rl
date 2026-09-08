@@ -1018,11 +1018,11 @@ class RuntimeConfig:
     clock_confirm_timeout_sec: float = 2.0
     # code review (physics-step tolerance/contract bug): ``physics_step_tolerance_sec``
     # below is the GENERAL runtime tolerance ``multi_step_advance`` is
-    # judged against for an ordinary, FULL-DURATION advance (``propagate_state``'s
-    # ``expected_dt_sec`` is a whole ``time_delta_sec``/``reset_settle_time_sec``,
-    # ~0.1s by default) -- deliberately sized against THAT scale (a few
-    # percent of a control period), not against one raw physics step.
-    # Reusing it for the ONE-TIME calibration probe
+    # judged against for an ordinary advance.  It must stay below half of
+    # one raw physics step: accepting a whole missing/extra Gazebo tick is
+    # not deterministic stepping, even when that tick is only a small
+    # percentage of a full control period.  Reusing the historical 0.005 s
+    # value for the ONE-TIME calibration probe
     # (``verify_physics_step_calibration``, which advances by exactly
     # ``n_steps=1`` and expects only ``gazebo_max_step_size_sec`` itself,
     # e.g. 0.001s) was the actual bug: with the shipped defaults
@@ -1037,7 +1037,7 @@ class RuntimeConfig:
     # docstring for the bound ``validate()`` enforces to make this class of
     # near-miss mismatch structurally undetectable-proof, not just fixed
     # for today's default numbers.
-    physics_step_tolerance_sec: float = 0.005
+    physics_step_tolerance_sec: float = 0.0002
     # code review (physics-step tolerance/contract bug): the calibration-
     # specific tolerance ``GazeboRuntimeMixin.verify_physics_step_calibration``
     # judges its single-step (``n_steps=1``, ``expected_dt_sec==
@@ -1154,6 +1154,13 @@ class RuntimeConfig:
                 "value (e.g. 0.002s vs a declared 0.001s) could pass calibration undetected. Choose a "
                 "tighter calibration tolerance, or correct gazebo_max_step_size_sec to match the connected "
                 "world's own SDF <max_step_size>."
+            )
+        if self.physics_step_tolerance_sec >= _max_calibration_tolerance:
+            raise ConfigError(
+                "runtime.physics_step_tolerance_sec "
+                f"({self.physics_step_tolerance_sec}) must be < 0.5 * "
+                f"runtime.gazebo_max_step_size_sec ({_max_calibration_tolerance}) -- deterministic stepping "
+                "must reject a complete missing/extra Gazebo physics tick"
             )
         if self.sensor_freshness_max_reset_retries < 0:
             raise ConfigError("runtime.sensor_freshness_max_reset_retries must be >= 0")

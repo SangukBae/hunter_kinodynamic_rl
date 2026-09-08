@@ -1,7 +1,7 @@
 """Versioned TRACTOR simulation curriculum and conflict-aware scene generator.
 
 This module is pure Python/numpy.  It does not mutate the frozen
-``tractor_protocol_v1`` files and is used only when ``environment_v2.enabled``
+legacy environment files and is used only when ``environment_v2.enabled``
 is explicitly selected by a profile.
 """
 
@@ -303,6 +303,35 @@ def _make_dynamic_obstacles(
     return dynamic
 
 
+def _initial_dynamic_layout_feasible(
+    base: ScenarioSpec, static: Sequence[StaticObstacle], dynamic: Sequence[DynamicObstacleSpec],
+    scenario_cfg: ScenarioConfig, robot: RobotConfig, goal_radius_m: float,
+) -> bool:
+    """Apply the legacy initial-feasibility contract to a v2 dynamic layout.
+
+    Dynamic obstacles remain dynamic in the returned scenario.  Circular
+    t=0 envelopes are used only for this rejection filter, matching
+    :func:`procedural_generator.generate_scenario`'s established policy.
+    """
+    combined = list(static) + [
+        StaticObstacle(x=item.x0, y=item.y0, radius=item.radius)
+        for item in dynamic
+    ]
+    if not is_reachable(
+        (base.start_x, base.start_y), (base.goal_x, base.goal_y), combined,
+        scenario_cfg.world_size_m, robot.collision_radius_m,
+    ):
+        return False
+    if scenario_cfg.feasibility_check != "ackermann":
+        return True
+    return is_ackermann_feasible(
+        base.start_x, base.start_y, base.start_yaw,
+        base.goal_x, base.goal_y, goal_radius_m,
+        combined, scenario_cfg.world_size_m, robot.collision_radius_m,
+        1.0 / robot.max_curvature, robot.wheelbase_m,
+    )
+
+
 def _decorate_legacy_fallback(
     obstacles: Sequence[StaticObstacle], rng: np.random.RandomState,
     environment_cfg: EnvironmentV2Config,
@@ -329,7 +358,7 @@ def _decorate_legacy_fallback(
 def generate_v2_scenario(
     seed: int, scenario_cfg: ScenarioConfig, environment_cfg: EnvironmentV2Config,
     robot: RobotConfig, start_pose_cfg: StartPoseConfig, goal_radius_m: float,
-    episode_index: int, mode: str,
+    episode_index: int, mode: str, *, _layout_retry: int = 0,
 ) -> ScenarioSpec:
     """Generate one deterministic curriculum scene from seed and episode index."""
     if not environment_cfg.enabled:
@@ -337,6 +366,11 @@ def generate_v2_scenario(
     stage = curriculum_stage(environment_cfg, episode_index, mode)
     base_cfg = dataclasses.replace(
         scenario_cfg, min_obstacles=0, max_obstacles=0, dynamic_obstacle_count=0,
+        # A full-layout retry is reached only after an originally feasible
+        # scene could not admit a feasible dynamic placement.  Do not let a
+        # retry silently change that episode into a deliberately goal-blocked
+        # negative example merely because the mixed retry seed differs.
+        goal_infeasible_fraction=(0.0 if _layout_retry else scenario_cfg.goal_infeasible_fraction),
     )
     base = generate_scenario(
         seed, base_cfg, robot_radius=robot.collision_radius_m,
@@ -387,7 +421,49 @@ def generate_v2_scenario(
         )
         static = _decorate_legacy_fallback(base.static_obstacles, rng, environment_cfg)
         topology = "clutter_fallback"
-    dynamic = _make_dynamic_obstacles(base, static, stage, rng, scenario_cfg, environment_cfg, robot)
+    if base.realized_infeasible or not scenario_cfg.dynamic_obstacle_initial_feasibility_check:
+        dynamic = _make_dynamic_obstacles(
+            base, static, stage, rng, scenario_cfg, environment_cfg, robot,
+        )
+    else:
+        dynamic = None
+        last_placement_error = None
+        # Reuse the scenario contract's bounded layout-attempt budget.  Each
+        # redraw consumes the same seed-derived RNG stream, so generation is
+        # deterministic while never silently accepting a t=0 blocked layout.
+        for _ in range(max(1, scenario_cfg.dynamic_obstacle_placement_attempts)):
+            try:
+                candidate = _make_dynamic_obstacles(
+                    base, static, stage, rng, scenario_cfg, environment_cfg, robot,
+                )
+            except RuntimeError as error:
+                last_placement_error = error
+                continue
+            if _initial_dynamic_layout_feasible(
+                base, static, candidate, scenario_cfg, robot, goal_radius_m,
+            ):
+                dynamic = candidate
+                break
+        if dynamic is None:
+            full_layout_attempts = max(1, scenario_cfg.dynamic_obstacle_placement_attempts)
+            if _layout_retry + 1 < full_layout_attempts:
+                mixed_seed = (
+                    int(seed) ^ (0x9E3779B9 * (_layout_retry + 1))
+                ) & 0xFFFFFFFF
+                replacement = generate_v2_scenario(
+                    mixed_seed, scenario_cfg, environment_cfg, robot, start_pose_cfg,
+                    goal_radius_m, episode_index, mode, _layout_retry=_layout_retry + 1,
+                )
+                # The externally registered seed remains the episode identity;
+                # the deterministic retry schedule is part of this generator's
+                # versioned source contract and is replayed from that seed.
+                return dataclasses.replace(replacement, seed=seed)
+            detail = "" if last_placement_error is None else f"; last placement error: {last_placement_error}"
+            raise RuntimeError(
+                "tractor_env_v2: could not sample a static+dynamic t=0 feasible layout "
+                f"after {full_layout_attempts} deterministic full-layout attempts "
+                f"for seed={seed}{detail}"
+            )
     return dataclasses.replace(
         base, static_obstacles=static, dynamic_obstacles=dynamic,
         environment_version=environment_cfg.contract_version,

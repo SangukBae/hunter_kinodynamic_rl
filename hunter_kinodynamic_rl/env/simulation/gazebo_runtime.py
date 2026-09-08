@@ -193,6 +193,25 @@ class GazeboRuntimeMixin:
 
         Returns the REAL observed sim-time delta, for logging."""
         tolerance_sec = self._physics_step_tolerance_sec if tolerance_sec is None else tolerance_sec
+        quiet_period_sec = max(0.010, 2.0 * float(self._gazebo_max_step_size_sec))
+        # The world is paused by contract, yet samples generated just before
+        # the pause/reset can still be queued in the ROS subscription.  Drain
+        # them before capturing the origin as well as after the service call;
+        # otherwise even a perfect N-step Gazebo advance is measured from a
+        # stale N-1 origin.  Nodes/mocks predating the receive-time stamp keep
+        # the old immediate behavior, which is useful for pure unit stubs.
+        baseline_deadline = time.monotonic() + confirm_timeout_sec
+        while True:
+            last_receive = getattr(self, "_latest_clock_change_monotonic_sec", None)
+            now = time.monotonic()
+            if last_receive is None or now - last_receive >= quiet_period_sec:
+                break
+            if now >= baseline_deadline:
+                raise GazeboServiceError(
+                    f"multi_step[{n_steps}]: /clock did not become quiescent before stepping within "
+                    f"confirm_timeout_sec={confirm_timeout_sec:.2f}s"
+                )
+            time.sleep(0.001)
         before = self._latest_sim_time_sec
         if before is None:
             raise GazeboServiceError(
@@ -228,8 +247,21 @@ class GazeboRuntimeMixin:
         req.world_control.pause = True
         self._call_world_service(self.world_control_client, req, srv_name, f"multi_step[{n_steps}]")
 
-        deadline = time.time() + confirm_timeout_sec
+        deadline = time.monotonic() + confirm_timeout_sec
         observed_dt = self._latest_sim_time_sec - before
+        last_observed_dt = observed_dt
+        stable_since = time.monotonic()
+        # ControlWorld completes after applying all requested steps, but its
+        # service response and the corresponding /clock subscription samples
+        # travel through independent ROS paths.  With a depth-10 clock queue,
+        # returning as soon as ``expected - tolerance`` was first observed
+        # left the next call's ``before`` value up to one queue behind (seen
+        # live as 0.025 s for a requested 0.020 s advance).  Require the
+        # nominal target itself, then a short quiet period so any already-
+        # queued samples can catch up.  This is bounded by the existing clock
+        # confirmation timeout and does not relax genuine over/under-step
+        # detection.
+        numerical_epsilon = max(1e-12, abs(expected_dt_sec) * 1e-12)
         while True:
             current = self._latest_sim_time_sec
             if current is None:
@@ -237,19 +269,28 @@ class GazeboRuntimeMixin:
             if current != current:  # NaN check
                 raise GazeboServiceError(f"multi_step[{n_steps}]: /clock's sim time became NaN mid-step")
             observed_dt = current - before
+            now = time.monotonic()
+            if abs(observed_dt - last_observed_dt) > numerical_epsilon:
+                last_observed_dt = observed_dt
+                stable_since = now
             if observed_dt < -tolerance_sec:
                 raise GazeboServiceError(
                     f"multi_step[{n_steps}]: /clock moved BACKWARD -- observed sim-time delta "
                     f"{observed_dt:.6f}s is negative beyond tolerance {tolerance_sec:.6f}s (before={before:.6f}s, "
                     f"current={current:.6f}s). Refusing to treat a regressing clock as a valid physics advance."
                 )
-            if observed_dt >= (expected_dt_sec - tolerance_sec):
-                break  # reached (at least) the expected advance -- final symmetric check below decides pass/fail
-            if time.time() > deadline:
+            if observed_dt > expected_dt_sec + tolerance_sec + numerical_epsilon:
+                break  # definite over-step; fail immediately in the symmetric check below
+            if (
+                observed_dt + numerical_epsilon >= expected_dt_sec
+                and now - stable_since >= quiet_period_sec
+            ):
+                break  # nominal target reached and the /clock queue is drained
+            if now > deadline:
                 break  # never reached within budget -- falls through to the tolerance check as an under-step
-            time.sleep(0.01)
+            time.sleep(0.001)
 
-        if abs(observed_dt - expected_dt_sec) > tolerance_sec:
+        if abs(observed_dt - expected_dt_sec) > tolerance_sec + numerical_epsilon:
             raise GazeboServiceError(
                 f"multi_step[{n_steps}]: observed sim-time advance {observed_dt:.6f}s does not match expected "
                 f"{expected_dt_sec:.6f}s within tolerance {tolerance_sec:.6f}s ({'under' if observed_dt < expected_dt_sec else 'over'}"

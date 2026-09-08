@@ -1,5 +1,6 @@
 """Package-local, dirty-tree provenance must never resolve the outer repository."""
 
+import hashlib
 import subprocess
 
 import pytest
@@ -8,6 +9,7 @@ from hunter_kinodynamic_rl.evaluation.provenance import (
     collect_package_provenance,
     resolve_package_source_root,
 )
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import formal_source_identity
 
 
 def _run_git(root, *args):
@@ -60,3 +62,20 @@ def test_collects_nested_package_git_and_dirty_source_hashes(tmp_path):
 def test_explicit_non_package_root_is_not_silently_replaced(tmp_path):
     with pytest.raises(RuntimeError, match="explicit package_source_root"):
         resolve_package_source_root(str(tmp_path))
+
+
+def test_formal_source_identity_requires_committed_source_and_container_digest(monkeypatch):
+    provenance = {
+        "package_git_commit_sha": "a" * 40,
+        "tracked_diff_sha256": hashlib.sha256(b"").hexdigest(),
+        "untracked_source_manifest_sha256": hashlib.sha256(b"{}").hexdigest(),
+        "source_content_manifest_sha256": "b" * 64,
+        "source_content_file_count": 7,
+        "execution_module_sha256": "c" * 64,
+        "execution_matches_source_module": True,
+    }
+    monkeypatch.setenv("HUNTER_CONTAINER_IMAGE_DIGEST", "sha256:" + "d" * 64)
+    assert formal_source_identity(provenance)["container_image_digest"] == "sha256:" + "d" * 64
+    provenance["tracked_diff_sha256"] = "e" * 64
+    with pytest.raises(RuntimeError, match="committed tracked"):
+        formal_source_identity(provenance)

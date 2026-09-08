@@ -373,6 +373,12 @@ def test_physics_step_calibration_tolerance_accepts_the_shipped_default():
     RuntimeConfig().validate()  # gazebo_max_step_size_sec=0.001, calibration tolerance=0.0002 -- 20% of one step
 
 
+def test_general_physics_step_tolerance_must_reject_a_complete_extra_tick():
+    cfg = RuntimeConfig(gazebo_max_step_size_sec=0.001, physics_step_tolerance_sec=0.001)
+    with pytest.raises(ConfigError, match="physics_step_tolerance_sec"):
+        cfg.validate()
+
+
 def test_physics_step_calibration_tolerance_boundary_at_exactly_half_the_step_size():
     cfg_boundary = RuntimeConfig(gazebo_max_step_size_sec=0.001,
                                  physics_step_calibration_tolerance_sec=0.0005)
@@ -406,7 +412,11 @@ def test_physics_step_calibration_tolerance_bound_scales_with_a_reconfigured_ste
     with pytest.raises(ConfigError, match="physics_step_calibration_tolerance_sec"):
         cfg.validate()
 
-    cfg_ok = RuntimeConfig(gazebo_max_step_size_sec=0.0001, physics_step_calibration_tolerance_sec=0.00002)
+    cfg_ok = RuntimeConfig(
+        gazebo_max_step_size_sec=0.0001,
+        physics_step_tolerance_sec=0.00002,
+        physics_step_calibration_tolerance_sec=0.00002,
+    )
     cfg_ok.validate()
 
 

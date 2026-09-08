@@ -1,5 +1,5 @@
 # Opt-in simulation curriculum for the proposed TRACTOR-TQC local policy.
-# The frozen tractor_protocol_v1 profiles/files are intentionally unchanged.
+# The v2 environment profile is selected explicitly and leaves legacy profiles unchanged.
 robot_file: hunter_se_improved.yaml
 
 action_space:
@@ -94,6 +94,7 @@ sensor_noise:
 runtime:
   deterministic_stepping: true
   gazebo_max_step_size_sec: 0.001
+  physics_step_tolerance_sec: 0.0002
   physics_step_calibration_tolerance_sec: 0.0002
 
 training:

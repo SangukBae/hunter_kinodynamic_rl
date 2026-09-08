@@ -65,144 +65,144 @@ static_obstacles:
   width_m: 0.8887506381792668
   yaw_rad: 0.38532648122899227
 moving_obstacles:
-- x0: -1.164791455869607
-  y0: 7.271300427143335
-  vx: -0.3780389879269142
-  vy: -0.9706655204527311
-  radius: 0.5618611634181081
-  motion_pattern: cut_in
+- x0: -3.357004528758565
+  y0: 3.778502211468921
+  vx: 0.2581355526764877
+  vy: -0.26065856247295577
+  radius: 0.5540800029811715
+  motion_pattern: crossing
   shape: l_shape
-  length_m: 0.87799907819661
-  width_m: 0.7013340762547497
-  yaw_rad: 4.340998486246462
-  accel_limit_mps2: 0.7667551666859245
-  turn_rate_rad_s: 0.6165669540036971
+  length_m: 0.773359027634007
+  width_m: 0.7936840764381274
+  yaw_rad: -0.790261344826432
+  accel_limit_mps2: 0.6955303428361623
+  turn_rate_rad_s: 0.40633955115112397
   interaction_mode: reciprocal
-  target_ttc_sec: 3.098973608867976
-  target_dcpa_m: 0.08149580120525991
+  target_ttc_sec: 1.7542801468261875
+  target_dcpa_m: 0.20674515553854508
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: -2.2171394308582144
-  y0: 1.8114913746798704
-  vx: -0.8906548452192918
-  vy: 0.8993600811949669
-  radius: 0.5282806410044305
+- x0: -2.4033071130494887
+  y0: 2.4735049338959474
+  vx: -0.4170596863562664
+  vy: 0.42113601626696084
+  radius: 0.5291644470010829
   motion_pattern: bounce
-  shape: cart
-  length_m: 0.897049075765485
-  width_m: 0.5582335517581303
+  shape: l_shape
+  length_m: 0.8300341120430268
+  width_m: 0.6565846637904296
   yaw_rad: 2.351331308763361
-  accel_limit_mps2: 0.7023495270938966
-  turn_rate_rad_s: 1.0406627731188287
-  interaction_mode: reciprocal
-  target_ttc_sec: 1.3175797946179335
-  target_dcpa_m: 0.13952722820502225
-  accel_x_mps2: 0.0
-  accel_y_mps2: 0.0
-  motion_time_sec: 0.0
-- x0: -2.8052952306109775
-  y0: 3.921425810551993
-  vx: -0.6131722151078816
-  vy: -0.8537789341891816
-  radius: 0.3059733244759791
-  motion_pattern: cut_in
-  shape: box
-  length_m: 0.4713345557114917
-  width_m: 0.3902850724224306
-  yaw_rad: 4.089561527726356
-  accel_limit_mps2: 0.47583551799716806
-  turn_rate_rad_s: 0.2853232499744225
+  accel_limit_mps2: 0.6567144819966967
+  turn_rate_rad_s: 0.2591378405666451
   interaction_mode: yielding
-  target_ttc_sec: 1.0988038220799392
-  target_dcpa_m: 0.026096779509689246
+  target_ttc_sec: 1.685126995496768
+  target_dcpa_m: 0.17734928447883846
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: -4.836200747792718
-  y0: 7.115873964658572
-  vx: 0.8274588467789847
-  vy: -0.8355464068029773
-  radius: 0.34599730608968793
-  motion_pattern: sine_swerve
-  shape: cylinder
-  length_m: 0.0
-  width_m: 0.0
-  yaw_rad: -0.790261344826432
-  accel_limit_mps2: 0.6081005063427725
-  turn_rate_rad_s: 0.3827393662243755
-  interaction_mode: nonreactive
-  target_ttc_sec: 3.3071573582462594
-  target_dcpa_m: 0.03989192890079367
+- x0: 0.7380829116899148
+  y0: 7.21423353663801
+  vx: -0.6717519152874187
+  vy: -0.6652497822019487
+  radius: 0.48811017140671176
+  motion_pattern: head_on
+  shape: box
+  length_m: 0.8118020979069425
+  width_m: 0.5422024636209661
+  yaw_rad: 3.9221276355582577
+  accel_limit_mps2: 0.8837572174375028
+  turn_rate_rad_s: 0.8897463936385834
+  interaction_mode: yielding
+  target_ttc_sec: 3.8233743849615376
+  target_dcpa_m: 0.012828555516781618
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: -4.010416607183238
-  y0: 6.383162277747884
-  vx: 0.5107083308444555
-  vy: -0.5156999800322499
-  radius: 0.2742430640769655
+- x0: -0.11459767173759183
+  y0: 2.4706620738713214
+  vx: -0.5035562361554481
+  vy: 0.5084779809663424
+  radius: 0.25756584364480617
   motion_pattern: crossing
   shape: cylinder
   length_m: 0.0
   width_m: 0.0
-  yaw_rad: -0.790261344826432
-  accel_limit_mps2: 0.7977444568409107
-  turn_rate_rad_s: 0.5508013938536116
-  interaction_mode: nonreactive
-  target_ttc_sec: 3.583574804506905
-  target_dcpa_m: 0.21225676489042508
+  yaw_rad: 2.351331308763361
+  accel_limit_mps2: 0.9991422828344104
+  turn_rate_rad_s: 0.2523627189429718
+  interaction_mode: yielding
+  target_ttc_sec: 3.6098354495552543
+  target_dcpa_m: 0.22613269814947506
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: -6.536807204373981
-  y0: -5.825927607259713
-  vx: 0.8819961751133689
-  vy: 0.8734590107511225
-  radius: 0.47741607154055626
+- x0: -1.488580071168337
+  y0: 4.906183352108351
+  vx: -0.39659988730475837
+  vy: -0.39276105158244473
+  radius: 0.22425169544540458
+  motion_pattern: head_on
+  shape: cylinder
+  length_m: 0.0
+  width_m: 0.0
+  yaw_rad: 3.9221276355582577
+  accel_limit_mps2: 0.8354402052311344
+  turn_rate_rad_s: 0.5940250409219706
+  interaction_mode: nonreactive
+  target_ttc_sec: 2.612269343960391
+  target_dcpa_m: 0.06031406447606195
+  accel_x_mps2: 0.0
+  accel_y_mps2: 0.0
+  motion_time_sec: 0.0
+- x0: 1.8029054781790315
+  y0: -1.5913970642452098
+  vx: 0.2936890736433245
+  vy: 0.2908463494186229
+  radius: 0.4521237074083543
   motion_pattern: parallel
-  shape: cart
-  length_m: 0.824859011805037
-  width_m: 0.4809490951284637
+  shape: box
+  length_m: 0.812243523085515
+  width_m: 0.3973963341656931
   yaw_rad: 0.7805349819684646
-  accel_limit_mps2: 0.3298084868083073
-  turn_rate_rad_s: 1.040603312899504
-  interaction_mode: reciprocal
+  accel_limit_mps2: 0.2610160056522193
+  turn_rate_rad_s: 1.1050278788983237
+  interaction_mode: nonreactive
   target_ttc_sec: null
   target_dcpa_m: null
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: 7.62811321359202
-  y0: 1.6353094103910832
-  vx: -0.2587400412271271
-  vy: 0.2612689592780737
-  radius: 0.3590105439310267
-  motion_pattern: crossing
+- x0: -6.349734474851287
+  y0: 2.7252899798399666
+  vx: 0.6932804081197902
+  vy: 0.686569892858788
+  radius: 0.48497893728213703
+  motion_pattern: stop_go
   shape: box
-  length_m: 0.5589650647814062
-  width_m: 0.4506798630608262
-  yaw_rad: 2.351331308763361
-  accel_limit_mps2: 0.2780335566045548
-  turn_rate_rad_s: 0.44648442813151
+  length_m: 0.8203688680935743
+  width_m: 0.517506713668636
+  yaw_rad: 0.7805349819684646
+  accel_limit_mps2: 0.5820088233803525
+  turn_rate_rad_s: 0.7426278873745689
   interaction_mode: yielding
   target_ttc_sec: null
   target_dcpa_m: null
   accel_x_mps2: 0.0
   accel_y_mps2: 0.0
   motion_time_sec: 0.0
-- x0: -7.089226862895853
-  y0: -3.6341597343673167
-  vx: -0.1844604131544954
-  vy: -0.2610779095088313
-  radius: 0.2815259047961793
-  motion_pattern: cut_in
-  shape: cylinder
-  length_m: 0.0
-  width_m: 0.0
-  yaw_rad: 4.097291245719288
-  accel_limit_mps2: 0.9147480642182426
-  turn_rate_rad_s: 1.1763645624540575
+- x0: 4.941636092127297
+  y0: -2.3864581940286627
+  vx: 0.6881451628519806
+  vy: -0.6948710747585966
+  radius: 0.41611536488433737
+  motion_pattern: crossing
+  shape: box
+  length_m: 0.787274386008614
+  width_m: 0.2698277760091812
+  yaw_rad: -0.790261344826432
+  accel_limit_mps2: 0.49200900516348567
+  turn_rate_rad_s: 0.45132165699328947
   interaction_mode: yielding
   target_ttc_sec: null
   target_dcpa_m: null

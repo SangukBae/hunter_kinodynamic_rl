@@ -24,6 +24,7 @@ class BenchmarkScenario:
     spec: ScenarioSpec
     dynamics_overrides: Dict = field(default_factory=dict)
     sensor_overrides: Dict = field(default_factory=dict)
+    localization_overrides: Dict = field(default_factory=dict)
 
 
 def _scenario_from_dict(scenario_id: str, data: dict) -> BenchmarkScenario:
@@ -45,6 +46,7 @@ def _scenario_from_dict(scenario_id: str, data: dict) -> BenchmarkScenario:
     return BenchmarkScenario(
         scenario_id=scenario_id, spec=spec,
         dynamics_overrides=data.get("dynamics", {}), sensor_overrides=data.get("sensor", {}),
+        localization_overrides=data.get("localization", {}),
     )
 
 
