@@ -49,12 +49,15 @@ def binary_calibration_metrics(probability, outcome, bins: int = 10) -> dict:
     }
 
 
-def candidate_ranking_metrics(score, utility, valid) -> dict:
+def candidate_ranking_metrics(score, utility, valid, unsafe=None) -> dict:
     score = np.asarray(score, dtype=np.float64)
     utility = np.asarray(utility, dtype=np.float64)
     valid = np.asarray(valid, dtype=bool)
     if score.shape != utility.shape or score.shape != valid.shape or score.ndim != 2:
         raise ValueError("ranking tensors must be matching (N,K) arrays")
+    unsafe_array = None if unsafe is None else np.asarray(unsafe, dtype=bool)
+    if unsafe_array is not None and unsafe_array.shape != score.shape:
+        raise ValueError("unsafe mask must match ranking tensors")
     regrets, ndcg, unsafe = [], [], []
     for row in range(score.shape[0]):
         indices = np.flatnonzero(valid[row] & np.isfinite(score[row]) & np.isfinite(utility[row]))
@@ -63,7 +66,10 @@ def candidate_ranking_metrics(score, utility, valid) -> dict:
         selected = indices[np.argmax(score[row, indices])]
         best_utility = float(np.max(utility[row, indices]))
         regrets.append(best_utility - float(utility[row, selected]))
-        unsafe.append(float(utility[row, selected] < 0.0))
+        unsafe.append(float(
+            utility[row, selected] < 0.0
+            if unsafe_array is None else unsafe_array[row, selected]
+        ))
         predicted_order = indices[np.argsort(-score[row, indices], kind="stable")]
         ideal_order = indices[np.argsort(-utility[row, indices], kind="stable")]
         shifted = utility[row, indices] - np.min(utility[row, indices])

@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 import torch
 
 
-TRACTOR_ARCHITECTURE_REVISION = "tractor-tqc-r1"
+TRACTOR_ARCHITECTURE_REVISION = "tractor-tqc-r2"
 TRACTOR_ACTION_SCHEMA = "trajectory_kappa_vref_L_v1"
 
 
@@ -290,6 +290,7 @@ class BeliefState:
     future_dynamic_flow: torch.Tensor
     ego_latent: torch.Tensor
     plant_latent: torch.Tensor
+    response_prediction: torch.Tensor
     next_scene_hidden: torch.Tensor
     next_scene_hidden_valid: torch.Tensor
     next_response_hidden: torch.Tensor

@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 import math
+import hashlib
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 
 from .contracts import CandidateSet, DecisionContext, RolloutBatch, TractorConfig
 from .residual_dynamics import VehicleResidualEnsemble
+
+
+ROLLOUT_PARITY_CONTRACT = "tractor_nominal_rollout_output_grid_v1"
+
+
+def nominal_rollout_source_fingerprint() -> str:
+    """Hash both differentiable and CPU-reference rollout source bytes."""
+    package_root = Path(__file__).resolve().parents[3]
+    sources = (
+        Path(__file__).resolve(),
+        package_root / "dynamics" / "ackermann_rollout.py",
+        package_root / "dynamics" / "actuator_model.py",
+        package_root / "dynamics" / "bicycle_model.py",
+    )
+    digest = hashlib.sha256(ROLLOUT_PARITY_CONTRACT.encode("utf-8"))
+    for source in sources:
+        digest.update(source.name.encode("utf-8"))
+        digest.update(source.read_bytes())
+    return digest.hexdigest()
 
 
 def _move_towards(current: torch.Tensor, target: torch.Tensor, max_delta: float) -> torch.Tensor:

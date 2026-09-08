@@ -13,18 +13,30 @@ from pathlib import Path
 import numpy as np
 
 from hunter_kinodynamic_rl.common.seed import seed_all
-from hunter_kinodynamic_rl.config.loader import default_config_root, load_profile
+from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.config.tractor import (
-    canonical_sha256, load_tractor_contract, tractor_profile_model_mismatches,
+    canonical_sha256, load_tractor_contract,
+    require_formal_research_implementation_ready, tractor_profile_model_mismatches,
 )
 from hunter_kinodynamic_rl.evaluation.fingerprint import (
     architecture_fingerprint, training_profile_fingerprint,
 )
 from hunter_kinodynamic_rl.evaluation.provenance import collect_package_provenance
+from hunter_kinodynamic_rl.env.randomization.domain_randomizer import apply_dynamics_overrides
 from hunter_kinodynamic_rl.rl.replay import EpisodeHeader, EpisodeStore
+from hunter_kinodynamic_rl.rl.networks.tractor.nominal_rollout_adapter import (
+    nominal_rollout_source_fingerprint,
+)
 from hunter_kinodynamic_rl.training.tractor_dataset_validation import validate_dataset
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import (
+    build_formal_dataset_manifest, formal_source_identity,
+    validate_formal_dataset_manifest,
+)
 from hunter_kinodynamic_rl.training.tractor_episode_collector import (
     REALIZED_LABEL_SOURCE, TractorEpisodeRecorder, make_snapshot,
+)
+from hunter_kinodynamic_rl.training.realized_counterfactual import (
+    candidate_decoder_fingerprint,
 )
 from hunter_kinodynamic_rl.training.tractor_scenario_plan import (
     validate_materialized_scenario_manifest,
@@ -37,6 +49,7 @@ def _utc_now() -> str:
 
 def _header(
     *, entry: dict, profile, contract: dict, attestation: dict, provenance: dict,
+    effective_robot,
     step_count: int, termination_reason: str, start_utc: str, end_utc: str,
 ) -> EpisodeHeader:
     dirty_digest = canonical_sha256({
@@ -53,7 +66,7 @@ def _header(
         resolved_config_hash=training_profile_fingerprint(profile),
         protocol_version=str(contract["protocol"]["protocol_version"]),
         environment_attestation_hash=canonical_sha256(attestation),
-        robot_attestation_hash=canonical_sha256(dataclasses.asdict(profile.robot)),
+        robot_attestation_hash=canonical_sha256(dataclasses.asdict(effective_robot)),
         observation_contract_hash=canonical_sha256({
             "observation_dim": contract["model"].observation_dim,
             "t_obs": contract["model"].t_obs, "n_scan": contract["model"].n_scan,
@@ -79,6 +92,7 @@ def collect_formal_comparison_data(
     behavior_seed: int = 739391, config_root: str | None = None,
     max_steps_per_episode: int | None = None, resume: bool = False,
 ) -> dict:
+    require_formal_research_implementation_ready("formal comparison collection")
     if split_id not in {"all", "development", "calibration", "locked_test"}:
         raise ValueError("split_id must be all, development, calibration, or locked_test")
     manifest = validate_materialized_scenario_manifest(scenario_manifest_path, config_root)
@@ -98,8 +112,11 @@ def collect_formal_comparison_data(
         if split_id == "all" or item["split_id"] == split_id
     ]
     scenario_root = Path(scenario_manifest_path).resolve().parent
-    source_root = str(Path(config_root or default_config_root()).resolve().parent)
-    provenance = collect_package_provenance(source_root, __file__)
+    # Resolve source provenance independently from the config location.  A
+    # normal installed ROS invocation reads config from AMENT share, which is
+    # not and must never be recorded as the Git source root.
+    provenance = collect_package_provenance(execution_file=__file__)
+    source_identity = formal_source_identity(provenance)
     store = EpisodeStore(dataset_root)
     existing = {}
     for path in store.iter_paths():
@@ -144,7 +161,11 @@ def collect_formal_comparison_data(
             rng = np.random.default_rng(int(entry["seed"]) ^ int(behavior_seed))
             start_utc = _utc_now()
             state, reset_diagnostics = env.reset_with_diagnostics()
-            recorder = TractorEpisodeRecorder(profile, contract["model"])
+            effective_profile = dataclasses.replace(
+                profile,
+                robot=apply_dynamics_overrides(profile.robot, entry["geometry"]["dynamics"]),
+            )
+            recorder = TractorEpisodeRecorder(effective_profile, contract["model"])
             current = make_snapshot(
                 state, contract["model"], diagnostics=reset_diagnostics,
                 pose_covariance=env.latest_pose_covariance, previous=None,
@@ -175,13 +196,31 @@ def collect_formal_comparison_data(
                     "next_observation_valid": False, "bellman_sample_valid": False,
                 })
                 termination_reason = "operator_stop"
-            label_report = recorder.finalize_realized_labels()
+            action_contract_sha256 = architecture_fingerprint(profile)
+            effective_robot_sha256 = canonical_sha256(
+                dataclasses.asdict(effective_profile.robot)
+            )
+            label_report = recorder.finalize_realized_labels(lineage={
+                "candidate_action_contract_sha256": action_contract_sha256,
+                "candidate_trajectory_contract_sha256": canonical_sha256(
+                    dataclasses.asdict(profile.trajectory)
+                ),
+                "candidate_decoder_sha256": candidate_decoder_fingerprint(
+                    action_contract_sha256, effective_robot_sha256,
+                ),
+                "candidate_execution_sha256": nominal_rollout_source_fingerprint(),
+                "candidate_robot_sha256": effective_robot_sha256,
+                "candidate_scenario_sha256": entry["scenario_geometry_sha256"],
+                "candidate_source_artifact_sha256": entry["artifact_sha256"],
+                "rollout_source_sha256": nominal_rollout_source_fingerprint(),
+            })
             for name in label_totals:
                 label_totals[name] += int(label_report[name])
             columns = recorder.columns()
             header = _header(
                 entry=entry, profile=profile, contract=contract, attestation=attestation,
-                provenance=provenance, step_count=len(recorder.rows),
+                provenance=provenance, effective_robot=effective_profile.robot,
+                step_count=len(recorder.rows),
                 termination_reason=termination_reason, start_utc=start_utc, end_utc=_utc_now(),
             )
             path, digest = store.append(header, dict(columns))
@@ -199,6 +238,33 @@ def collect_formal_comparison_data(
     available_scenarios = set(existing) | {item["scenario_id"] for item in written}
     required_scenarios = {item["scenario_id"] for item in manifest["entries"]}
     full_plan_present = available_scenarios == required_scenarios
+    dataset_manifest = None
+    if full_plan_present:
+        prefreeze_report = validate_dataset(
+            dataset_root, loss_window=int(contract["data"]["loss_window"]), formal=True,
+            scenario_manifest_path=scenario_manifest_path, config_root=config_root,
+            require_dataset_manifest=False,
+        )
+        if not prefreeze_report.ok:
+            raise RuntimeError(
+                f"formal comparison dataset failed before freeze: {prefreeze_report.errors}"
+            )
+        manifest_path = Path(dataset_root) / "dataset_manifest.json"
+        manifest_arguments = {
+            "scenario_manifest_sha256": manifest["artifact_manifest_sha256"],
+            "contract_sha256": contract["contract_sha256"],
+            "protocol_version": contract["protocol"]["protocol_version"],
+            "loss_window": int(contract["data"]["loss_window"]),
+        }
+        if manifest_path.exists():
+            dataset_manifest = validate_formal_dataset_manifest(
+                dataset_root, **manifest_arguments,
+            )
+        else:
+            dataset_manifest = build_formal_dataset_manifest(
+                dataset_root, behavior_seed=behavior_seed,
+                source_identity=source_identity, **manifest_arguments,
+            )
     report = validate_dataset(
         dataset_root, loss_window=int(contract["data"]["loss_window"]),
         formal=full_plan_present, scenario_manifest_path=scenario_manifest_path,
@@ -213,6 +279,10 @@ def collect_formal_comparison_data(
         "dataset_root": str(Path(dataset_root).resolve()),
         "scenario_manifest_sha256": manifest["artifact_manifest_sha256"],
         "dataset_index_sha256": report.index_sha256,
+        "dataset_manifest_sha256": (
+            None if dataset_manifest is None
+            else dataset_manifest["dataset_manifest_sha256"]
+        ),
         "label_source": REALIZED_LABEL_SOURCE, "label_totals": label_totals,
         "formal_dataset_complete": full_plan_present,
         "performance_claim": "none_data_collection_only",

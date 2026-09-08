@@ -20,25 +20,33 @@ from .loader import default_config_root
 
 
 T = TypeVar("T")
-PROTOCOL_SCHEMA_ID = "tractor_research_protocol_v1"
+PROTOCOL_SCHEMA_ID = "tractor_research_protocol_v2"
 
 # These are code-capability gaps, not experimental outcomes.  The formal
 # campaign must stay fail-closed until each item is implemented and its entry
 # is removed together with a regression test and a new code fingerprint.
-FORMAL_RESEARCH_IMPLEMENTATION_GAPS = (
-    "stage3_stage4_representation_and_risk_feature_objectives",
-    "stage5_atomic_value_risk_rng_transaction",
-    "full_sequence_supervision_and_lineage_schema",
-    "h1_h3_prediction_ranking_and_risk_evaluator",
-    "semantic_checkpoint_and_promotion_lineage",
-    "frozen_vehicle_sensor_localization_scenario_axes",
-    "nominal_rollout_parity_and_source_fingerprint",
-)
+FORMAL_RESEARCH_IMPLEMENTATION_GAPS = ()
 
 
 def formal_research_implementation_readiness() -> dict:
     gaps = list(FORMAL_RESEARCH_IMPLEMENTATION_GAPS)
     return {"ready": not gaps, "gaps": gaps}
+
+
+def require_formal_research_implementation_ready(operation: str = "formal research workflow") -> None:
+    """Fail closed at every public formal-data entry point.
+
+    The campaign orchestrator is not a security boundary: installed console
+    scripts and Python callers can invoke collection, training, calibration,
+    or evaluation functions directly.  Keeping the gate here gives all of
+    those paths one executable readiness contract.
+    """
+    readiness = formal_research_implementation_readiness()
+    if not readiness["ready"]:
+        raise RuntimeError(
+            f"{operation} is blocked by formal implementation gaps: "
+            + ", ".join(readiness["gaps"])
+        )
 
 
 def _strict_dataclass(cls: Type[T], values: Dict[str, Any], source: str) -> T:
@@ -199,8 +207,15 @@ def load_tractor_protocol(config_root: str | None = None) -> dict:
     if set(support) != {
         "minimum_locked_scenarios_per_seed", "require_static_and_dynamic",
         "require_complete_method_seed_scenario_matrix",
+        "require_vehicle_sensor_localization_axes", "required_axis_reports",
     }:
         raise ValueError("support gate fields are incomplete or unknown")
+    if not support["require_vehicle_sensor_localization_axes"]:
+        raise ValueError("formal protocol must require all registered system axes")
+    if support["required_axis_reports"] != [
+        "vehicle_axis", "sensor_axis", "localization_axis", "system_domain",
+    ]:
+        raise ValueError("formal protocol system-axis reports are incomplete or reordered")
     if int(support["minimum_locked_scenarios_per_seed"]) <= 0:
         raise ValueError("minimum locked scenario support must be positive")
     return protocol
@@ -260,6 +275,13 @@ def load_tractor_contract(config_root: str | None = None, variant: str = "a7") -
     seeds = list(campaign.get("seeds", []))
     if len(seeds) < 5 or len(set(seeds)) != len(seeds):
         raise ValueError("headline campaign requires at least five unique seeds")
+    stage_budgets = campaign.get("stage_update_budgets")
+    if not isinstance(stage_budgets, dict) or set(stage_budgets) != {"stage3", "stage4", "stage5"}:
+        raise ValueError("campaign must define exact Stage-3/4/5 update budgets")
+    if any(int(value) <= 0 for value in stage_budgets.values()) or sum(
+        int(value) for value in stage_budgets.values()
+    ) != int(campaign.get("fixed_update_budget", 0)):
+        raise ValueError("Stage-3/4/5 budgets must be positive and sum to fixed_update_budget")
     runtime = inference_raw.get("runtime", {})
     if float(runtime.get("decision_deadline_ms", 0.0)) <= 0.0:
         raise ValueError("runtime decision deadline must be positive")

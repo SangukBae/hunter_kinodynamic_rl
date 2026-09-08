@@ -12,9 +12,18 @@ from typing import List
 
 import numpy as np
 
+from hunter_kinodynamic_rl.config.tractor import canonical_sha256
 from hunter_kinodynamic_rl.rl.replay import EpisodeStore, SequenceIndex
+from hunter_kinodynamic_rl.rl.networks.tractor.nominal_rollout_adapter import (
+    nominal_rollout_source_fingerprint,
+)
+from hunter_kinodynamic_rl.rl.replay.sequence_schema import CORE_STEP_FIELDS, FORMAL_SUPERVISION_FIELDS
 from hunter_kinodynamic_rl.training.tractor_scenario_plan import (
     validate_materialized_scenario_manifest,
+)
+from hunter_kinodynamic_rl.training.realized_counterfactual import (
+    base_transition_fingerprint, candidate_decoder_fingerprint,
+    realized_label_generator_fingerprint,
 )
 
 
@@ -39,11 +48,13 @@ class DatasetValidationReport:
     contract_hashes: dict = field(default_factory=dict)
     index_sha256: str | None = None
     scenario_manifest_sha256: str | None = None
+    dataset_manifest_sha256: str | None = None
 
 
 def validate_dataset(
     root: str | Path, loss_window: int = 16, *, formal: bool = False,
     scenario_manifest_path: str | Path | None = None, config_root: str | None = None,
+    require_dataset_manifest: bool = True,
 ) -> DatasetValidationReport:
     report = DatasetValidationReport()
     dataset_root = Path(root)
@@ -57,6 +68,7 @@ def validate_dataset(
     scenario_occurrences = Counter()
     expected_scenarios = None
     expected_protocol_version = None
+    formal_dataset_manifest = None
     if scenario_manifest_path is not None:
         try:
             manifest = validate_materialized_scenario_manifest(scenario_manifest_path, config_root)
@@ -69,10 +81,31 @@ def validate_dataset(
             report.errors.append(f"scenario manifest: {error}")
     elif formal:
         report.errors.append("formal dataset validation requires a frozen materialized scenario manifest")
+    if formal and require_dataset_manifest and report.scenario_manifest_sha256 is not None:
+        try:
+            from hunter_kinodynamic_rl.config.tractor import load_tractor_contract
+            from hunter_kinodynamic_rl.training.tractor_dataset_manifest import (
+                validate_formal_dataset_manifest,
+            )
+
+            contract = load_tractor_contract(config_root, "a7")
+            formal_dataset_manifest = validate_formal_dataset_manifest(
+                dataset_root,
+                scenario_manifest_sha256=report.scenario_manifest_sha256,
+                contract_sha256=contract["contract_sha256"],
+                protocol_version=contract["protocol"]["protocol_version"],
+                loss_window=loss_window,
+            )
+            report.dataset_manifest_sha256 = str(
+                formal_dataset_manifest["dataset_manifest_sha256"]
+            )
+        except Exception as error:
+            report.errors.append(f"formal dataset manifest: {error}")
     contract_sets = {
         "resolved_config": set(), "environment": set(), "robot": set(),
         "observation": set(), "action": set(), "trajectory": set(),
     }
+    provenance_sets = {"software_commit": set(), "dirty_state": set(), "container": set()}
     missing_numerator = Counter()
     missing_denominator = Counter()
     event_counts = Counter()
@@ -131,10 +164,55 @@ def validate_dataset(
                                 f"scenario {header.scenario_id!r} {name}={observed!r} "
                                 f"does not match frozen manifest value {expected[name]!r}"
                             )
+                    if header.robot_attestation_hash != expected["effective_robot_sha256"]:
+                        report.errors.append(
+                            f"scenario {header.scenario_id!r} effective robot hash does not match manifest"
+                        )
                     if header.protocol_version != expected_protocol_version:
                         report.errors.append(
                             f"scenario {header.scenario_id!r} protocol_version does not match manifest"
                         )
+                    if formal and expected is not None:
+                        missing_supervision = sorted(set(FORMAL_SUPERVISION_FIELDS) - set(columns))
+                        if missing_supervision:
+                            report.errors.append(
+                                f"{header.episode_id}: missing formal supervision {missing_supervision}"
+                            )
+                        else:
+                            lineage_expected = {
+                                "candidate_action_contract_sha256": header.action_contract_hash,
+                                "candidate_trajectory_contract_sha256": header.trajectory_contract_hash,
+                                "candidate_robot_sha256": expected["effective_robot_sha256"],
+                                "candidate_decoder_sha256": candidate_decoder_fingerprint(
+                                    header.action_contract_hash, header.robot_attestation_hash,
+                                ),
+                                "candidate_execution_sha256": nominal_rollout_source_fingerprint(),
+                                "candidate_label_generator_sha256": (
+                                    realized_label_generator_fingerprint()
+                                ),
+                                "candidate_scenario_sha256": header.scenario_geometry_sha256,
+                                "candidate_source_artifact_sha256": expected["artifact_sha256"],
+                                "rollout_source_sha256": nominal_rollout_source_fingerprint(),
+                            }
+                            for field_name, expected_value in lineage_expected.items():
+                                observed = set(np.asarray(columns[field_name]).astype(str))
+                                if observed != {expected_value}:
+                                    report.errors.append(
+                                        f"{header.episode_id}: {field_name} does not match its source contract"
+                                    )
+                            for row_index in range(header.step_count):
+                                row = {
+                                    name: np.asarray(columns[name])[row_index]
+                                    for name in CORE_STEP_FIELDS
+                                }
+                                observed_row_hash = str(
+                                    np.asarray(columns["base_transition_row_sha256"])[row_index]
+                                )
+                                if observed_row_hash != base_transition_fingerprint(row):
+                                    report.errors.append(
+                                        f"{header.episode_id}: base transition row hash mismatch at {row_index}"
+                                    )
+                                    break
             scenarios[header.scenario_id] += 1
             terminations[header.termination_reason] += 1
             contract_sets["resolved_config"].add(header.resolved_config_hash)
@@ -143,6 +221,9 @@ def validate_dataset(
             contract_sets["observation"].add(header.observation_contract_hash)
             contract_sets["action"].add(header.action_contract_hash)
             contract_sets["trajectory"].add(header.trajectory_contract_hash)
+            provenance_sets["software_commit"].add(header.software_commit)
+            provenance_sets["dirty_state"].add(header.dirty_state_digest)
+            provenance_sets["container"].add(header.container_image_digest)
             for field_name in (
                 "motion_valid", "localization_valid", "sensor_freshness_valid",
                 "previous_command_valid", "bellman_sample_valid",
@@ -200,8 +281,37 @@ def validate_dataset(
         name: sorted(values) for name, values in contract_sets.items()
     }
     for name, values in contract_sets.items():
+        if name == "robot" and formal and expected_scenarios is not None:
+            expected_robot_hashes = {
+                entry["effective_robot_sha256"] for entry in expected_scenarios.values()
+            }
+            if values != expected_robot_hashes:
+                report.errors.append(
+                    "formal effective robot hashes do not match the frozen vehicle-axis plan"
+                )
+            continue
         if len(values) > 1:
             report.errors.append(f"mixed {name} contract hashes: {sorted(values)}")
+    if formal:
+        for name, values in provenance_sets.items():
+            if len(values) != 1:
+                report.errors.append(f"formal dataset has mixed {name} identities: {sorted(values)}")
+        if formal_dataset_manifest is not None:
+            source = formal_dataset_manifest["source_identity"]
+            expected_dirty = canonical_sha256({
+                "tracked": source["tracked_diff_sha256"],
+                "untracked": source["untracked_source_manifest_sha256"],
+            })
+            expected_provenance = {
+                "software_commit": source["package_git_commit_sha"],
+                "dirty_state": expected_dirty,
+                "container": source["container_image_digest"],
+            }
+            for name, expected_value in expected_provenance.items():
+                if provenance_sets[name] != {expected_value}:
+                    report.errors.append(
+                        f"formal dataset {name} does not match its root source identity"
+                    )
     required_splits = {"development", "calibration", "locked_test"}
     absent = sorted(required_splits - set(split_episodes))
     if absent:

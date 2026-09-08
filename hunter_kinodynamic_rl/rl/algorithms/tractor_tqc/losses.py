@@ -127,3 +127,33 @@ def masked_flow_loss(prediction: torch.Tensor, target: torch.Tensor, valid: torc
     prediction = prediction.movedim(-3, -1)[mask]
     target = target.movedim(-3, -1)[mask]
     return F.smooth_l1_loss(prediction, target)
+
+
+def masked_occupancy_nll(
+    probability: torch.Tensor, target: torch.Tensor, valid: torch.Tensor,
+) -> torch.Tensor:
+    """Class NLL for already-normalized occupancy probabilities."""
+    if probability.ndim < 4 or probability.shape[-3] != 4:
+        raise ValueError("occupancy probability must use a four-class channel axis")
+    expected = probability.shape[:-3] + probability.shape[-2:]
+    if tuple(target.shape) != tuple(expected) or target.shape != valid.shape:
+        raise ValueError("occupancy target/mask shapes do not match probability")
+    mask = valid.bool()
+    if not mask.any():
+        return probability.sum() * 0.0
+    if ((target[mask] < 0) | (target[mask] >= 4)).any():
+        raise ValueError("valid occupancy classes must be in [0,3]")
+    log_probability = probability.clamp_min(torch.finfo(probability.dtype).tiny).log()
+    selected = log_probability.movedim(-3, -1)[mask]
+    return F.nll_loss(selected, target[mask].long())
+
+
+def masked_response_loss(
+    prediction: torch.Tensor, target: torch.Tensor, valid: torch.Tensor,
+) -> torch.Tensor:
+    if prediction.shape != target.shape or target.shape != valid.shape:
+        raise ValueError("vehicle-response target/mask shapes do not match prediction")
+    mask = valid.bool()
+    if not mask.any():
+        return prediction.sum() * 0.0
+    return F.smooth_l1_loss(prediction[mask], target[mask])

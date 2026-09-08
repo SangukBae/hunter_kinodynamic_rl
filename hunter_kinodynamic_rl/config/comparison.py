@@ -12,7 +12,7 @@ from hunter_kinodynamic_rl.config.tractor import load_tractor_contract
 
 
 BASELINE_SCHEMA_ID = "tractor_comparison_baselines_v1"
-BASELINE_ARCHITECTURE_REVISION = "tractor-comparison-baselines-r2"
+BASELINE_ARCHITECTURE_REVISION = "tractor-comparison-baselines-r3"
 BASELINE_METHODS = tuple(f"B{index}" for index in range(1, 9))
 
 

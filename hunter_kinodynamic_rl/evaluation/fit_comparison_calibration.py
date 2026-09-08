@@ -12,7 +12,10 @@ import numpy as np
 import torch
 
 from hunter_kinodynamic_rl.config.comparison import load_comparison_contract
-from hunter_kinodynamic_rl.config.tractor import canonical_sha256, load_tractor_contract
+from hunter_kinodynamic_rl.config.tractor import (
+    canonical_sha256, load_tractor_contract, require_formal_research_implementation_ready,
+)
+from hunter_kinodynamic_rl.evaluation.provenance import collect_package_provenance
 from hunter_kinodynamic_rl.rl.algorithms.comparison_baselines import ComparisonAgent
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import TractorAgent
 from hunter_kinodynamic_rl.rl.checkpointing.tractor import (
@@ -24,6 +27,9 @@ from hunter_kinodynamic_rl.rl.networks.tractor.selector import cumulative_event_
 from hunter_kinodynamic_rl.rl.replay import EpisodeStore
 from hunter_kinodynamic_rl.rl.replay.episode_store import sha256_file
 from hunter_kinodynamic_rl.training.tractor_dataset_validation import validate_dataset
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import (
+    formal_source_identity, validate_runtime_source_against_dataset,
+)
 from hunter_kinodynamic_rl.training.tractor_sequence_training import _row_inputs
 
 
@@ -128,6 +134,10 @@ def fit_comparison_calibration(
     checkpoint_tag: str = "final", device: str = "cpu", config_root: str | None = None,
     artifact_id: str | None = None, minimum_samples: int = 100,
 ) -> dict:
+    require_formal_research_implementation_ready("formal comparison calibration")
+    source_identity = formal_source_identity(
+        collect_package_provenance(execution_file=__file__)
+    )
     method_id = method_id.upper()
     if method_id not in CALIBRATED_METHODS:
         raise ValueError(f"method_id must be one of {CALIBRATED_METHODS}")
@@ -144,6 +154,10 @@ def fit_comparison_calibration(
     )
     if not report.ok:
         raise RuntimeError(f"formal calibration dataset validation failed: {report.errors}")
+    dataset_manifest = json.loads(
+        (Path(dataset_root) / "dataset_manifest.json").read_text(encoding="utf-8")
+    )
+    validate_runtime_source_against_dataset(dataset_manifest, source_identity)
     if method_id == "B8":
         agent = ComparisonAgent(
             contract["model"], contract["input_model"], contract["agent"],
@@ -152,6 +166,18 @@ def fit_comparison_calibration(
     else:
         agent = TractorAgent(contract["model"], contract["agent"], device=device, target_seed=seed)
     manifest = load_inference_weights(checkpoint_root, checkpoint_tag, agent)
+    metadata = manifest.get("metadata", {})
+    expected_checkpoint_metadata = {
+        "seed": int(seed), "dataset_index_sha256": report.index_sha256,
+        "dataset_manifest_sha256": report.dataset_manifest_sha256,
+        "scenario_manifest_sha256": report.scenario_manifest_sha256,
+        "contract_sha256": contract["contract_sha256"],
+        "protocol_sha256": contract["protocol_sha256"],
+        "formal_dataset_validated": True,
+    }
+    for name, expected in expected_checkpoint_metadata.items():
+        if metadata.get(name) != expected:
+            raise RuntimeError(f"calibration checkpoint metadata mismatch for {name!r}")
     checkpoint_sha = str(manifest["training_payload_sha256"])
     store = EpisodeStore(dataset_root)
     split_sha, expected_episode_ids = calibration_split_identity(
@@ -189,6 +215,12 @@ def fit_comparison_calibration(
         calibration_context_id=(
             "b8-scalar-endpoint-v1" if method_id == "B8" else "r5-post-aggregate-v1"
         ),
+        provenance={
+            **source_identity,
+            "dataset_manifest_sha256": report.dataset_manifest_sha256,
+            "scenario_manifest_sha256": report.scenario_manifest_sha256,
+            "contract_sha256": contract["contract_sha256"],
+        },
     )
     artifact_sha = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
     return {

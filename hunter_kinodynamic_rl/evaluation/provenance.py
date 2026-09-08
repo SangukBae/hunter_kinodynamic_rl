@@ -12,7 +12,9 @@ from typing import Dict, Iterable, Optional
 
 _SOURCE_SUFFIXES = {".py", ".yaml", ".yml", ".json", ".xml", ".launch"}
 _SOURCE_FILENAMES = {"CMakeLists.txt", "package.xml", "setup.py", "setup.cfg"}
-_IGNORED_PARTS = {".git", "build", "install", "log", "runtime", "__pycache__"}
+_IGNORED_PARTS = {
+    ".git", ".pytest_cache", "build", "install", "log", "runtime", "temp", "__pycache__",
+}
 
 
 def _looks_like_source_root(path: pathlib.Path) -> bool:
@@ -159,7 +161,12 @@ def collect_package_provenance(package_source_root: str = "", execution_file: Op
         execution_path = pathlib.Path(execution_file).resolve()
         result["execution_module_path"] = str(execution_path)
         result["execution_module_sha256"] = _sha256_file(execution_path)
-        relative = pathlib.Path("hunter_kinodynamic_rl/evaluation/run_live_hierarchical_benchmark.py")
+        parts = execution_path.parts
+        try:
+            package_index = len(parts) - 1 - tuple(reversed(parts)).index("hunter_kinodynamic_rl")
+            relative = pathlib.Path(*parts[package_index:])
+        except ValueError:
+            relative = pathlib.Path(execution_path.name)
         source_module = root / relative
         if source_module.is_file():
             result["source_module_path"] = str(source_module)

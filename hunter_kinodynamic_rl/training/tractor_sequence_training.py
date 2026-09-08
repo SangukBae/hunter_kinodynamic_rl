@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import (
-    TractorAgent, TractorRiskBatch, TractorTrainingBatch,
+    TractorAgent, TractorRepresentationBatch, TractorRiskBatch, TractorTrainingBatch,
 )
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig, TractorInputs
 from hunter_kinodynamic_rl.rl.networks.tractor.contracts import CandidateSet
@@ -268,35 +268,161 @@ class TractorSequenceBatchAssembler:
         batch.validate(self.config)
         return batch
 
+    def representation_batch(
+        self, samples: Sequence[SequenceSample],
+    ) -> TractorRepresentationBatch:
+        names = (
+            "current_bev_class_target", "current_bev_class_valid",
+            "current_dynamic_flow_target", "current_dynamic_flow_valid",
+            "future_bev_class_target", "future_bev_class_valid",
+            "future_dynamic_flow_target", "future_dynamic_flow_valid",
+            "vehicle_response_target", "vehicle_response_target_valid",
+        )
+        gathered = {name: [] for name in names}
+        for sample in samples:
+            columns = self._episode_columns(sample)
+            missing = sorted(set(names) - set(columns))
+            if missing:
+                raise ValueError(
+                    f"TRACTOR representation transaction requires dense supervision: {missing}"
+                )
+            selection = slice(sample.window.loss_start, sample.window.loss_end)
+            for name in names:
+                gathered[name].append(np.asarray(columns[name])[selection])
+        joined = {name: np.concatenate(values, axis=0) for name, values in gathered.items()}
+        batch = TractorRepresentationBatch(
+            current=self.current_inputs(samples),
+            current_bev_class_target=torch.as_tensor(
+                joined["current_bev_class_target"], device=self.device, dtype=torch.long,
+            ),
+            current_bev_class_valid=_tensor(
+                joined["current_bev_class_valid"], device=self.device, boolean=True,
+            ),
+            current_dynamic_flow_target=_tensor(
+                joined["current_dynamic_flow_target"], device=self.device,
+            ),
+            current_dynamic_flow_valid=_tensor(
+                joined["current_dynamic_flow_valid"], device=self.device, boolean=True,
+            ),
+            future_bev_class_target=torch.as_tensor(
+                joined["future_bev_class_target"], device=self.device, dtype=torch.long,
+            ),
+            future_bev_class_valid=_tensor(
+                joined["future_bev_class_valid"], device=self.device, boolean=True,
+            ),
+            future_dynamic_flow_target=_tensor(
+                joined["future_dynamic_flow_target"], device=self.device,
+            ),
+            future_dynamic_flow_valid=_tensor(
+                joined["future_dynamic_flow_valid"], device=self.device, boolean=True,
+            ),
+            vehicle_response_target=_tensor(
+                joined["vehicle_response_target"], device=self.device,
+            ),
+            vehicle_response_target_valid=_tensor(
+                joined["vehicle_response_target_valid"], device=self.device, boolean=True,
+            ),
+            action_normalized_requested=_tensor(
+                np.concatenate([
+                    np.asarray(self._episode_columns(sample)["action_normalized_requested"])[
+                        sample.window.loss_start:sample.window.loss_end
+                    ] for sample in samples
+                ], axis=0), device=self.device,
+            ),
+            transition_dt_sec=_tensor(
+                np.concatenate([
+                    np.asarray(self._episode_columns(sample)["transition_dt_sec"])[
+                        sample.window.loss_start:sample.window.loss_end
+                    ] for sample in samples
+                ], axis=0), device=self.device,
+            ).reshape(-1, 1),
+        )
+        batch.validate(self.config)
+        return batch
+
+    def has_representation_supervision(self, samples: Sequence[SequenceSample]) -> bool:
+        required = {
+            "current_bev_class_target", "current_bev_class_valid",
+            "current_dynamic_flow_target", "current_dynamic_flow_valid",
+            "future_bev_class_target", "future_bev_class_valid",
+            "future_dynamic_flow_target", "future_dynamic_flow_valid",
+            "vehicle_response_target", "vehicle_response_target_valid",
+        }
+        statuses = []
+        for sample in samples:
+            columns = self._episode_columns(sample)
+            present = required & set(columns)
+            if present and present != required:
+                raise ValueError("partial representation supervision is forbidden")
+            statuses.append(present == required)
+        if any(statuses) and not all(statuses):
+            raise ValueError("a batch cannot mix supervised and unsupervised sequence windows")
+        return bool(statuses and all(statuses))
+
 
 class TractorSequenceTrainer:
     """Execute one reproducible update in the frozen transaction order."""
 
-    def __init__(self, agent: TractorAgent, sequence_buffer, loss_weights: Mapping[str, float]):
+    def __init__(
+        self, agent: TractorAgent, sequence_buffer, loss_weights: Mapping[str, float],
+        *, training_stage: str = "stage5",
+    ):
+        if training_stage not in {"stage3", "stage4", "stage5"}:
+            raise ValueError("training_stage must be stage3, stage4, or stage5")
         self.agent = agent
         self.sequence_buffer = sequence_buffer
         self.loss_weights = dict(loss_weights)
         self.assembler = TractorSequenceBatchAssembler(agent).bind_store(sequence_buffer.store)
         self.risk_updates = 0
+        self.training_stage = training_stage
 
     def update(self, batch_size: int) -> dict[str, float]:
         samples = self.sequence_buffer.sample(batch_size, split_id="development")
-        value = self.agent.critic_step(self.assembler.training_batch(samples), update_target=False)
-        metrics = dict(value)
-        if value.get("update/applied") != 1.0:
-            raise RuntimeError("TRACTOR value update rejected; stopping before checkpoint publication")
-        risk = self.agent.risk_step(
-            self.assembler.risk_batch(samples),
+        if self.training_stage == "stage3":
+            metrics = self.agent.representation_step(
+                self.assembler.representation_batch(samples),
+                occupancy_weight=float(self.loss_weights.get("occupancy", 1.0)),
+                flow_weight=float(self.loss_weights.get("dynamic_flow", 0.5)),
+                response_weight=float(self.loss_weights.get("vehicle_response", 0.5)),
+            )
+            if metrics.get("representation/update_applied") != 1.0:
+                raise RuntimeError("TRACTOR Stage-3 representation update rejected")
+            metrics["replay/sample_draw_ordinal"] = float(self.sequence_buffer.draw_ordinal)
+            return metrics
+        if self.training_stage == "stage4":
+            metrics = self.agent.atomic_stage4_risk_step(
+                self.assembler.risk_batch(samples),
+                clearance_weight=float(self.loss_weights.get("clearance", 0.25)),
+                stopping_weight=float(self.loss_weights.get("stopping_margin", 0.25)),
+            )
+            if metrics.get("stage4/update_applied") != 1.0:
+                raise RuntimeError("TRACTOR Stage-4 feature/head transaction rejected")
+            self.risk_updates += 1
+            metrics["replay/sample_draw_ordinal"] = float(self.sequence_buffer.draw_ordinal)
+            return metrics
+        # Assemble and validate every transaction input before the target
+        # action RNG or any optimizer state is advanced.
+        value_batch = self.assembler.training_batch(samples)
+        risk_batch = self.assembler.risk_batch(samples)
+        actor_inputs = self.assembler.current_inputs(samples)
+        representation_batch = (
+            self.assembler.representation_batch(samples)
+            if self.assembler.has_representation_supervision(samples) else None
+        )
+        metrics = self.agent.atomic_value_risk_step(
+            value_batch, risk_batch, representation_batch,
+            occupancy_weight=float(self.loss_weights.get("occupancy", 1.0)),
+            flow_weight=float(self.loss_weights.get("dynamic_flow", 0.5)),
+            response_weight=float(self.loss_weights.get("vehicle_response", 0.5)),
+            risk_feature_weight=float(self.loss_weights.get("risk_feature", 0.25)),
             clearance_weight=float(self.loss_weights.get("clearance", 0.25)),
             stopping_weight=float(self.loss_weights.get("stopping_margin", 0.25)),
         )
-        metrics.update(risk)
-        if risk.get("risk/update_applied") != 1.0:
-            raise RuntimeError("TRACTOR risk update rejected; stopping before checkpoint publication")
+        if metrics.get("update/transaction_applied") != 1.0:
+            raise RuntimeError("TRACTOR value+risk transaction rejected before actor/EMA")
         self.risk_updates += 1
-        actor = self.agent.actor_step(self.assembler.current_inputs(samples), update_target=False)
+        actor = self.agent.actor_step(actor_inputs, update_target=False)
         metrics.update(actor)
         self.agent.update_target()
-        metrics["update/transaction_applied"] = 1.0
         metrics["replay/sample_draw_ordinal"] = float(self.sequence_buffer.draw_ordinal)
         return metrics

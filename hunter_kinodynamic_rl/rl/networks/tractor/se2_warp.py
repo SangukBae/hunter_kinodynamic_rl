@@ -54,6 +54,13 @@ class SE2HistoryWarp(torch.nn.Module):
             cumulative = edge if older_index == 1 else compose_pose(edge, cumulative)
             chain_valid = chain_valid & motion_valid[:, older_index - 1].bool()
             warped = self._warp(evidence[:, older_index], cumulative)
+            # grid_sample introduces small interpolation noise even for the
+            # exact identity transform. Preserve identity histories bitwise;
+            # this matters for deterministic replay and resume comparisons.
+            identity = (cumulative == 0.0).all(dim=-1)
+            warped = torch.where(
+                identity[:, None, None, None], evidence[:, older_index], warped,
+            )
             aligned.append(torch.where(chain_valid[:, None, None, None], warped, torch.zeros_like(warped)))
             aligned_valid.append(chain_valid)
         return torch.stack(aligned, dim=1), torch.stack(aligned_valid, dim=1)

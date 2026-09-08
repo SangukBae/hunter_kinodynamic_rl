@@ -142,6 +142,31 @@ PRIVILEGED_LABEL_FIELDS = (
     "privileged_obstacles_world",
 )
 
+FORMAL_SUPERVISION_FIELDS = (
+    "current_bev_class_target", "current_bev_class_valid",
+    "current_dynamic_flow_target", "current_dynamic_flow_valid",
+    "future_bev_class_target", "future_bev_class_valid",
+    "future_dynamic_flow_target", "future_dynamic_flow_valid",
+    "vehicle_response_target", "vehicle_response_target_valid",
+    "tube_oob_mass_target", "tube_coverage_valid",
+    "base_transition_row_sha256", "label_frame_id", "label_generator_version",
+    "label_source_timestamp_ns", "label_source_sha256",
+    "candidate_action_contract_sha256", "candidate_trajectory_contract_sha256",
+    "candidate_decoder_sha256", "candidate_execution_sha256",
+    "candidate_robot_sha256", "candidate_scenario_sha256",
+    "candidate_label_generator_sha256", "candidate_source_artifact_sha256",
+    "rollout_source_sha256",
+)
+
+FORMAL_LINEAGE_DIGEST_FIELDS = (
+    "base_transition_row_sha256", "label_source_sha256",
+    "candidate_action_contract_sha256", "candidate_trajectory_contract_sha256",
+    "candidate_decoder_sha256", "candidate_execution_sha256",
+    "candidate_robot_sha256", "candidate_scenario_sha256",
+    "candidate_label_generator_sha256", "candidate_source_artifact_sha256",
+    "rollout_source_sha256",
+)
+
 
 def discount_from_dt(dt_sec: np.ndarray, reference_gamma: float, reference_dt_sec: float) -> np.ndarray:
     if not (0.0 < reference_gamma <= 1.0) or reference_dt_sec <= 0.0:
@@ -303,3 +328,67 @@ def validate_episode_columns(header: EpisodeHeader, columns: Mapping[str, np.nda
             or np.any(~np.isin(obstacles[valid, :, 3].astype(np.int64), (0, 1)))
         ):
             raise ValueError("privileged obstacles require positive radii and static/dynamic cause")
+    formal_present = set(FORMAL_SUPERVISION_FIELDS) & set(arrays)
+    if formal_present:
+        missing_formal = sorted(set(FORMAL_SUPERVISION_FIELDS) - set(arrays))
+        if missing_formal:
+            raise ValueError(
+                f"partial formal supervision fields are forbidden: missing {missing_formal}"
+            )
+        n = header.step_count
+        current_class = arrays["current_bev_class_target"]
+        current_valid = arrays["current_bev_class_valid"].astype(bool)
+        current_flow = arrays["current_dynamic_flow_target"]
+        current_flow_valid = arrays["current_dynamic_flow_valid"].astype(bool)
+        future_class = arrays["future_bev_class_target"]
+        future_valid = arrays["future_bev_class_valid"].astype(bool)
+        future_flow = arrays["future_dynamic_flow_target"]
+        future_flow_valid = arrays["future_dynamic_flow_valid"].astype(bool)
+        if current_class.ndim != 3 or current_valid.shape != current_class.shape:
+            raise ValueError("current BEV target/mask must be matching (N,G,G)")
+        grid_shape = current_class.shape[1:]
+        if current_flow.shape != (n, 2, *grid_shape) or current_flow_valid.shape != (n, *grid_shape):
+            raise ValueError("current flow target/mask has an invalid shape")
+        if future_class.ndim != 4 or future_class.shape[0] != n or future_class.shape[2:] != grid_shape:
+            raise ValueError("future BEV target must be (N,H,G,G)")
+        horizon = future_class.shape[1]
+        if future_valid.shape != future_class.shape:
+            raise ValueError("future BEV target/mask shapes differ")
+        if future_flow.shape != (n, horizon, 2, *grid_shape) or future_flow_valid.shape != (
+            n, horizon, *grid_shape
+        ):
+            raise ValueError("future flow target/mask has an invalid shape")
+        if arrays["vehicle_response_target"].shape != (n, 3) or arrays[
+            "vehicle_response_target_valid"
+        ].shape != (n, 3):
+            raise ValueError("vehicle response target/mask must be (N,3)")
+        tube = arrays["tube_oob_mass_target"]
+        tube_valid = arrays["tube_coverage_valid"].astype(bool)
+        if tube.ndim != 3 or tube.shape[0] != n or tube.shape[2] != horizon or tube_valid.shape != tube.shape:
+            raise ValueError("tube OOB target/mask must be matching (N,K,H)")
+        if np.any(~np.isin(current_class[current_valid], (0, 1, 2, 3))) or np.any(
+            ~np.isin(future_class[future_valid], (0, 1, 2, 3))
+        ):
+            raise ValueError("valid occupancy classes must be in {0,1,2,3}")
+        finite_pairs = (
+            (current_flow, np.broadcast_to(current_flow_valid[:, None], current_flow.shape)),
+            (future_flow, np.broadcast_to(future_flow_valid[:, :, None], future_flow.shape)),
+            (arrays["vehicle_response_target"], arrays["vehicle_response_target_valid"].astype(bool)),
+            (tube, tube_valid),
+        )
+        if any(np.any(~np.isfinite(value[mask])) for value, mask in finite_pairs):
+            raise ValueError("valid formal regression targets must be finite")
+        if np.any((tube[tube_valid] < 0.0) | (tube[tube_valid] > 1.0)):
+            raise ValueError("valid tube OOB mass must lie in [0,1]")
+        if np.any(arrays["label_source_timestamp_ns"].astype(np.int64) != timestamps):
+            raise ValueError("label source timestamps must equal decision timestamps")
+        for name in FORMAL_LINEAGE_DIGEST_FIELDS:
+            for value in arrays[name].astype(str):
+                if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                    raise ValueError(f"{name} must contain lowercase SHA-256 digests")
+        if set(arrays["label_frame_id"].astype(str)) != {"decision_ego_se2_v1"}:
+            raise ValueError("formal dense labels use an unknown coordinate frame")
+        if set(arrays["label_generator_version"].astype(str)) != {
+            "tractor_privileged_dense_bev_v1"
+        }:
+            raise ValueError("formal dense labels use an unknown generator version")

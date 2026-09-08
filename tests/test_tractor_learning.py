@@ -1,9 +1,13 @@
 """Loss, optimizer ownership, target and gradient-routing tests."""
 
+import copy
+
+import pytest
 import torch
 
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc.agent import (
-    TractorAgent, TractorAgentConfig, TractorRiskBatch, TractorTrainingBatch,
+    TractorAgent, TractorAgentConfig, TractorRepresentationBatch, TractorRiskBatch,
+    TractorTrainingBatch,
 )
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc.losses import (
     competing_risk_nll, masked_pinball_loss, truncated_bellman_target,
@@ -96,6 +100,46 @@ def test_pinball_masks_missing_labels():
 def test_optimizer_groups_are_disjoint_and_complete():
     agent = TractorAgent(_config(), TractorAgentConfig(top_quantiles_to_drop_per_net=1))
     assert_disjoint_complete(agent.online, agent.parameter_groups())
+    assert agent.representation_optimizer is agent.value_optimizer
+
+
+def test_stage3_representation_objectives_update_only_the_registered_belief_path():
+    config = _config()
+    agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    inputs = _inputs(config)
+    grid = (1, config.grid_height, config.grid_width)
+    batch = TractorRepresentationBatch(
+        current=inputs,
+        current_bev_class_target=torch.zeros(grid, dtype=torch.long),
+        current_bev_class_valid=torch.ones(grid, dtype=torch.bool),
+        current_dynamic_flow_target=torch.zeros(1, 2, *grid[1:]),
+        current_dynamic_flow_valid=torch.ones(grid, dtype=torch.bool),
+        future_bev_class_target=torch.zeros(
+            1, config.horizon_steps, *grid[1:], dtype=torch.long,
+        ),
+        future_bev_class_valid=torch.ones(
+            1, config.horizon_steps, *grid[1:], dtype=torch.bool,
+        ),
+        future_dynamic_flow_target=torch.zeros(
+            1, config.horizon_steps, 2, *grid[1:],
+        ),
+        future_dynamic_flow_valid=torch.ones(
+            1, config.horizon_steps, *grid[1:], dtype=torch.bool,
+        ),
+        vehicle_response_target=torch.tensor([[0.25, 0.0, 0.01]]),
+        vehicle_response_target_valid=torch.ones(1, 3, dtype=torch.bool),
+        action_normalized_requested=torch.zeros(1, 3),
+        transition_dt_sec=torch.full((1, 1), 0.1),
+    )
+    before = {name: value.detach().clone() for name, value in agent.online.named_parameters()}
+    metrics = agent.representation_step(batch)
+    assert metrics["representation/update_applied"] == 1.0
+    changed = [
+        name for name, value in agent.online.named_parameters()
+        if not torch.equal(value, before[name])
+    ]
+    assert changed
+    assert all(name.startswith("belief_encoder.") for name in changed)
 
 
 def test_critic_transaction_and_actor_gradient_routing():
@@ -145,6 +189,32 @@ def test_target_policy_rng_state_round_trips():
     assert torch.equal(actual, expected)
 
 
+def test_actor_entropy_transaction_rolls_back_on_late_failure(monkeypatch):
+    torch.manual_seed(31)
+    config = _config()
+    agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    actor_before = copy.deepcopy(agent.online.actor.state_dict())
+    temperature_before = copy.deepcopy(agent.temperature.state_dict())
+    target_before = copy.deepcopy(agent.target.state_dict())
+    rng_before = torch.get_rng_state().clone()
+
+    def fail_entropy_step(*_args, **_kwargs):
+        raise FloatingPointError("injected entropy optimizer failure")
+
+    monkeypatch.setattr(agent.entropy_optimizer, "step", fail_entropy_step)
+    with pytest.raises(FloatingPointError, match="injected entropy"):
+        agent.actor_step(_inputs(config), update_target=True)
+    for name, value in agent.online.actor.state_dict().items():
+        assert torch.equal(value, actor_before[name]), name
+    for name, value in agent.temperature.state_dict().items():
+        assert torch.equal(value, temperature_before[name]), name
+    for name, value in agent.target.state_dict().items():
+        assert torch.equal(value, target_before[name]), name
+    assert agent.actor_optimizer.state_dict()["state"] == {}
+    assert agent.entropy_optimizer.state_dict()["state"] == {}
+    assert torch.equal(torch.get_rng_state(), rng_before)
+
+
 def test_risk_transaction_updates_only_risk_head():
     torch.manual_seed(8)
     config = _config()
@@ -174,3 +244,102 @@ def test_risk_transaction_updates_only_risk_head():
             changed.append(name)
     assert changed
     assert all(name.startswith("risk_head.") for name in changed)
+
+
+def test_stage4_atomic_feature_and_head_transaction_updates_only_registered_modules():
+    torch.manual_seed(28)
+    config = _config()
+    agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    inputs = _inputs(config)
+    present = torch.ones(1, config.num_candidates, dtype=torch.bool)
+    batch = TractorRiskBatch(
+        current=inputs,
+        candidates=CandidateSet(
+            torch.zeros(1, config.num_candidates, 3), present,
+            torch.zeros_like(present), "stage4-fixture",
+        ),
+        event_observed=torch.tensor([[True, False, False, False]]),
+        event_step=torch.tensor([[1, -1, -1, -1]]),
+        event_cause=torch.tensor([[0, -1, -1, -1]]),
+        censor_step=torch.tensor([[1, 2, 2, 2]]),
+        event_label_valid=present.clone(),
+        clearance_m=torch.ones(1, config.num_candidates, config.horizon_steps),
+        clearance_valid=torch.ones(
+            1, config.num_candidates, config.horizon_steps, dtype=torch.bool,
+        ),
+        stopping_margin_m=torch.ones(1, config.num_candidates, config.horizon_steps),
+        stopping_margin_valid=torch.ones(
+            1, config.num_candidates, config.horizon_steps, dtype=torch.bool,
+        ),
+    )
+    before = {name: value.detach().clone() for name, value in agent.online.named_parameters()}
+    metrics = agent.atomic_stage4_risk_step(batch)
+    assert metrics["stage4/update_applied"] == 1.0
+    assert agent.update_step == 1
+    changed = [
+        name for name, value in agent.online.named_parameters()
+        if not torch.equal(value, before[name])
+    ]
+    assert changed
+    assert all(name.startswith(("interaction.", "temporal_aggregator.", "risk_head.")) for name in changed)
+
+
+def test_atomic_value_risk_transaction_rolls_back_weights_optimizer_step_and_rng(monkeypatch):
+    torch.manual_seed(18)
+    config = _config()
+    agent = TractorAgent(
+        config, TractorAgentConfig(top_quantiles_to_drop_per_net=1), target_seed=29,
+    )
+    inputs = _inputs(config)
+    value_batch = TractorTrainingBatch(
+        current=inputs, next=inputs,
+        action_normalized_requested=torch.zeros(1, 3), reward=torch.ones(1, 1),
+        discount_factor=torch.full((1, 1), 0.99),
+        terminated=torch.zeros(1, 1, dtype=torch.bool),
+        truncated=torch.zeros(1, 1, dtype=torch.bool),
+        bellman_sample_valid=torch.ones(1, 1, dtype=torch.bool),
+    )
+    present = torch.ones(1, config.num_candidates, dtype=torch.bool)
+    risk_batch = TractorRiskBatch(
+        current=inputs,
+        candidates=CandidateSet(
+            torch.zeros(1, config.num_candidates, 3), present,
+            torch.zeros_like(present), "fixture",
+        ),
+        event_observed=torch.zeros_like(present),
+        event_step=torch.full((1, config.num_candidates), -1, dtype=torch.long),
+        event_cause=torch.full((1, config.num_candidates), -1, dtype=torch.long),
+        censor_step=torch.full(
+            (1, config.num_candidates), config.horizon_steps - 1, dtype=torch.long,
+        ),
+        event_label_valid=present.clone(),
+        clearance_m=torch.ones(1, config.num_candidates, config.horizon_steps),
+        clearance_valid=torch.ones(
+            1, config.num_candidates, config.horizon_steps, dtype=torch.bool,
+        ),
+        stopping_margin_m=torch.ones(1, config.num_candidates, config.horizon_steps),
+        stopping_margin_valid=torch.ones(
+            1, config.num_candidates, config.horizon_steps, dtype=torch.bool,
+        ),
+    )
+    weights_before = {
+        name: value.detach().clone() for name, value in agent.online.state_dict().items()
+    }
+    rng_before = agent.target_generator.get_state().clone()
+
+    real_objective = agent._risk_objective
+    calls = {"count": 0}
+
+    def _reject_head_side(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise FloatingPointError("injected risk-head failure")
+        return real_objective(*args, **kwargs)
+
+    monkeypatch.setattr(agent, "_risk_objective", _reject_head_side)
+    with pytest.raises(FloatingPointError, match="injected"):
+        agent.atomic_value_risk_step(value_batch, risk_batch)
+    assert agent.update_step == 0
+    assert torch.equal(agent.target_generator.get_state(), rng_before)
+    for name, value in agent.online.state_dict().items():
+        assert torch.equal(value, weights_before[name]), name

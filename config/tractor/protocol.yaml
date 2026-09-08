@@ -1,9 +1,9 @@
-schema_id: tractor_research_protocol_v1
-protocol_version: tractor_protocol_v1
+schema_id: tractor_research_protocol_v2
+protocol_version: tractor_protocol_v2
 status: frozen
-frozen_utc: "2026-09-07T00:00:00Z"
+frozen_utc: "2026-09-08T00:00:00Z"
 change_control: new_version_new_output_root_and_no_locked_test_reuse
-frozen_payload_sha256: fe2c1cfbd175c12c333173a7c9ccd25edf885fbfc18e519640c4d7e597ba9ee1
+frozen_payload_sha256: 9344a4b7a0da8bdcb487859a30e40fdc025775f68f4f36ef0da0ca1c5dbf688d
 
 primary_method: A7
 primary_baseline: B1
@@ -61,3 +61,5 @@ support_gates:
   minimum_locked_scenarios_per_seed: 176
   require_static_and_dynamic: true
   require_complete_method_seed_scenario_matrix: true
+  require_vehicle_sensor_localization_axes: true
+  required_axis_reports: [vehicle_axis, sensor_axis, localization_axis, system_domain]

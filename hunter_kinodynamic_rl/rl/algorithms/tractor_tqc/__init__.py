@@ -1,3 +1,9 @@
-from .agent import TractorAgent, TractorAgentConfig, TractorRiskBatch, TractorTrainingBatch
+from .agent import (
+    TractorAgent, TractorAgentConfig, TractorRepresentationBatch, TractorRiskBatch,
+    TractorTrainingBatch,
+)
 
-__all__ = ["TractorAgent", "TractorAgentConfig", "TractorRiskBatch", "TractorTrainingBatch"]
+__all__ = [
+    "TractorAgent", "TractorAgentConfig", "TractorRepresentationBatch",
+    "TractorRiskBatch", "TractorTrainingBatch",
+]

@@ -15,6 +15,9 @@ from hunter_kinodynamic_rl.rl.replay.sequence_schema import (
     validate_terminal_semantics,
 )
 from hunter_kinodynamic_rl.training.tractor_dataset_validation import validate_dataset
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import (
+    build_formal_dataset_manifest, validate_formal_dataset_manifest,
+)
 
 
 def _header(episode_id: str, steps: int, split_id: str = "development"):
@@ -129,6 +132,28 @@ def test_episode_is_immutable_checksummed_and_fail_closed(tmp_path: Path):
         store.append(header, _columns(5))
     with pytest.raises(RuntimeError, match="checksum"):
         store.load("episode-1", "0" * 64)
+
+
+def test_formal_dataset_root_manifest_binds_every_episode_and_sequence_index(tmp_path: Path):
+    store = EpisodeStore(tmp_path)
+    store.append(_header("episode-1", 5), _columns(5))
+    manifest = build_formal_dataset_manifest(
+        tmp_path, scenario_manifest_sha256="3" * 64, contract_sha256="4" * 64,
+        protocol_version="tractor_protocol_v2", behavior_seed=19,
+        source_identity={"fixture": True}, loss_window=2,
+    )
+    loaded = validate_formal_dataset_manifest(
+        tmp_path, scenario_manifest_sha256="3" * 64, contract_sha256="4" * 64,
+        protocol_version="tractor_protocol_v2", loss_window=2,
+    )
+    assert loaded["dataset_manifest_sha256"] == manifest["dataset_manifest_sha256"]
+    with (tmp_path / "episodes" / "episode-1.npz").open("ab") as stream:
+        stream.write(b"tamper")
+    with pytest.raises(RuntimeError, match="episode checksum"):
+        validate_formal_dataset_manifest(
+            tmp_path, scenario_manifest_sha256="3" * 64, contract_sha256="4" * 64,
+            protocol_version="tractor_protocol_v2", loss_window=2,
+        )
 
 
 def test_windows_never_cross_reset_and_burn_in_starts_at_epoch(tmp_path: Path):

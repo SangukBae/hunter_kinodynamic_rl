@@ -347,11 +347,15 @@ class TractorEpisodeRecorder:
         row.update(_privileged_snapshot_columns(telemetry))
         self.rows.append(row)
 
-    def finalize_realized_labels(self) -> dict[str, int | float | str]:
+    def finalize_realized_labels(
+        self, *, lineage: dict[str, str] | None = None,
+    ) -> dict[str, int | float | str]:
         """Replace nominal summaries with timestamp-aligned realized-track labels."""
         from hunter_kinodynamic_rl.training.realized_counterfactual import relabel_rows
 
-        return relabel_rows(self.rows, self.profile, self.model_config)
+        return relabel_rows(
+            self.rows, self.profile, self.model_config, lineage=lineage,
+        )
 
     def columns(self) -> Mapping[str, np.ndarray]:
         if not self.rows:

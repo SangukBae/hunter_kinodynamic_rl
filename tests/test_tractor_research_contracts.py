@@ -11,7 +11,7 @@ from hunter_kinodynamic_rl.config.tractor import (
 )
 from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.evaluation.tractor_artifacts import (
-    paired_method_effect, validate_complete_matrix,
+    paired_method_effect, paired_nested_method_effect, validate_complete_matrix,
 )
 from hunter_kinodynamic_rl.evaluation.tractor_metrics import (
     binary_calibration_metrics, candidate_ranking_metrics, occupancy_confusion,
@@ -56,15 +56,16 @@ def test_frozen_protocol_passes_development_but_formal_requires_data_artifacts()
     development = run_tractor_preflight(config_root=CONFIG_ROOT, mode="development", variant="a7")
     assert development.ok
     assert development.protocol_status == "frozen"
-    assert development.protocol_version == "tractor_protocol_v1"
+    assert development.protocol_version == "tractor_protocol_v2"
     assert development.scenario_count == 616
     formal = run_tractor_preflight(config_root=CONFIG_ROOT, mode="formal", variant="a7")
     assert not formal.ok
     assert formal.protocol_status == "frozen"
-    assert not formal.formal_implementation_ready
-    assert formal.formal_implementation_gaps
-    assert any("formal implementation gap" in error for error in formal.errors)
+    assert formal.formal_implementation_ready
+    assert not formal.formal_implementation_gaps
     assert formal.scenario_feasibility_verified
+    assert formal.formal_source_identity_ok is False
+    assert any("formal source identity failed" in error for error in formal.errors)
     assert any("--scenario-manifest" in error for error in formal.errors)
     assert any("dataset validation skipped" in error for error in formal.errors)
 
@@ -124,3 +125,20 @@ def test_matrix_gate_rejects_missing_or_duplicate_rows_and_pairs_effects():
     assert not invalid["ok"]
     assert any("missing" in error for error in invalid["errors"])
     assert any("duplicate" in error for error in invalid["errors"])
+
+
+def test_nested_hypothesis_effect_keeps_training_seed_as_replication_unit():
+    records = []
+    for method in ("A7", "B8"):
+        for seed in (1, 2):
+            for scenario in ("s1", "s2"):
+                records.append({
+                    "method_id": method, "seed": seed, "scenario_id": scenario,
+                    "metrics": {"h3_risk": {"brier": 0.1 if method == "A7" else 0.2}},
+                })
+    effect = paired_nested_method_effect(
+        records, "A7", "B8", ("metrics", "h3_risk", "brier"),
+    )
+    assert effect["count"] == 2
+    assert effect["scenario_pair_count"] == 4
+    assert effect["mean"] == pytest.approx(-0.1)

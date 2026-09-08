@@ -11,17 +11,20 @@ import random
 import re
 import tempfile
 import uuid
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 import torch
 
 from hunter_kinodynamic_rl.rl.networks.tractor.calibration import PlattCalibration
 
+if TYPE_CHECKING:
+    from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import TractorAgent
 
-CHECKPOINT_SCHEMA = "tractor_training_checkpoint_v1"
-BUNDLE_SCHEMA = "tractor_deployment_bundle_v1"
-CALIBRATION_SCHEMA = "tractor_calibration_artifact_v1"
+
+CHECKPOINT_SCHEMA = "tractor_training_checkpoint_v2"
+BUNDLE_SCHEMA = "tractor_deployment_bundle_v2"
+CALIBRATION_SCHEMA = "tractor_calibration_artifact_v2"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -35,6 +38,34 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def semantic_state_sha256(value: Any) -> str:
+    """Deterministic hash of nested tensor/optimizer state independent of torch.save bytes."""
+    digest = hashlib.sha256()
+
+    def update(item: Any) -> None:
+        if torch.is_tensor(item):
+            tensor = item.detach().cpu().contiguous()
+            digest.update(b"tensor\0")
+            digest.update(str(tensor.dtype).encode("ascii"))
+            digest.update(json.dumps(list(tensor.shape)).encode("ascii"))
+            digest.update(tensor.numpy().tobytes())
+        elif isinstance(item, Mapping):
+            digest.update(b"mapping\0")
+            for key in sorted(item, key=lambda entry: str(entry)):
+                update(str(key))
+                update(item[key])
+        elif isinstance(item, (list, tuple)):
+            digest.update(b"sequence\0")
+            for entry in item:
+                update(entry)
+        else:
+            digest.update(b"scalar\0")
+            digest.update(json.dumps(item, sort_keys=True, default=str).encode("utf-8"))
+
+    update(value)
     return digest.hexdigest()
 
 
@@ -106,6 +137,7 @@ def save_training_generation(
     *,
     scaler=None,
     generation: str | None = None,
+    parent_tag: str | None = None,
 ) -> str:
     _validate_identifier(tag, "tag")
     generation = generation or uuid.uuid4().hex
@@ -120,6 +152,25 @@ def save_training_generation(
         raise FileExistsError(f"checkpoint generation exists: {final}")
     try:
         components = agent.checkpoint_components()
+        component_hashes = {
+            name: semantic_state_sha256(component.state_dict())
+            for name, component in components.items()
+        }
+        parent_generation = None
+        parent_payload_sha256 = None
+        root_generation = generation
+        lineage_tag = parent_tag or tag
+        _validate_identifier(lineage_tag, "parent tag")
+        pointer = root_path / lineage_tag
+        if pointer.is_symlink():
+            parent = _resolve_generation(root_path, lineage_tag)
+            parent_manifest = json.loads((parent / "manifest.json").read_text(encoding="utf-8"))
+            if parent_manifest.get("schema_id") != CHECKPOINT_SCHEMA:
+                raise RuntimeError("cannot extend an incompatible checkpoint lineage")
+            parent_generation = parent.name
+            parent_payload_sha256 = parent_manifest["training_payload_sha256"]
+            root_generation = parent_manifest["semantic_lineage"]["root_generation"]
+        training_stage = str(metadata.get("training_stage", "development_unspecified"))
         payload = {
             "schema_id": CHECKPOINT_SCHEMA,
             "artifact_role": "training_checkpoint",
@@ -130,6 +181,7 @@ def save_training_generation(
             "sampler_state": sampler.state_dict(),
             "global_rng": _capture_global_rng(),
             "scaler": None if scaler is None else scaler.state_dict(),
+            "component_state_sha256": component_hashes,
         }
         model_path = staging / "training.pt"
         torch.save(payload, model_path)
@@ -140,13 +192,21 @@ def save_training_generation(
             "artifact_role": "training_checkpoint",
             "generation": generation,
             "model_family": getattr(agent, "model_family", "TRACTOR-TQC"),
-            "architecture_revision": getattr(agent, "architecture_revision", "tractor-tqc-r1"),
+            "architecture_revision": getattr(agent, "architecture_revision", "tractor-tqc-r2"),
             "variant_id": agent.model_config.variant_id,
             "model_fingerprint": agent.model_config.fingerprint(),
             "present_components": sorted(components),
+            "component_state_sha256": component_hashes,
             "training_payload_sha256": _sha256(model_path),
             "training_payload_size_bytes": model_path.stat().st_size,
             "metadata": dict(metadata),
+            "semantic_lineage": {
+                "root_generation": root_generation,
+                "parent_generation": parent_generation,
+                "parent_training_payload_sha256": parent_payload_sha256,
+                "training_stage": training_stage,
+                "warm_start": metadata.get("warm_start"),
+            },
         }
         _write_json(staging / "manifest.json", manifest)
         _fsync_dir(staging)
@@ -169,6 +229,7 @@ def load_training_generation(
     *,
     scaler=None,
     restore_rng: bool = True,
+    expected_metadata: Mapping[str, Any] | None = None,
 ) -> dict:
     generation = _resolve_generation(Path(root), tag)
     manifest_path = generation / "manifest.json"
@@ -194,6 +255,18 @@ def load_training_generation(
         raise RuntimeError("checkpoint component inventory mismatch")
     if manifest.get("present_components") != sorted(components):
         raise RuntimeError("manifest component inventory mismatch")
+    component_hashes = {
+        name: semantic_state_sha256(state)
+        for name, state in payload["components"].items()
+    }
+    if payload.get("component_state_sha256") != component_hashes:
+        raise RuntimeError("checkpoint payload component semantic hash mismatch")
+    if manifest.get("component_state_sha256") != component_hashes:
+        raise RuntimeError("checkpoint manifest component semantic hash mismatch")
+    if expected_metadata is not None:
+        for name, expected in expected_metadata.items():
+            if manifest.get("metadata", {}).get(name) != expected:
+                raise RuntimeError(f"checkpoint metadata lineage mismatch for {name!r}")
     for name, component in components.items():
         component.load_state_dict(payload["components"][name])
     agent.load_extra_state_dict(payload["agent_extra"])
@@ -206,6 +279,10 @@ def load_training_generation(
         raise RuntimeError("checkpoint has scaler state but caller supplied no scaler")
     if restore_rng:
         _restore_global_rng(payload["global_rng"])
+    for module_name in ("online", "target"):
+        module = getattr(agent, module_name)
+        if any(not torch.isfinite(parameter).all().item() for parameter in module.parameters()):
+            raise RuntimeError(f"checkpoint startup probe found non-finite {module_name} weights")
     return manifest
 
 
@@ -229,8 +306,44 @@ def load_inference_weights(
         raise RuntimeError("checkpoint payload identity mismatch")
     if "online" not in payload.get("components", {}):
         raise RuntimeError("checkpoint is missing online inference weights")
+    online_hash = semantic_state_sha256(payload["components"]["online"])
+    if payload.get("component_state_sha256", {}).get("online") != online_hash:
+        raise RuntimeError("checkpoint payload online semantic hash mismatch")
+    if manifest.get("component_state_sha256", {}).get("online") != online_hash:
+        raise RuntimeError("checkpoint manifest online semantic hash mismatch")
     agent.online.load_state_dict(payload["components"]["online"], strict=True)
+    if any(not torch.isfinite(parameter).all().item() for parameter in agent.online.parameters()):
+        raise RuntimeError("checkpoint startup probe found non-finite online weights")
     return manifest
+
+
+def load_warm_start_generation(
+    root: str | os.PathLike[str], tag: str, agent, *,
+    source_stage: str, target_stage: str,
+) -> dict:
+    """Import only online weights across one registered training-stage boundary."""
+    allowed = {("stage3", "stage4"), ("stage4", "stage5")}
+    if (source_stage, target_stage) not in allowed:
+        raise ValueError(
+            f"unsupported TRACTOR warm start {source_stage!r}->{target_stage!r}"
+        )
+    generation = _resolve_generation(Path(root), tag)
+    manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("semantic_lineage", {}).get("training_stage") != source_stage:
+        raise RuntimeError("warm-start source training stage mismatch")
+    manifest = load_inference_weights(root, tag, agent)
+    from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc.target_update import ema_update
+
+    if set(agent.target.state_dict()) == set(agent.online.state_dict()):
+        agent.target.load_state_dict(agent.online.state_dict(), strict=True)
+    else:
+        ema_update(agent.target, agent.online, 1.0)
+    return {
+        "source_generation": manifest["generation"],
+        "source_training_payload_sha256": manifest["training_payload_sha256"],
+        "source_online_state_sha256": manifest["component_state_sha256"]["online"],
+        "source_stage": source_stage, "target_stage": target_stage,
+    }
 
 
 def export_deployment_bundle(
@@ -241,6 +354,8 @@ def export_deployment_bundle(
     metadata: Mapping[str, Any],
     *,
     calibration_artifact_path: str | os.PathLike[str],
+    source_checkpoint_root: str | os.PathLike[str],
+    source_checkpoint_tag: str = "final",
 ) -> Path:
     _validate_identifier(bundle_id, "bundle_id")
     required_metadata = {
@@ -254,6 +369,23 @@ def export_deployment_bundle(
         raise ValueError(f"deployment export metadata is incomplete: {missing}")
     if metadata["promotion_status"] not in {"promoted-sim", "promoted-hil", "promoted-real"}:
         raise ValueError("deployment export requires an approved promotion status")
+    source_generation = _resolve_generation(Path(source_checkpoint_root), source_checkpoint_tag)
+    source_manifest = json.loads(
+        (source_generation / "manifest.json").read_text(encoding="utf-8")
+    )
+    if source_manifest.get("schema_id") != CHECKPOINT_SCHEMA:
+        raise ValueError("deployment source is not a semantic TRACTOR training checkpoint")
+    source_payload = source_generation / "training.pt"
+    if _sha256(source_payload) != source_manifest.get("training_payload_sha256"):
+        raise ValueError("deployment source checkpoint payload checksum mismatch")
+    if source_manifest.get("semantic_lineage", {}).get("training_stage") != "stage5":
+        raise ValueError("deployment promotion requires a Stage-5 source checkpoint")
+    in_memory_hash = semantic_state_sha256(agent.online.state_dict())
+    source_online_hash = source_manifest.get("component_state_sha256", {}).get("online")
+    if in_memory_hash != source_online_hash:
+        raise ValueError("in-memory inference weights do not match the promoted Stage-5 checkpoint")
+    if metadata["source_checkpoint_sha256"] != source_manifest["training_payload_sha256"]:
+        raise ValueError("declared source checkpoint hash does not match the promoted artifact")
     if metadata["source_checkpoint_sha256"] != calibration.source_checkpoint_sha256:
         raise ValueError("calibrator does not belong to the promoted source checkpoint")
     if metadata["calibration_split_sha256"] != calibration.split_sha256:
@@ -301,6 +433,9 @@ def export_deployment_bundle(
             "calibration_sha256": calibration.sha256(),
             "forbidden_training_payloads": [],
             "metadata": dict(metadata),
+            "source_training_lineage": dict(source_manifest["semantic_lineage"]),
+            "source_checkpoint_generation": source_generation.name,
+            "source_online_state_sha256": source_online_hash,
         }
         _write_json(staging / "manifest.json", manifest)
         _fsync_dir(staging)
@@ -322,6 +457,7 @@ def save_calibration_artifact(
     episode_ids: list[str],
     metrics: Mapping[str, Any],
     calibration_context_id: str,
+    provenance: Mapping[str, Any] | None = None,
 ) -> Path:
     _validate_identifier(artifact_id, "artifact_id")
     if not episode_ids or len(set(episode_ids)) != len(episode_ids):
@@ -343,6 +479,7 @@ def save_calibration_artifact(
         "split_id": "calibration",
         "episode_ids": sorted(episode_ids),
         "metrics": dict(metrics),
+        "provenance": dict(provenance or {}),
     }
     fd, temp_name = tempfile.mkstemp(prefix=f".{artifact_id}.", suffix=".tmp", dir=root)
     try:
@@ -390,6 +527,16 @@ def validate_deployment_bundle(
         raise RuntimeError("deployment manifest declares forbidden training payloads")
     if _sha256(bundle / "inference.pt") != manifest.get("inference_sha256"):
         raise RuntimeError("deployment inference checksum mismatch")
+    lineage = manifest.get("source_training_lineage", {})
+    if lineage.get("training_stage") != "stage5" or not manifest.get(
+        "source_checkpoint_generation"
+    ):
+        raise RuntimeError("deployment bundle lacks semantic Stage-5 promotion lineage")
+    inference_payload = torch.load(bundle / "inference.pt", map_location="cpu", weights_only=True)
+    if semantic_state_sha256(inference_payload.get("online", {})) != manifest.get(
+        "source_online_state_sha256"
+    ):
+        raise RuntimeError("deployment weights differ from the promoted source state")
     calibration = PlattCalibration(**manifest["calibration"])
     if calibration.sha256() != manifest.get("calibration_sha256"):
         raise RuntimeError("deployment calibration checksum mismatch")

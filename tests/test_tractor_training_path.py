@@ -2,19 +2,28 @@
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
+from hunter_kinodynamic_rl.config.loader import load_profile
+from hunter_kinodynamic_rl.config.comparison import ComparisonModelConfig
 from hunter_kinodynamic_rl.env.simulation.risk_telemetry import CandidateTelemetry, RiskTelemetry
 from hunter_kinodynamic_rl.env.simulation.sensor_diagnostics import SensorDiagnostics
+from hunter_kinodynamic_rl.evaluation.evaluate_paper_comparison import (
+    evaluate_hypotheses_episode, validate_hypothesis_episode_support,
+)
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import TractorAgent, TractorAgentConfig
+from hunter_kinodynamic_rl.rl.algorithms.comparison_baselines import ComparisonAgent
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig
 from hunter_kinodynamic_rl.rl.replay import EpisodeHeader, EpisodeStore, SequenceBuffer, SequenceIndex
 from hunter_kinodynamic_rl.rl.replay.sequence_schema import validate_episode_columns
 from hunter_kinodynamic_rl.training.tractor_episode_collector import (
     TractorEpisodeRecorder, make_snapshot,
 )
+from hunter_kinodynamic_rl.training.realized_counterfactual import relabel_rows
 from hunter_kinodynamic_rl.training.tractor_sequence_training import TractorSequenceTrainer
 
 
@@ -122,7 +131,6 @@ def test_sequence_replay_reaches_all_agent_transactions(tmp_path: Path):
 def test_live_snapshot_and_candidate_telemetry_form_valid_episode_columns():
     config = _config()
     # Only the collector's profile fields are needed by this pure unit test.
-    from hunter_kinodynamic_rl.config.loader import load_profile
     profile = load_profile(
         "tractor_local_dynamic_v2", str(Path(__file__).resolve().parents[1] / "config"),
     )
@@ -155,3 +163,101 @@ def test_live_snapshot_and_candidate_telemetry_form_valid_episode_columns():
     assert columns["candidate_event_label_valid"].all()
     assert columns["candidate_label_source"].item() == "nominal_preaction_rollout_summary_v1"
     assert columns["next_observation"].shape == (1, config.observation_dim)
+
+
+def _realized_columns(config):
+    profile = load_profile(
+        "tractor_local_dynamic", str(Path(__file__).resolve().parents[1] / "config"),
+    )
+    columns = _columns(config, steps=5)
+    physical = np.asarray([[0.0, 0.5, 0.4], [0.0, 0.0, 0.4]], np.float32)
+    columns["candidate_trajectories_physical"][:] = physical
+    rows = []
+    for index in range(5):
+        row = {name: np.asarray(value)[index] for name, value in columns.items()}
+        row.update({
+            "privileged_snapshot_valid": True,
+            "privileged_snapshot_timestamp_sec": 0.1 * (index + 1),
+            "privileged_ego_pose_world": np.asarray([0.0, 0.0, 0.0]),
+            "privileged_world_half_extent_m": 8.0,
+            "privileged_obstacles_world": np.asarray([
+                [1.5 + 0.1 * index, 0.5, 0.6, 1.0],
+            ]),
+        })
+        rows.append(row)
+    relabel_rows(rows, profile, config)
+    realized = {
+        name: np.asarray([row[name] for row in rows])
+        for name in rows[0]
+    }
+    return realized
+
+
+def test_h1_h3_evaluator_consumes_realized_dense_labels_with_explicit_counts():
+    config = _config()
+    realized = _realized_columns(config)
+    torch.manual_seed(12)
+    agent = TractorAgent(
+        config, TractorAgentConfig(top_quantiles_to_drop_per_net=1), target_seed=7,
+    )
+    report = evaluate_hypotheses_episode(
+        SimpleNamespace(agent=agent, calibration=None), "A7", realized, config,
+    )
+    assert report["h1_prediction"]["available"]
+    assert report["h1_prediction"]["valid_cells"] > 0
+    assert report["h1_prediction"]["occupancy_nll_count"] > 0
+    assert report["h1_prediction"]["flow_valid_count"] > 0
+    assert report["h1_prediction"]["tube_valid_count"] > 0
+    assert report["h2_ranking"]["available"]
+    assert report["h2_ranking"]["row_count"] > 0
+    assert report["h2_ranking"]["candidate_coverage"] > 0.0
+    assert report["h3_risk"]["available"]
+    assert report["h3_risk"]["count"] > 0
+    assert report["h3_risk"]["cause_time_nll_count"] > 0
+    assert report["h3_risk"]["selective_risk_curve"][-1]["coverage"] == 1.0
+    validate_hypothesis_episode_support("A7", report)
+
+
+def _comparison_agent(method_id: str, config: TractorConfig) -> ComparisonAgent:
+    axes = {
+        "B1": ("current_tqc_328d", "none", "none"),
+        "B4": ("factorized_ego_warped_bev", "implicit_concat", "none"),
+        "B5": ("factorized_ego_warped_bev", "cross_attention", "none"),
+        "B8": ("flat_328d", "none", "scalar_endpoint"),
+    }
+    representation, interaction, risk = axes[method_id]
+    model = ComparisonModelConfig(
+        method_id=method_id, representation=representation, interaction=interaction,
+        risk=risk, observation_dim=config.observation_dim, t_obs=config.t_obs,
+        n_scan=config.n_scan, tail_dim=config.tail_dim, n_critics=2, n_quantiles=3,
+        log_std_min=-5.0, log_std_max=1.0, encoder_hidden=16,
+        latent_dim=config.observation_dim if method_id == "B1" else 8,
+        recurrent_hidden=8, attention_heads=2,
+    )
+    return ComparisonAgent(
+        model, config, TractorAgentConfig(top_quantiles_to_drop_per_net=1), target_seed=9,
+    )
+
+
+def test_hypothesis_evaluator_honors_baseline_capability_boundaries():
+    config = _config()
+    realized = _realized_columns(config)
+    for method_id in ("B1", "B4", "B5", "B8"):
+        report = evaluate_hypotheses_episode(
+            SimpleNamespace(agent=_comparison_agent(method_id, config), calibration=None),
+            method_id, realized, config,
+        )
+        assert report["h2_ranking"]["available"]
+        assert report["h1_prediction"]["available"] == (method_id in {"B4", "B5"})
+        assert report["h3_risk"]["available"] == (method_id == "B8")
+        validate_hypothesis_episode_support(method_id, report)
+
+
+def test_hypothesis_support_validation_rejects_missing_required_denominator():
+    report = {
+        "h1_prediction": {"available": False},
+        "h2_ranking": {"available": False, "row_count": 0},
+        "h3_risk": {"available": False, "count": 0},
+    }
+    with pytest.raises(RuntimeError, match="no valid H2"):
+        validate_hypothesis_episode_support("A7", report)

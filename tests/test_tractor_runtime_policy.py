@@ -8,7 +8,8 @@ import torch
 from hunter_kinodynamic_rl.navigation.local_rl.tractor_policy import TractorPolicy
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig, TractorInputs, TractorTQC
 from hunter_kinodynamic_rl.rl.networks.tractor.calibration import PlattCalibration
-from hunter_kinodynamic_rl.rl.networks.tractor.selector import SelectorConfig
+from hunter_kinodynamic_rl.rl.networks.tractor.contracts import CandidateSet, ReturnRiskOutput
+from hunter_kinodynamic_rl.rl.networks.tractor.selector import CandidateSelector, SelectorConfig
 
 
 def _config():
@@ -90,3 +91,41 @@ def test_invalid_sensor_snapshot_forces_no_publish_fallback():
     assert not decision.publish_allowed
     assert decision.fallback_reason == "invalid_belief"
     assert int(decision.selection.selected_index[0]) == -1
+
+
+def test_selector_uses_frozen_risk_clearance_index_tie_order():
+    config = _config()
+    selector = CandidateSelector(
+        config,
+        SelectorConfig(
+            max_event_probability=1.0, minimum_clearance_m=-10.0,
+            risk_penalty=0.0, smoothness_penalty=0.0,
+        ),
+    )
+    candidates = CandidateSet(
+        normalized_actions=torch.zeros(1, 2, 3),
+        present=torch.ones(1, 2, dtype=torch.bool),
+        is_stop=torch.tensor([[True, False]]), source="tie-fixture",
+    )
+
+    def select(hazard_second: float, clearance_second: float) -> int:
+        hazard = torch.zeros(1, 1, 1, 2, 2, 3)
+        hazard[..., 0, 0, 0] = 0.2
+        hazard[..., 1, 0, 0] = hazard_second
+        clearance = torch.ones(1, 1, 1, 2, 2, 2)
+        clearance[..., 1, :, :] = clearance_second
+        output = ReturnRiskOutput(
+            return_quantiles=torch.zeros(1, 2, 2, 3), hazard=hazard,
+            clearance_quantiles=clearance,
+            stopping_quantiles=torch.ones_like(clearance),
+            candidate_valid=torch.ones(1, 2, dtype=torch.bool),
+        )
+        result = selector(
+            candidates, output, torch.zeros(1, 3),
+            torch.zeros(1, 1, dtype=torch.bool), None,
+        )
+        return int(result.selected_index.item())
+
+    assert select(0.1, 0.5) == 1  # equal score: lower event risk
+    assert select(0.2, 2.0) == 1  # equal score/risk: greater clearance
+    assert select(0.2, 1.0) == 0  # complete tie: stable lower index

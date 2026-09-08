@@ -92,8 +92,22 @@ class CandidateSelector:
             & (clear_lcb >= self.cfg.minimum_clearance_m)
             & (stop_lcb >= 0.0)
         )
+        # Frozen deterministic lexicographic tie contract:
+        # maximum value score, then lower event risk, then greater clearance,
+        # then the lowest stable candidate index.  Exact comparisons are
+        # intentional: near-ties remain distinct model outputs.
         masked_score = torch.where(feasible, score, torch.full_like(score, -torch.inf))
-        selected = masked_score.argmax(dim=-1)
+        best_score = masked_score.amax(dim=-1, keepdim=True)
+        tied = feasible & (score == best_score)
+        tied_risk = torch.where(tied, p_ucb, torch.full_like(p_ucb, torch.inf))
+        best_risk = tied_risk.amin(dim=-1, keepdim=True)
+        tied &= p_ucb == best_risk
+        tied_clearance = torch.where(
+            tied, clear_lcb, torch.full_like(clear_lcb, -torch.inf),
+        )
+        best_clearance = tied_clearance.amax(dim=-1, keepdim=True)
+        tied &= clear_lcb == best_clearance
+        selected = tied.to(torch.int64).argmax(dim=-1)
         any_feasible = feasible.any(dim=-1)
         selected = torch.where(any_feasible, selected, torch.full_like(selected, -1))
         gather_index = selected.clamp_min(0).view(b, 1, 1).expand(-1, 1, 3)

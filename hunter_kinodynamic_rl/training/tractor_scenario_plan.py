@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 from functools import lru_cache
 import hashlib
 import json
@@ -18,10 +19,13 @@ import yaml
 from hunter_kinodynamic_rl.config.loader import default_config_root, load_profile
 from hunter_kinodynamic_rl.env.scenarios.ackermann_feasibility import is_ackermann_feasible
 from hunter_kinodynamic_rl.env.scenarios.procedural_generator import StaticObstacle
+from hunter_kinodynamic_rl.env.randomization.domain_randomizer import (
+    apply_dynamics_overrides, check_sensor_overrides_supported, command_latency_steps,
+)
 
 
-PLAN_SCHEMA_ID = "tractor_scenario_plan_v1"
-MATERIALIZED_SCHEMA_ID = "tractor_materialized_scenarios_v1"
+PLAN_SCHEMA_ID = "tractor_scenario_plan_v2"
+MATERIALIZED_SCHEMA_ID = "tractor_materialized_scenarios_v2"
 
 
 def _canonical_sha256(value) -> str:
@@ -48,7 +52,9 @@ def _obstacles(points: Iterable[tuple[float, float, float]], dx: float, dy: floa
     ]
 
 
-def _template_geometry(family_id: str, seed: int, obstacle_contract: str) -> dict:
+def _template_geometry(
+    family_id: str, seed: int, obstacle_contract: str, system_axes: dict,
+) -> dict:
     family_seed = int(hashlib.sha256(family_id.encode("utf-8")).hexdigest()[:8], 16)
     rng = np.random.default_rng((int(seed) << 32) ^ family_seed)
     dx, dy = rng.uniform(-0.15, 0.15, size=2)
@@ -119,19 +125,31 @@ def _template_geometry(family_id: str, seed: int, obstacle_contract: str) -> dic
         "goal": {"x": _round(goal[0]), "y": _round(goal[1])},
         "static_obstacles": static,
         "moving_obstacles": moving,
-        "dynamics": {}, "sensor": {},
+        "dynamics": dict(system_axes["vehicle"]["values"]),
+        "sensor": dict(system_axes["sensor"]["values"]),
+        "localization": dict(system_axes["localization"]["values"]),
+        "system_axes": {
+            name: {"id": axis["id"], "domain": axis["domain"]}
+            for name, axis in system_axes.items()
+        },
     }
 
 
 def _geometry_sha256(geometry: dict) -> str:
     return _canonical_sha256({
         key: geometry[key]
-        for key in ("start", "goal", "static_obstacles", "moving_obstacles", "dynamics", "sensor")
+        for key in (
+            "start", "goal", "static_obstacles", "moving_obstacles", "dynamics", "sensor",
+            "localization", "system_axes",
+        )
     })
 
 
 def _validate_geometry(geometry: dict, *, world_size_m: float, profile) -> None:
     robot = profile.robot
+    apply_dynamics_overrides(robot, geometry["dynamics"])
+    command_latency_steps(geometry["dynamics"], profile.runtime.time_delta_sec)
+    check_sensor_overrides_supported(geometry["sensor"], geometry["localization"])
     start, goal = geometry["start"], geometry["goal"]
     half = world_size_m / 2.0
     for point_name, point in (("start", start), ("goal", goal)):
@@ -164,12 +182,27 @@ def _load_plan_inputs(config_root: str | None = None):
         "schema_id", "plan_version", "protocol_version", "generator_version", "world_size_m",
         "expected_manifest_sha256", "splits", "static_manifest", "dynamic_manifest",
         "split_group_key", "require_unique_seed_across_splits",
-        "require_unique_geometry_across_splits", "require_ackermann_feasibility",
+        "require_unique_geometry_across_splits", "require_ackermann_feasibility", "system_axes",
     }
     if set(plan) != required or plan["schema_id"] != PLAN_SCHEMA_ID:
         raise ValueError("scenario_plan.yaml fields or schema are incompatible")
     static_manifest = _read_yaml(tractor_root / str(plan["static_manifest"]))
     dynamic_manifest = _read_yaml(tractor_root / str(plan["dynamic_manifest"]))
+    axes = plan["system_axes"]
+    if set(axes) != {"vehicle", "sensor", "localization"}:
+        raise ValueError("scenario system axes must declare vehicle, sensor, and localization")
+    for name, values in axes.items():
+        if not isinstance(values, list) or len(values) < 2:
+            raise ValueError(f"scenario axis {name!r} must contain ID and OOD levels")
+        ids = []
+        for value in values:
+            if set(value) != {"id", "domain", "values"} or value["domain"] not in {"id", "ood"}:
+                raise ValueError(f"invalid scenario axis level in {name!r}")
+            if not isinstance(value["values"], dict):
+                raise ValueError(f"scenario axis {name!r} values must be a mapping")
+            ids.append(str(value["id"]))
+        if len(set(ids)) != len(ids) or not any(value["domain"] == "id" for value in values):
+            raise ValueError(f"scenario axis {name!r} has duplicate ids or no ID level")
     for manifest, expected_contract in ((static_manifest, "static_only"), (dynamic_manifest, "dynamic")):
         if manifest.get("schema_id") != "tractor_scenario_manifest_v1":
             raise ValueError("scenario family manifest schema is incompatible")
@@ -220,7 +253,22 @@ def _build_plan_payload(config_root: str | None = None, *, validate_feasibility:
                 if seed in used_seeds:
                     raise ValueError(f"seed {seed} is reused across splits/families")
                 used_seeds.add(seed)
-                geometry = _template_geometry(str(family["id"]), seed, obstacle_contract)
+                vehicle_axes = plan["system_axes"]["vehicle"]
+                sensor_axes = plan["system_axes"]["sensor"]
+                localization_axes = plan["system_axes"]["localization"]
+                axis_ordinal = seed
+                vehicle_axis = vehicle_axes[axis_ordinal % len(vehicle_axes)]
+                axis_ordinal //= len(vehicle_axes)
+                sensor_axis = sensor_axes[axis_ordinal % len(sensor_axes)]
+                axis_ordinal //= len(sensor_axes)
+                localization_axis = localization_axes[axis_ordinal % len(localization_axes)]
+                axes = {
+                    "vehicle": vehicle_axis, "sensor": sensor_axis,
+                    "localization": localization_axis,
+                }
+                geometry = _template_geometry(
+                    str(family["id"]), seed, obstacle_contract, axes,
+                )
                 if validate_feasibility and plan["require_ackermann_feasibility"]:
                     try:
                         _validate_geometry(
@@ -244,6 +292,15 @@ def _build_plan_payload(config_root: str | None = None, *, validate_feasibility:
                     "obstacle_contract": obstacle_contract, "split_id": split_id,
                     "permitted_use": str(split["permitted_use"]), "seed": seed,
                     "scenario_geometry_sha256": geometry_sha, "group_id": geometry_sha,
+                    "vehicle_axis": str(vehicle_axis["id"]),
+                    "sensor_axis": str(sensor_axis["id"]),
+                    "localization_axis": str(localization_axis["id"]),
+                    "system_domain": (
+                        "id" if all(axis["domain"] == "id" for axis in axes.values()) else "ood"
+                    ),
+                    "effective_robot_sha256": _canonical_sha256(dataclasses.asdict(
+                        apply_dynamics_overrides(profile.robot, geometry["dynamics"])
+                    )),
                     "relative_path": relative_path, "geometry": geometry,
                 })
     intervals = sorted(split_intervals)
@@ -298,12 +355,14 @@ def materialize_scenario_plan(output_root: str | Path, config_root: str | None =
     manifest_entries = []
     for entry in payload["entries"]:
         scenario = {
-            "schema_id": "tractor_fixed_scenario_v1",
+            "schema_id": "tractor_fixed_scenario_v2",
             "protocol_version": payload["protocol_version"],
             "plan_version": payload["plan_version"],
             **{key: entry[key] for key in (
                 "scenario_id", "family_id", "topology", "obstacle_motion", "obstacle_contract",
                 "split_id", "permitted_use", "seed", "scenario_geometry_sha256", "group_id",
+                "vehicle_axis", "sensor_axis", "localization_axis", "system_domain",
+                "effective_robot_sha256",
             )},
             **entry["geometry"],
         }
@@ -353,6 +412,8 @@ def validate_materialized_scenario_manifest(
         for field in (
             "family_id", "obstacle_contract", "split_id", "seed",
             "scenario_geometry_sha256", "group_id", "relative_path",
+            "vehicle_axis", "sensor_axis", "localization_axis", "system_domain",
+            "effective_robot_sha256",
         ):
             if entry.get(field) != expected_entry[field]:
                 raise ValueError(f"scenario {scenario_id!r} changed frozen field {field!r}")

@@ -1,13 +1,20 @@
 """Executable structural contracts for the TRACTOR-TQC model."""
 
 from dataclasses import replace
+import math
 
 import pytest
 import torch
 
+from hunter_kinodynamic_rl.config.loader import load_profile
+from hunter_kinodynamic_rl.dynamics.ackermann_rollout import rollout_tractor_output_grid
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig, TractorInputs, TractorTQC
 from hunter_kinodynamic_rl.rl.networks.tractor.contracts import CandidateSet
+from hunter_kinodynamic_rl.rl.networks.tractor.nominal_rollout_adapter import (
+    nominal_rollout_source_fingerprint,
+)
 from hunter_kinodynamic_rl.rl.networks.tractor.se2_warp import SE2HistoryWarp
+from hunter_kinodynamic_rl.robot.interface import VehicleState
 
 
 def _small_config(**overrides):
@@ -151,6 +158,49 @@ def test_normalized_physical_action_round_trip():
     adapter = TractorTQC(config).rollout
     normalized = torch.tensor([[[-1.0, -1.0, -1.0], [0.2, 0.4, 0.8], [1.0, 1.0, 1.0]]])
     assert torch.allclose(adapter.encode(adapter.decode(normalized)), normalized, atol=1e-6)
+
+
+def test_nominal_rollout_matches_independent_cpu_output_grid_and_has_source_fingerprint():
+    config = _small_config()
+    model = TractorTQC(config).eval()
+    belief, context = model.encode(_inputs(config, batch_size=1))
+    normalized = torch.tensor([[[-0.7, -0.4, -0.8], [0.6, 0.5, 0.9]]])
+    present = torch.ones(1, 2, dtype=torch.bool)
+    candidates = CandidateSet(normalized, present, torch.zeros_like(present), "parity")
+    with torch.inference_mode():
+        model_rollout = model.rollout(candidates, context, belief.plant_latent)
+    profile = load_profile("tractor_local_dynamic")
+    dynamics = replace(
+        profile.dynamics, dt_sec=config.dt_dyn_sec,
+        horizon_min_sec=config.min_horizon_sec,
+        horizon_max_sec=config.max_horizon_sec,
+        min_safety_horizon_sec=config.min_safety_horizon_sec,
+    )
+    robot = replace(
+        profile.robot, wheelbase_m=config.wheelbase_m,
+        steering_limit_deg=math.degrees(config.steering_limit_rad),
+        max_forward_speed_mps=config.max_speed_mps,
+        accel_limit_mps2=config.accel_limit_mps2,
+        brake_decel_mps2=config.brake_decel_mps2,
+        steering_rate_deg_s=math.degrees(config.steering_rate_rad_s),
+        speed_lag_tau_sec=config.speed_lag_tau_sec,
+        collision_radius_m=config.footprint_radius_m,
+    )
+    physical = model.rollout.decode(normalized)[0]
+    for candidate in range(2):
+        kappa, speed, arc = physical[candidate].tolist()
+        reference, mask = rollout_tractor_output_grid(
+            VehicleState(v=0.2, steering=0.0), kappa, speed, arc,
+            robot, dynamics, horizon_steps=config.horizon_steps,
+            dt_out_sec=config.dt_out_sec,
+        )
+        expected = torch.tensor([
+            [point.state.x, point.state.y, point.state.yaw] for point in reference.points
+        ])
+        assert torch.allclose(model_rollout.poses[0, 0, candidate], expected, atol=2e-6)
+        assert model_rollout.horizon_mask[0, 0, candidate].tolist() == list(mask)
+    fingerprint = nominal_rollout_source_fingerprint()
+    assert len(fingerprint) == 64 and set(fingerprint) <= set("0123456789abcdef")
 
 
 def test_candidate_permutation_only_permutes_scores():

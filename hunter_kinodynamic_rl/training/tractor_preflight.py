@@ -16,7 +16,9 @@ from hunter_kinodynamic_rl.config.tractor import (
     formal_research_implementation_readiness, load_tractor_contract,
     tractor_profile_model_mismatches,
 )
+from hunter_kinodynamic_rl.evaluation.provenance import collect_package_provenance
 from hunter_kinodynamic_rl.training.tractor_dataset_validation import validate_dataset
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import formal_source_identity
 from hunter_kinodynamic_rl.training.tractor_scenario_plan import (
     build_scenario_plan, validate_materialized_scenario_manifest,
 )
@@ -39,6 +41,7 @@ class TractorPreflightReport:
     scenario_feasibility_verified: bool = False
     formal_implementation_ready: bool = False
     formal_implementation_gaps: List[str] = field(default_factory=list)
+    formal_source_identity_ok: bool | None = None
     materialized_scenario_manifest_ok: bool | None = None
     dataset_ok: bool | None = None
     torch_version: str | None = None
@@ -122,6 +125,15 @@ def run_tractor_preflight(
                 f"formal implementation gap: {gap}"
                 for gap in report.formal_implementation_gaps
             )
+        if mode == "formal":
+            try:
+                formal_source_identity(
+                    collect_package_provenance(execution_file=__file__)
+                )
+                report.formal_source_identity_ok = True
+            except Exception as error:
+                report.formal_source_identity_ok = False
+                report.errors.append(f"formal source identity failed: {error}")
     except Exception as error:
         report.errors.append(f"contract validation failed: {error}")
     try:

@@ -12,7 +12,9 @@ import torch
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import TractorAgent, TractorAgentConfig
 from hunter_kinodynamic_rl.rl.checkpointing.tractor import (
     export_deployment_bundle, load_deployment_policy, load_training_generation, save_training_generation,
-    load_calibration_artifact, save_calibration_artifact, validate_deployment_bundle,
+    load_calibration_artifact, load_inference_weights, load_warm_start_generation,
+    save_calibration_artifact,
+    validate_deployment_bundle,
 )
 from hunter_kinodynamic_rl.rl.networks.tractor import TractorConfig
 from hunter_kinodynamic_rl.rl.networks.tractor.calibration import PlattCalibration
@@ -106,6 +108,71 @@ def test_training_checkpoint_exact_state_round_trip(tmp_path: Path):
         assert torch.equal(value, restored.online.state_dict()[name]), name
 
 
+def test_final_checkpoint_links_to_latest_semantic_lineage(tmp_path: Path):
+    config = _config()
+    agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    sampler = _sampler(tmp_path)
+    root = tmp_path / "checkpoints"
+    latest = save_training_generation(
+        root, "latest", agent, sampler, {"training_stage": "stage5"},
+    )
+    final = save_training_generation(
+        root, "final", agent, sampler, {"training_stage": "stage5"},
+        parent_tag="latest",
+    )
+    latest_manifest = json.loads(
+        (root / ".generations" / latest / "manifest.json").read_text()
+    )
+    final_manifest = json.loads(
+        (root / ".generations" / final / "manifest.json").read_text()
+    )
+    assert final_manifest["semantic_lineage"]["root_generation"] == latest
+    assert final_manifest["semantic_lineage"]["parent_generation"] == latest
+    assert (
+        final_manifest["semantic_lineage"]["parent_training_payload_sha256"]
+        == latest_manifest["training_payload_sha256"]
+    )
+
+
+def test_inference_loader_checks_semantic_hash_after_byte_integrity(tmp_path: Path):
+    config = _config()
+    agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    sampler = _sampler(tmp_path)
+    root = tmp_path / "checkpoints"
+    generation = save_training_generation(root, "final", agent, sampler, {})
+    manifest_path = root / ".generations" / generation / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["component_state_sha256"]["online"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="semantic hash"):
+        load_inference_weights(root, "final", agent)
+
+
+def test_stage_warm_start_imports_online_only_and_reinitializes_target(tmp_path: Path):
+    config = _config()
+    source = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    with torch.no_grad():
+        next(source.online.parameters()).fill_(0.25)
+    root = tmp_path / "checkpoints"
+    generation = save_training_generation(
+        root, "final", source, _sampler(tmp_path), {"training_stage": "stage3"},
+    )
+    target = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
+    lineage = load_warm_start_generation(
+        root, "final", target, source_stage="stage3", target_stage="stage4",
+    )
+    assert lineage["source_generation"] == generation
+    for name, value in source.online.state_dict().items():
+        assert torch.equal(value, target.online.state_dict()[name])
+    for name, value in target.target.state_dict().items():
+        assert torch.equal(value, target.online.state_dict()[name])
+    assert target.update_step == 0
+    with pytest.raises(ValueError, match="unsupported"):
+        load_warm_start_generation(
+            root, "final", target, source_stage="stage3", target_stage="stage5",
+        )
+
+
 def test_corrupt_payload_and_escaping_pointer_fail_before_deserialization(tmp_path: Path, monkeypatch):
     config = _config()
     agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
@@ -151,7 +218,16 @@ def test_wrong_role_is_rejected_before_tensor_load(tmp_path: Path, monkeypatch):
 def test_deployment_bundle_contains_only_inference_role(tmp_path: Path):
     config = _config()
     agent = TractorAgent(config, TractorAgentConfig(top_quantiles_to_drop_per_net=1))
-    calibration = PlattCalibration(1.0, 0.0, "checkpoint-hash", "calibration-split-hash")
+    source_root = tmp_path / "source-checkpoints"
+    source_generation = save_training_generation(
+        source_root, "final", agent, _sampler(tmp_path / "source-data"),
+        {"training_stage": "stage5"},
+    )
+    source_manifest = json.loads(
+        (source_root / ".generations" / source_generation / "manifest.json").read_text()
+    )
+    source_hash = source_manifest["training_payload_sha256"]
+    calibration = PlattCalibration(1.0, 0.0, source_hash, "calibration-split-hash")
     calibration_path = save_calibration_artifact(
         tmp_path / "calibration", "cal-for-bundle", calibration,
         episode_ids=["cal-episode"], metrics={"ece": 0.05, "event_count": 10},
@@ -162,7 +238,7 @@ def test_deployment_bundle_contains_only_inference_role(tmp_path: Path):
         tmp_path / "bundles", "tractor-a7-test", agent, calibration,
         {
             "promotion_status": "promoted-sim",
-            "source_checkpoint_sha256": "checkpoint-hash",
+            "source_checkpoint_sha256": source_hash,
             "calibration_split_sha256": "calibration-split-hash",
             "calibration_artifact_sha256": calibration_artifact_sha256,
             "robot_attestation_hash": "robot", "controller_attestation_hash": "controller",
@@ -170,6 +246,7 @@ def test_deployment_bundle_contains_only_inference_role(tmp_path: Path):
             "approval_owner": "unit-test",
             "latency_evidence": {"target_hardware_evidence": True, "gate_passed": True},
         }, calibration_artifact_path=calibration_path,
+        source_checkpoint_root=source_root,
     )
     manifest = validate_deployment_bundle(bundle, config.fingerprint())
     assert manifest["artifact_role"] == "deployment_bundle"
@@ -190,6 +267,7 @@ def test_deployment_export_rejects_unapproved_or_unprofiled_state(tmp_path: Path
         export_deployment_bundle(
             tmp_path, "invalid", agent, calibration, {},
             calibration_artifact_path=tmp_path / "missing.json",
+            source_checkpoint_root=tmp_path / "missing-checkpoint",
         )
 
 

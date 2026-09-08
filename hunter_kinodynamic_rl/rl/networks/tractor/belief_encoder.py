@@ -49,6 +49,7 @@ class BeliefEncoder(nn.Module):
             nn.Linear(config.tail_dim + 9 + 4, 128), nn.ELU(), nn.Linear(128, config.ego_dim), nn.ELU()
         )
         self.response_gru = nn.GRUCell(2 + 3 + 4, config.plant_dim)
+        self.response_head = nn.Linear(config.plant_dim, 3)
         self.forecast = SceneForecast(config)
 
     def forward(self, inputs: TractorInputs) -> tuple[BeliefState, DecisionContext]:
@@ -119,6 +120,7 @@ class BeliefEncoder(nn.Module):
         plant_hidden, plant_hidden_valid = _masked_recurrent_update(
             response_proposal, response_prior, response_prior_valid, response_valid, inputs.response_reset
         )
+        response_prediction = self.response_head(plant_hidden)
 
         covariance_flat = inputs.localization_covariance.reshape(b, 9)
         ego_input = torch.cat((
@@ -159,6 +161,7 @@ class BeliefEncoder(nn.Module):
             future_dynamic_flow=future_flow,
             ego_latent=ego_latent,
             plant_latent=plant_hidden,
+            response_prediction=response_prediction,
             next_scene_hidden=scene_hidden,
             next_scene_hidden_valid=scene_hidden_valid,
             next_response_hidden=plant_hidden,

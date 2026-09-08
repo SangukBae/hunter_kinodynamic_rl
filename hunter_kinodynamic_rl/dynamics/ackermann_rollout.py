@@ -285,3 +285,58 @@ def rollout_trajectory_command(
         model_actuator_lag=dynamics_cfg.model_actuator_lag,
     )
     return rollout_constant_target(initial_state, v_ref_mps, target_steering, robot, effective_cfg)
+
+
+def rollout_tractor_output_grid(
+    initial_state: VehicleState,
+    kappa: float,
+    v_ref_mps: float,
+    horizon_m: float,
+    robot: RobotConfig,
+    dynamics_cfg: DynamicsConfig,
+    *,
+    horizon_steps: int,
+    dt_out_sec: float,
+) -> tuple[Rollout, tuple[bool, ...]]:
+    """Canonical CPU reference for ``NominalRolloutAdapter`` (no residual).
+
+    Unlike the execution-oriented rollout above, this function deliberately
+    integrates the entire fixed model output grid and returns a separate true
+    horizon mask.  Its substep count and L-commit/actuator ordering mirror the
+    differentiable adapter exactly, which makes formal label generation and
+    source-parity testing independent of variable-horizon rounding.
+    """
+    if horizon_steps <= 0 or dt_out_sec <= 0.0 or dynamics_cfg.dt_sec <= 0.0:
+        raise ValueError("TRACTOR output-grid dimensions must be positive")
+    from hunter_kinodynamic_rl.robot.limits import curvature_to_steering
+
+    commit_horizon = l_derived_horizon_sec(horizon_m, v_ref_mps, dynamics_cfg)
+    score_horizon = max(commit_horizon, dynamics_cfg.min_safety_horizon_sec)
+    active_steps = min(horizon_steps, max(1, int(math.ceil(score_horizon / dt_out_sec))))
+    mask = tuple(index < active_steps for index in range(horizon_steps))
+    substeps = max(1, int(math.ceil(dt_out_sec / dynamics_cfg.dt_sec)))
+    dt = dt_out_sec / substeps
+    target_steering = curvature_to_steering(kappa, robot.wheelbase_m)
+    actuator = actuator_model.ActuatorState(
+        v=initial_state.v, steering=initial_state.steering, v_lagged=initial_state.v,
+    )
+    state = initial_state
+    points: List[RolloutPoint] = []
+    for output_step in range(horizon_steps):
+        for _substep in range(substeps):
+            blend = max(0.0, min(1.0, dt / max(commit_horizon, dt)))
+            requested_steering = actuator.steering + blend * (
+                target_steering - actuator.steering
+            )
+            v_start = actuator_model.effective_speed(actuator, robot)
+            steering_start = actuator.steering
+            actuator = actuator_model.step_actuator(
+                actuator, v_ref_mps, requested_steering, dt, robot,
+            )
+            v_end = actuator_model.effective_speed(actuator, robot)
+            state = bicycle_model.step_midpoint(
+                state, v_start, steering_start, v_end, actuator.steering,
+                dt, robot.wheelbase_m,
+            )
+        points.append(RolloutPoint(t_sec=(output_step + 1) * dt_out_sec, state=state))
+    return Rollout(points=points), mask

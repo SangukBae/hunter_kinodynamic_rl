@@ -1,9 +1,24 @@
-schema_id: tractor_scenario_plan_v1
-plan_version: tractor_scenario_plan_v1
-protocol_version: tractor_protocol_v1
-generator_version: tractor_fixed_family_templates_v1
+schema_id: tractor_scenario_plan_v2
+plan_version: tractor_scenario_plan_v2
+protocol_version: tractor_protocol_v2
+generator_version: tractor_fixed_family_system_axes_v2
 world_size_m: 16.0
-expected_manifest_sha256: 7ae919676a408ab08bdbc686a646a634a3789856f62a1d15ebaafd91fa2a8626
+expected_manifest_sha256: 64452342d1baebc16fc8cead0ccca77574e19e055dc1a4639300975e5c86bda2
+
+system_axes:
+  vehicle:
+    - {id: vehicle_nominal, domain: id, values: {}}
+    - {id: low_friction, domain: ood, values: {friction_scale: 0.85}}
+    - {id: steering_response, domain: ood, values: {steering_gain: 0.85}}
+    - {id: command_latency, domain: ood, values: {command_latency_sec: 0.1}}
+  sensor:
+    - {id: sensor_nominal, domain: id, values: {}}
+    - {id: lidar_range_noise, domain: ood, values: {lidar_range_noise_std_m: 0.03}}
+    - {id: lidar_dropout, domain: ood, values: {lidar_dropout_prob: 0.03}}
+    - {id: frame_dropout, domain: ood, values: {sensor_frame_drop_prob: 0.02}}
+  localization:
+    - {id: localization_nominal, domain: id, values: {}}
+    - {id: odometry_noise, domain: ood, values: {odometry_noise_std: 0.02}}
 
 splits:
   development:

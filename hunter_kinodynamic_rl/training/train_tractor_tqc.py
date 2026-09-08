@@ -20,9 +20,10 @@ import time
 import numpy as np
 
 from hunter_kinodynamic_rl.common.seed import enable_torch_determinism, seed_all
-from hunter_kinodynamic_rl.config.loader import default_config_root, load_profile
+from hunter_kinodynamic_rl.config.loader import load_profile
 from hunter_kinodynamic_rl.config.tractor import (
-    canonical_sha256, load_tractor_contract, tractor_profile_model_mismatches,
+    canonical_sha256, load_tractor_contract,
+    require_formal_research_implementation_ready, tractor_profile_model_mismatches,
 )
 from hunter_kinodynamic_rl.env.scenarios.seed_scheduler import SeedScheduler
 from hunter_kinodynamic_rl.env.scenarios.tractor_environment_v2 import curriculum_stage
@@ -32,10 +33,13 @@ from hunter_kinodynamic_rl.evaluation.fingerprint import (
 from hunter_kinodynamic_rl.evaluation.provenance import collect_package_provenance
 from hunter_kinodynamic_rl.rl.algorithms.tractor_tqc import TractorAgent
 from hunter_kinodynamic_rl.rl.checkpointing.tractor import (
-    load_training_generation, save_training_generation,
+    load_training_generation, load_warm_start_generation, save_training_generation,
 )
 from hunter_kinodynamic_rl.rl.replay import EpisodeHeader, EpisodeStore, SequenceBuffer, SequenceIndex
 from hunter_kinodynamic_rl.training.tractor_dataset_validation import validate_dataset
+from hunter_kinodynamic_rl.training.tractor_dataset_manifest import (
+    formal_source_identity, validate_runtime_source_against_dataset,
+)
 from hunter_kinodynamic_rl.training.tractor_episode_collector import (
     LABEL_SOURCE, TractorEpisodeRecorder, make_snapshot,
 )
@@ -134,8 +138,10 @@ def collect_development_episodes(
     profile = load_profile(profile_name, config_root)
     contract = load_tractor_contract(config_root, variant)
     _validate_profile(profile, contract["model"])
-    source_root = str(Path(config_root or default_config_root()).resolve().parent)
-    provenance = collect_package_provenance(source_root, __file__)
+    # Config files may legitimately come from AMENT's installed share tree;
+    # provenance must independently resolve the editable package checkout
+    # instead of misclassifying ``share/hunter_kinodynamic_rl`` as source.
+    provenance = collect_package_provenance(execution_file=__file__)
     store = EpisodeStore(dataset_root)
     existing = len(tuple(store.iter_paths()))
     scheduler = SeedScheduler(run_seed, profile.scenario, "train", episode_index=existing)
@@ -234,10 +240,35 @@ def train_from_sequence_replay(
     resume: bool = False, checkpoint_tag: str = "latest",
     checkpoint_interval: int | None = None,
     formal_data: bool = False, scenario_manifest_path: str | Path | None = None,
+    training_stage: str = "stage5",
+    warm_start_checkpoint_root: str | Path | None = None,
+    warm_start_checkpoint_tag: str = "final",
 ) -> dict:
+    if formal_data:
+        require_formal_research_implementation_ready("formal TRACTOR training")
+    if training_stage not in {"stage3", "stage4", "stage5"}:
+        raise ValueError("training_stage must be stage3, stage4, or stage5")
     if updates <= 0:
         raise ValueError("updates must be positive")
+    if resume and warm_start_checkpoint_root is not None:
+        raise ValueError("resume and warm start are mutually exclusive")
+    if training_stage == "stage3" and warm_start_checkpoint_root is not None:
+        raise ValueError("Stage-3 is the root phase and cannot warm start")
+    if formal_data and training_stage in {"stage4", "stage5"} and warm_start_checkpoint_root is None and not resume:
+        raise ValueError(f"formal {training_stage} requires its registered predecessor checkpoint")
     contract = load_tractor_contract(config_root, variant)
+    if formal_data:
+        registered_updates = int(contract["campaign"]["stage_update_budgets"][training_stage])
+        if int(updates) != registered_updates:
+            raise ValueError(
+                f"formal {training_stage} requires exactly {registered_updates} total updates"
+            )
+        if batch_size is not None and int(batch_size) != int(contract["campaign"]["batch_size"]):
+            raise ValueError("formal training cannot override the registered batch size")
+        if checkpoint_interval is not None and int(checkpoint_interval) != int(
+            contract["campaign"]["checkpoint_interval_updates"]
+        ):
+            raise ValueError("formal training cannot override the checkpoint interval")
     loss_window = int(contract["data"]["loss_window"])
     report = validate_dataset(
         dataset_root, loss_window=loss_window, formal=formal_data,
@@ -245,6 +276,38 @@ def train_from_sequence_replay(
     )
     if not report.ok:
         raise RuntimeError(f"dataset validation failed: {report.errors}")
+    provenance = collect_package_provenance(execution_file=__file__)
+    source_identity = {
+        "package_git_commit_sha": provenance["package_git_commit_sha"],
+        "tracked_diff_sha256": provenance["tracked_diff_sha256"],
+        "untracked_source_manifest_sha256": provenance["untracked_source_manifest_sha256"],
+        "source_content_manifest_sha256": provenance["source_content_manifest_sha256"],
+        "source_content_file_count": provenance["source_content_file_count"],
+        "execution_module_sha256": provenance["execution_module_sha256"],
+        "container_image_digest": os.environ.get(
+            "HUNTER_CONTAINER_IMAGE_DIGEST", "unavailable-development",
+        ),
+    }
+    if formal_data:
+        source_identity = formal_source_identity(provenance)
+        dataset_manifest = json.loads(
+            (Path(dataset_root) / "dataset_manifest.json").read_text(encoding="utf-8")
+        )
+        validate_runtime_source_against_dataset(dataset_manifest, source_identity)
+    checkpoint_identity = {
+        "dataset_index_sha256": report.index_sha256,
+        "dataset_manifest_sha256": report.dataset_manifest_sha256,
+        "dataset_validation_sha256": canonical_sha256(dataclasses.asdict(report)),
+        "scenario_manifest_sha256": report.scenario_manifest_sha256,
+        "contract_sha256": contract["contract_sha256"],
+        "protocol_version": contract["protocol"]["protocol_version"],
+        "protocol_sha256": contract["protocol_sha256"],
+        "model_fingerprint": contract["model"].fingerprint(),
+        "seed": seed, "training_stage": training_stage,
+        "formal_dataset_validated": formal_data,
+        "source_identity": source_identity,
+        "device": str(device),
+    }
     store = EpisodeStore(dataset_root)
     index = SequenceIndex.build(store, loss_window=loss_window)
     index.validate_split_isolation()
@@ -264,10 +327,50 @@ def train_from_sequence_replay(
     enable_torch_determinism(warn_only=True)
     agent = TractorAgent(contract["model"], contract["agent"], device=device, target_seed=seed)
     sampler = SequenceBuffer(store, index, seed=seed)
+    warm_start = None
+    resume_manifest = None
     if resume:
-        load_training_generation(run_path / "checkpoints", checkpoint_tag, agent, sampler)
-    trainer = TractorSequenceTrainer(agent, sampler, contract["loss_weights"])
-    target_update = agent.update_step + updates
+        resume_manifest = load_training_generation(
+            run_path / "checkpoints", checkpoint_tag, agent, sampler,
+            expected_metadata={
+                "dataset_index_sha256": index.sha256(),
+                "contract_sha256": contract["contract_sha256"],
+                "seed": seed, "training_stage": training_stage,
+            },
+        )
+    elif warm_start_checkpoint_root is not None:
+        source_stage = "stage3" if training_stage == "stage4" else "stage4"
+        warm_start = load_warm_start_generation(
+            warm_start_checkpoint_root, warm_start_checkpoint_tag, agent,
+            source_stage=source_stage, target_stage=training_stage,
+        )
+        source_metadata = json.loads(
+            (
+                Path(warm_start_checkpoint_root)
+                / ".generations" / warm_start["source_generation"] / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )["metadata"]
+        for name, expected in (
+            ("dataset_index_sha256", index.sha256()),
+            ("dataset_manifest_sha256", report.dataset_manifest_sha256),
+            ("contract_sha256", contract["contract_sha256"]),
+            ("seed", seed),
+            ("formal_dataset_validated", formal_data),
+        ):
+            if source_metadata.get(name) != expected:
+                raise RuntimeError(f"warm-start checkpoint metadata mismatch for {name!r}")
+    checkpoint_identity["warm_start"] = warm_start
+    trainer = TractorSequenceTrainer(
+        agent, sampler, contract["loss_weights"], training_stage=training_stage,
+    )
+    if resume_manifest is not None:
+        trainer.risk_updates = int(
+            resume_manifest.get("metadata", {}).get("risk_updates_applied", 0)
+        )
+    initial_update_step = agent.update_step
+    target_update = int(updates)
+    if initial_update_step > target_update:
+        raise ValueError("checkpoint update step exceeds the registered total update budget")
     actual_batch = int(batch_size or contract["campaign"]["batch_size"])
     interval = int(checkpoint_interval or contract["campaign"]["checkpoint_interval_updates"])
     log_path = run_path / "logs" / "training.jsonl"
@@ -279,24 +382,23 @@ def train_from_sequence_replay(
         if agent.update_step > 0 and agent.update_step % interval == 0:
             save_training_generation(
                 run_path / "checkpoints", "latest", agent, sampler,
-                {
-                    "dataset_index_sha256": index.sha256(), "contract_sha256": contract["contract_sha256"],
-                    "seed": seed, "evidence_status": "training_in_progress_not_evaluation_evidence",
-                },
+                {**checkpoint_identity,
+                 "risk_updates_applied": trainer.risk_updates,
+                 "evidence_status": "training_in_progress_not_evaluation_evidence"},
             )
-    if trainer.risk_updates == 0:
+    if training_stage in {"stage4", "stage5"} and trainer.risk_updates == 0:
         raise RuntimeError("no risk-head update was applied; candidate label path is not healthy")
     generation = save_training_generation(
         run_path / "checkpoints", "final", agent, sampler,
-        {
-            "dataset_index_sha256": index.sha256(), "contract_sha256": contract["contract_sha256"],
-            "seed": seed, "evidence_status": "trained_not_held_out_evaluated",
-            "formal_dataset_validated": formal_data,
-        },
+        {**checkpoint_identity, "risk_updates_applied": trainer.risk_updates,
+         "evidence_status": "trained_not_held_out_evaluated"},
+        parent_tag="latest",
     )
     return {
         "phase": "train", "variant": variant, "seed": seed,
-        "updates_applied": updates, "final_update_step": agent.update_step,
+        "training_stage": training_stage,
+        "updates_applied": target_update - initial_update_step,
+        "target_total_updates": target_update, "final_update_step": agent.update_step,
         "risk_updates_applied": trainer.risk_updates,
         "checkpoint_generation": generation, "run_root": str(run_path.resolve()),
         "elapsed_sec": time.monotonic() - started, "last_metrics": last_metrics,
@@ -326,6 +428,9 @@ def _parser() -> argparse.ArgumentParser:
     train.add_argument("--checkpoint-tag", default="latest")
     train.add_argument("--formal-data", action="store_true")
     train.add_argument("--scenario-manifest")
+    train.add_argument("--training-stage", choices=("stage3", "stage4", "stage5"), default="stage5")
+    train.add_argument("--warm-start-checkpoint-root")
+    train.add_argument("--warm-start-checkpoint-tag", default="final")
     pipeline = subparsers.add_parser("pipeline", help="collect, freeze replay, then train")
     pipeline.add_argument("--episodes", type=int, required=True)
     pipeline.add_argument("--updates", type=int, required=True)
@@ -334,6 +439,7 @@ def _parser() -> argparse.ArgumentParser:
     pipeline.add_argument("--max-steps-per-episode", type=int)
     pipeline.add_argument("--formal-data", action="store_true")
     pipeline.add_argument("--scenario-manifest")
+    pipeline.add_argument("--training-stage", choices=("stage3", "stage4", "stage5"), default="stage5")
     subparsers.add_parser("preflight", help="read-only TRACTOR contract and device gate")
     return parser
 
@@ -358,8 +464,15 @@ def main(argv=None):
             device=args.device, config_root=args.config_root, resume=args.resume,
             checkpoint_tag=args.checkpoint_tag, checkpoint_interval=args.checkpoint_interval,
             formal_data=args.formal_data, scenario_manifest_path=args.scenario_manifest,
+            training_stage=args.training_stage,
+            warm_start_checkpoint_root=args.warm_start_checkpoint_root,
+            warm_start_checkpoint_tag=args.warm_start_checkpoint_tag,
         )
     else:
+        if args.formal_data:
+            raise ValueError(
+                "pipeline collects development episodes only; use the paper campaign for formal data"
+            )
         collected = collect_development_episodes(
             profile_name=args.profile, variant=args.variant, dataset_root=args.dataset_root,
             episodes=args.episodes, run_seed=args.seed, config_root=args.config_root,
@@ -371,6 +484,7 @@ def main(argv=None):
             device=args.device, config_root=args.config_root,
             checkpoint_interval=args.checkpoint_interval,
             formal_data=args.formal_data, scenario_manifest_path=args.scenario_manifest,
+            training_stage=args.training_stage,
         )
         result = {"phase": "pipeline", "collect": collected, "train": trained}
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"

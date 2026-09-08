@@ -13,6 +13,7 @@ import tempfile
 from hunter_kinodynamic_rl.config.comparison import load_comparison_contract
 from hunter_kinodynamic_rl.config.tractor import (
     canonical_sha256, formal_research_implementation_readiness, load_tractor_contract,
+    require_formal_research_implementation_ready,
 )
 from hunter_kinodynamic_rl.evaluation.evaluate_paper_comparison import (
     PAPER_METHODS, evaluate_method_seed,
@@ -22,7 +23,7 @@ from hunter_kinodynamic_rl.evaluation.fit_comparison_calibration import (
 )
 from hunter_kinodynamic_rl.evaluation.tractor_acceptance import evaluate_acceptance
 from hunter_kinodynamic_rl.evaluation.tractor_artifacts import (
-    paired_method_effect, validate_complete_matrix,
+    paired_method_effect, paired_nested_method_effect, validate_complete_matrix,
 )
 from hunter_kinodynamic_rl.training.collect_formal_comparison_data import (
     collect_formal_comparison_data,
@@ -37,7 +38,11 @@ from hunter_kinodynamic_rl.training.tractor_scenario_plan import (
 )
 
 
-CAMPAIGN_SCHEMA = "tractor_paper_comparison_campaign_v1"
+CAMPAIGN_SCHEMA = "tractor_paper_comparison_campaign_v2"
+SYSTEM_AXIS_FIELDS = ("vehicle_axis", "sensor_axis", "localization_axis", "system_domain")
+HEADLINE_METRICS = (
+    "success_rate", "collision_rate", "time_to_goal_sec_mean", "min_clearance_m_mean",
+)
 
 
 def _method_contract_sha256(config_root: str | None = None) -> dict[str, str]:
@@ -52,12 +57,7 @@ def _method_contract_sha256(config_root: str | None = None) -> dict[str, str]:
 
 
 def _require_formal_implementation_ready() -> None:
-    readiness = formal_research_implementation_readiness()
-    if not readiness["ready"]:
-        raise RuntimeError(
-            "formal paper campaign is blocked by implementation gaps: "
-            + ", ".join(readiness["gaps"])
-        )
+    require_formal_research_implementation_ready("formal paper campaign")
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -105,6 +105,7 @@ def prepare_campaign(campaign_root: str | Path, config_root: str | None = None) 
         "method_contract_sha256": _method_contract_sha256(config_root),
         "seeds": list(contract["campaign"]["seeds"]),
         "fixed_update_budget": int(contract["campaign"]["fixed_update_budget"]),
+        "stage_update_budgets": dict(contract["campaign"]["stage_update_budgets"]),
         "batch_size": int(contract["campaign"]["batch_size"]),
         "scenario_plan_manifest_sha256": scenarios["plan_manifest_sha256"],
         "scenario_artifact_manifest_sha256": scenarios["artifact_manifest_sha256"],
@@ -140,6 +141,8 @@ def load_campaign(campaign_root: str | Path, config_root: str | None = None) -> 
         "methods": list(PAPER_METHODS), "calibrated_methods": list(CALIBRATED_METHODS),
         "method_contract_sha256": _method_contract_sha256(config_root),
         "seeds": list(contract["campaign"]["seeds"]),
+        "fixed_update_budget": int(contract["campaign"]["fixed_update_budget"]),
+        "stage_update_budgets": dict(contract["campaign"]["stage_update_budgets"]),
         "formal_implementation_ready": bool(readiness["ready"]),
         "formal_implementation_gaps": list(readiness["gaps"]),
     }
@@ -183,6 +186,10 @@ def train_campaign(
     _require_formal_implementation_ready()
     campaign, paths = load_campaign(campaign_root, config_root)
     selected_methods, selected_seeds = _selection(campaign, methods, seeds)
+    if updates is not None and int(updates) != int(campaign["fixed_update_budget"]):
+        raise ValueError("formal campaign cannot override the frozen total update budget")
+    if batch_size is not None and int(batch_size) != int(campaign["batch_size"]):
+        raise ValueError("formal campaign cannot override the frozen batch size")
     data_report = validate_dataset(
         paths["dataset"], formal=True, scenario_manifest_path=paths["scenario_manifest"],
         config_root=config_root,
@@ -200,16 +207,43 @@ def train_campaign(
                     continue
                 raise FileExistsError(f"final checkpoint already exists: {final_pointer}")
             common = {
-                "dataset_root": paths["dataset"], "run_root": run_root,
-                "seed": seed, "updates": int(updates or campaign["fixed_update_budget"]),
+                "dataset_root": paths["dataset"],
+                "seed": seed,
                 "batch_size": batch_size or int(campaign["batch_size"]), "device": device,
                 "config_root": config_root, "formal_data": True,
                 "scenario_manifest_path": paths["scenario_manifest"],
             }
             if method.startswith("A"):
-                result = train_from_sequence_replay(variant=method.lower(), **common)
+                phase_results = []
+                previous_root = None
+                for stage in ("stage3", "stage4", "stage5"):
+                    phase_root = (
+                        run_root if stage == "stage5" else run_root / "phases" / stage
+                    )
+                    phase_final = phase_root / "checkpoints" / "final"
+                    if phase_final.is_symlink():
+                        phase_results.append({"training_stage": stage, "status": "skipped_complete"})
+                    else:
+                        latest = phase_root / "checkpoints" / "latest"
+                        phase_results.append(train_from_sequence_replay(
+                            variant=method.lower(), run_root=phase_root,
+                            updates=int(campaign["stage_update_budgets"][stage]),
+                            training_stage=stage, resume=latest.is_symlink(),
+                            warm_start_checkpoint_root=(
+                                None if latest.is_symlink() or previous_root is None
+                                else previous_root / "checkpoints"
+                            ),
+                            **common,
+                        ))
+                    previous_root = phase_root
+                result = {"method_id": method, "seed": seed, "phases": phase_results}
             else:
-                result = train_comparison_baseline(method_id=method, **common)
+                latest = run_root / "checkpoints" / "latest"
+                result = train_comparison_baseline(
+                    method_id=method, run_root=run_root,
+                    updates=int(campaign["fixed_update_budget"]), resume=latest.is_symlink(),
+                    **common,
+                )
             results.append(result)
     return {"phase": "train", "runs": results, "performance_claim": "none_training_only"}
 
@@ -300,6 +334,106 @@ def _read_records(paths: dict[str, Path], campaign: dict) -> list[dict]:
     return records
 
 
+def _axis_stratified_effects(records: list[dict], methods: list[str]) -> dict:
+    """Keep system-OOD claims separate instead of hiding them in one pooled mean."""
+    missing = [
+        record.get("experiment_id", f"row-{index}")
+        for index, record in enumerate(records)
+        if any(field not in record for field in SYSTEM_AXIS_FIELDS)
+    ]
+    if missing:
+        raise RuntimeError(f"evaluation records are missing frozen system axes: {missing}")
+    reports = {}
+    for field in SYSTEM_AXIS_FIELDS:
+        levels = sorted({str(record[field]) for record in records})
+        reports[field] = {}
+        for level in levels:
+            selected = [record for record in records if str(record[field]) == level]
+            reports[field][level] = {
+                "record_count": len(selected),
+                "scenario_count": len({record["scenario_id"] for record in selected}),
+                "seed_count": len({int(record["seed"]) for record in selected}),
+                "method_record_count": {
+                    method: sum(record["method_id"] == method for record in selected)
+                    for method in methods
+                },
+                "paired_effects_vs_B1": {
+                    method: {
+                        metric: paired_method_effect(selected, method, "B1", metric)
+                        for metric in HEADLINE_METRICS
+                    }
+                    for method in methods if method != "B1"
+                },
+            }
+    return reports
+
+
+def _hypothesis_aggregate(records: list[dict], methods: list[str]) -> dict:
+    support = {}
+    for method in methods:
+        selected = [record for record in records if record["method_id"] == method]
+        support[method] = {
+            "episode_count": len(selected),
+            "h1_available_episodes": sum(
+                bool(record["metrics"]["h1_prediction"].get("available"))
+                for record in selected
+            ),
+            "h1_valid_cells": sum(
+                int(record["metrics"]["h1_prediction"].get("valid_cells", 0))
+                for record in selected
+            ),
+            "h2_available_episodes": sum(
+                bool(record["metrics"]["h2_ranking"].get("available"))
+                for record in selected
+            ),
+            "h2_valid_rows": sum(
+                int(record["metrics"]["h2_ranking"].get("row_count", 0))
+                for record in selected
+            ),
+            "h3_available_episodes": sum(
+                bool(record["metrics"]["h3_risk"].get("available"))
+                for record in selected
+            ),
+            "h3_candidate_count": sum(
+                int(record["metrics"]["h3_risk"].get("count", 0))
+                for record in selected
+            ),
+            "h3_event_count": sum(
+                int(record["metrics"]["h3_risk"].get("event_count", 0))
+                for record in selected
+            ),
+        }
+    comparison_plan = {
+        "H1": {
+            "pairs": (("A7", "B3"), ("A7", "B4"), ("A7", "B5")),
+            "metrics": ("occupancy_nll", "flow_epe", "tube_oob_mae"),
+            "family": "h1_prediction",
+        },
+        "H2": {
+            "pairs": (("A7", "B4"), ("A7", "B5"), ("A7", "B7")),
+            "metrics": ("mean_regret", "ndcg", "unsafe_top1_rate"),
+            "family": "h2_ranking",
+        },
+        "H3": {
+            "pairs": (("A7", "B8"),),
+            "metrics": ("brier", "nll", "ece"),
+            "family": "h3_risk",
+        },
+    }
+    effects = {}
+    for hypothesis, plan in comparison_plan.items():
+        effects[hypothesis] = {}
+        for method, baseline in plan["pairs"]:
+            effects[hypothesis][f"{method}_vs_{baseline}"] = {
+                metric: paired_nested_method_effect(
+                    records, method, baseline,
+                    ("metrics", plan["family"], metric),
+                )
+                for metric in plan["metrics"]
+            }
+    return {"support_by_method": support, "paired_effects": effects}
+
+
 def aggregate_campaign(
     campaign_root: str | Path, *, runtime_json: str | Path | None = None,
     config_root: str | None = None,
@@ -325,10 +459,7 @@ def aggregate_campaign(
             continue
         effects[method] = {
             metric: paired_method_effect(records, method, "B1", metric)
-            for metric in (
-                "success_rate", "collision_rate", "time_to_goal_sec_mean",
-                "min_clearance_m_mean",
-            )
+            for metric in HEADLINE_METRICS
         }
     acceptance = None
     if runtime_json is not None:
@@ -337,10 +468,13 @@ def aggregate_campaign(
             records, runtime, config_root=config_root, method="A7", baseline="B1",
         ))
     payload = {
-        "schema_id": "tractor_paper_comparison_aggregate_v1",
+        "schema_id": "tractor_paper_comparison_aggregate_v2",
         "campaign_manifest_sha256": campaign["campaign_manifest_sha256"],
         "matrix": matrix, "record_count": len(records),
-        "paired_effects_vs_B1": effects, "primary_acceptance_A7_vs_B1": acceptance,
+        "paired_effects_vs_B1": effects,
+        "system_axis_reports": _axis_stratified_effects(records, campaign["methods"]),
+        "hypothesis_metrics": _hypothesis_aggregate(records, campaign["methods"]),
+        "primary_acceptance_A7_vs_B1": acceptance,
         "evidence_scope": "locked_test_simulation_only",
     }
     payload["aggregate_sha256"] = canonical_sha256(payload)
@@ -350,10 +484,19 @@ def aggregate_campaign(
 
 def campaign_status(campaign_root: str | Path, config_root: str | None = None) -> dict:
     campaign, paths = load_campaign(campaign_root, config_root)
-    training = calibration = evaluation = 0
+    training = calibration = evaluation = stage3 = stage4 = 0
     for method in campaign["methods"]:
         for seed in campaign["seeds"]:
             training += int((paths["runs"] / method / f"seed-{seed}" / "checkpoints" / "final").is_symlink())
+            if method.startswith("A"):
+                stage3 += int((
+                    paths["runs"] / method / f"seed-{seed}" / "phases" / "stage3"
+                    / "checkpoints" / "final"
+                ).is_symlink())
+                stage4 += int((
+                    paths["runs"] / method / f"seed-{seed}" / "phases" / "stage4"
+                    / "checkpoints" / "final"
+                ).is_symlink())
             evaluation += int((paths["evaluation"] / method / f"seed-{seed}.jsonl").is_file())
             if method in CALIBRATED_METHODS:
                 calibration += int((
@@ -370,6 +513,10 @@ def campaign_status(campaign_root: str | Path, config_root: str | None = None) -
         "formal_implementation_gaps": list(campaign["formal_implementation_gaps"]),
         "formal_dataset_ready": bool(dataset and dataset.ok),
         "training_complete": training, "training_expected": len(campaign["methods"]) * len(campaign["seeds"]),
+        "tractor_stage3_complete": stage3,
+        "tractor_stage3_expected": 3 * len(campaign["seeds"]),
+        "tractor_stage4_complete": stage4,
+        "tractor_stage4_expected": 3 * len(campaign["seeds"]),
         "calibration_complete": calibration,
         "calibration_expected": len(campaign["calibrated_methods"]) * len(campaign["seeds"]),
         "evaluation_complete": evaluation,

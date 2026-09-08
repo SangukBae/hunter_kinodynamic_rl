@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Mapping, Sequence
 
+import numpy as np
+
 from .tractor_metrics import paired_bootstrap_interval
 
 
@@ -77,4 +79,46 @@ def paired_method_effect(records: Sequence[Mapping], method: str, baseline: str,
     report = paired_bootstrap_interval(seed_differences, seed=1729)
     report["scenario_pair_count"] = sum(len(values) for values in differences_by_seed.values())
     report["replication_unit"] = "independent_training_seed"
+    return report
+
+
+def paired_nested_method_effect(
+    records: Sequence[Mapping], method: str, baseline: str, metric_path: Sequence[str],
+) -> dict:
+    """Seed-level paired interval for one nested per-scenario hypothesis metric."""
+    lookup = {
+        (record["method_id"], int(record["seed"]), record["scenario_id"]): record
+        for record in records
+    }
+
+    def resolve(record):
+        value = record
+        for field in metric_path:
+            if not isinstance(value, Mapping) or field not in value:
+                return None
+            value = value[field]
+        return value
+
+    differences_by_seed = defaultdict(list)
+    for (record_method, seed, scenario), record in lookup.items():
+        if record_method != method:
+            continue
+        other = lookup.get((baseline, seed, scenario))
+        if other is None:
+            raise ValueError(f"missing paired baseline row for seed={seed}, scenario={scenario}")
+        value, baseline_value = resolve(record), resolve(other)
+        if value is None or baseline_value is None:
+            continue
+        value, baseline_value = float(value), float(baseline_value)
+        if not (np.isfinite(value) and np.isfinite(baseline_value)):
+            continue
+        differences_by_seed[seed].append(value - baseline_value)
+    seed_differences = [
+        sum(values) / len(values) for _seed, values in sorted(differences_by_seed.items())
+        if values
+    ]
+    report = paired_bootstrap_interval(seed_differences, seed=1729)
+    report["scenario_pair_count"] = sum(len(values) for values in differences_by_seed.values())
+    report["replication_unit"] = "independent_training_seed"
+    report["metric_path"] = list(metric_path)
     return report
