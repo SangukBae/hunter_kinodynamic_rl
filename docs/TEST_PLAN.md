@@ -1,12 +1,13 @@
 # TRACTOR-TQC Test Plan
 
-Status: **development unit/property/contract subset implemented; full formal-contract, rollout-parity, system and HIL gates open**
+Status: **formal code-contract regression implemented; formal experiment, target timing, HIL and real gates open**
 
 Tests establish code and contract correctness. Navigation, calibration and real-world claims still
 require the formal protocol and artifacts.
 
-Unchecked bullets below are requirements, not claims of existing test coverage. Formal campaign
-evidence commands remain blocked while the implementation-readiness registry is non-empty.
+Bullets describe the required contract; current code-level items are covered by the regression suite
+unless marked as experiment/HIL/real evidence. Formal commands additionally require clean committed
+source, a recorded container digest and complete immutable artifacts.
 
 ## 1. Test ladder
 
@@ -63,7 +64,7 @@ evidence commands remain blocked while the implementation-readiness registry is 
 - imagined samples never reach the primary Bellman loss;
 - optimizer parameter sets are complete and pairwise disjoint;
 - actor step changes actor only while action gradient through scorer is finite/nonzero;
-- target: failed/overflowed joint value+risk transaction changes no optimizer/RNG state and performs no EMA update.
+- failed/overflowed Stage-4 or Stage-5 joint transaction changes no affected weight/optimizer/RNG state and performs no EMA update.
 
 ## 4. Replay and checkpoint
 
@@ -72,9 +73,9 @@ evidence commands remain blocked while the implementation-readiness registry is 
 - split/group/geometry leakage detector catches renamed duplicates and derived sidecars;
 - interrupted chunk/save writes recover the previous complete generation (core publication test exists);
 - exact resume restores current online/target/optimizers/scaler/replay/RNG/counters;
-- target: every semantic mutation and parent/root lineage mismatch triggers the compatibility decision;
+- semantic component mutation and required metadata/parent/root lineage mismatch trigger rejection;
 - wrong role/hash/path traversal fails before deserialization;
-- deployment bundle has no optimizer, target or replay payload; formal checkpoint/promotion binding remains open.
+- deployment bundle has no optimizer, target or replay payload and is bound to exact Stage-5/calibration hashes.
 
 ## 5. ROS/Gazebo integration
 
@@ -95,14 +96,21 @@ Inject stale scan, invalid covariance, localization jump, NaN action, empty cand
 delay and missed deadline. Each must produce the registered fallback, diagnostic reason and no hidden
 state double-advance.
 
-Gazebo smoke covers reset→step→update→save→resume. Scenario tests cover static/dynamic collisions,
+Gazebo smoke covers reset→step and coherent data collection. Offline integration covers
+replay→Stage-3/4/5 update→save/resume. Scenario tests cover static/dynamic feasibility, collisions,
 near misses, braking, occlusion and OOD perturbations. Smoke success is not a benchmark result.
+
+Current readiness snapshot (2026-09-08): sourced Docker regression **2,253 passed in 273.95 s**;
+ROS package build passed; live Gazebo development collection produced 3 L0 episodes/120 rows/75
+windows with validator errors 0; a separate L4 static-4/dynamic-8 scene completed 20 steps with valid
+telemetry and a following cleanup reset. See `verification/2026-09-08_training_readiness_smoke.md`. These counts are code/runtime
+readiness evidence only and do not fill any formal campaign cell.
 
 ## 6. Timing and resource tests
 
 Measure warmed-up end-to-end and per-stage p50/p95/p99 on named hardware, with realistic ROS message
 load and synchronization. Record candidate count, horizon, precision, CPU/GPU utilization, peak memory,
-deadline misses and fallback outcome. Frozen v1 release gate: target hardware, at least 10,000 timed
+deadline misses and fallback outcome. Frozen v2 release gate: target hardware, at least 10,000 timed
 decisions, p99 `≤100 ms` and misses `≤1%`.
 
 ## 7. Statistical artifact checks

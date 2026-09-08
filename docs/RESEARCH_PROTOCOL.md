@@ -1,13 +1,12 @@
 # TRACTOR-TQC Research Protocol
 
-Status: **acceptance/scenario contract frozen as `tractor_protocol_v1`; formal execution blocked by implementation readiness**
+Status: **acceptance/scenario contract frozen as `tractor_protocol_v2`; implementation-ready; formal experiments not run**
 
-The frozen file fixes intended methods, navigation acceptance thresholds, seed statistics and scenario
-identity. It does not certify that every training objective, dataset field, hypothesis metric or
-promotion check below is implemented. `formal_research_implementation_readiness()` is currently false;
-formal collect/train/calibrate/evaluate/aggregate commands fail closed until all registered gaps are
-removed with tests and a new code/contract fingerprint.
-Frozen payload SHA-256: `fe2c1cfbd175c12c333173a7c9ccd25edf885fbfc18e519640c4d7e597ba9ee1`
+The frozen file fixes intended methods, navigation acceptance thresholds, seed statistics, system axes
+and scenario identity. `formal_research_implementation_readiness()` is currently true. Every public
+formal entrypoint still fails closed on a dirty source tree, missing container digest, dataset/source
+mismatch or incomplete artifacts.
+Frozen payload SHA-256: `9344a4b7a0da8bdcb487859a30e40fdc025775f68f4f36ef0da0ca1c5dbf688d`
 Scope: Local kinodynamic control first; Global is a dependent follow-up
 
 ## 1. Objective and non-claims
@@ -24,9 +23,10 @@ and a guard are controls—not the central novelty.
 
 ## 2. Prerequisites
 
-Formal TRACTOR runs cannot start until [CURRENT_STATUS.md](CURRENT_STATUS.md)의 P0-01…P0-07,
-dataset validation, checkpoint interruption/resume tests and baseline contract freeze are complete.
-The current 0/30 Stage-2 matrix is run in a separate immutable root before being cited as evidence.
+The code prerequisites, dataset validator, checkpoint resume/lineage checks and baseline contract freeze
+are complete. Operational prerequisites remain: commit the exact source, record
+`HUNTER_CONTAINER_IMAGE_DIGEST`, use a new immutable output root and pass formal preflight. The current
+0/30 legacy Stage-2 matrix remains separate and cannot be cited as same-contract evidence.
 
 ## 3. Falsifiable hypotheses
 
@@ -90,6 +90,11 @@ Publication tables label those differences.
 - tuning budget and search space logged per method;
 - failure/timeout runs retained and excluded only by preregistered rules.
 
+The registered total is 150,000 optimizer updates per method with batch size 64. A7/A8/A9 allocate
+30,000 to Stage 3, 30,000 to Stage 4 and 90,000 to Stage 5; B1–B8 use the same total in their registered
+single-stage path. Formal CLI overrides of update count, batch size or the 5,000-update checkpoint
+interval are rejected.
+
 ### Target TRACTOR stages
 
 | Stage | Train | Frozen/controlled output | Exit gate |
@@ -106,8 +111,7 @@ Stage 3/4/5 are separate experiment lineages linked by explicit warm-start maps.
 real executed transitions only. Auxiliary losses may update the registered value-path modules; actor
 updates detach belief but preserve gradients through action-conditioned scoring.
 
-Target phase truth table; current code implements only the Bellman value, risk-head, actor/entropy and
-EMA development path, not the full Stage 3/4 or atomic Stage-5 value+risk transaction:
+Executable phase truth table:
 
 | Phase/transaction | Exact objective | Owner/eligible modules | Ineligible updates |
 |---|---|---|---|
@@ -121,7 +125,7 @@ EMA development path, not the full Stage 3/4 or atomic Stage-5 value+risk transa
 
 Stage-4 feature/head sides and Stage-5 value/risk sides each form an atomic transaction; both prechecks
 pass and both optimizer steps
-commit before EMA. A batch with no valid risk label skips that whole transaction without consuming its
+commit before the actor+entropy recoverable transaction and EMA. A batch with no valid risk label skips that whole transaction without consuming its
 target-action RNG. A missing auxiliary label sets only that masked auxiliary term to zero and records a
 zero valid count; it never invents a target. The core sampler is uniform over valid windows, so the
 masked risk estimators are unweighted sample means. Event-balanced training requires a separately
@@ -135,37 +139,34 @@ fingerprint. No weight is changed after locked-test inspection under the same pr
 
 ## 6. Evaluation matrix
 
-The frozen `tractor_scenario_plan_v1` contains 616 unique geometries: 352 development, 88 calibration
+The frozen `tractor_scenario_plan_v2` contains 616 unique geometries: 352 development, 88 calibration
 and 176 locked-test instances across six static and five dynamic families. Seed intervals and canonical
 geometry hashes are disjoint across splits. The plan SHA-256 is
-`7ae919676a408ab08bdbc686a646a634a3789856f62a1d15ebaafd91fa2a8626`.
+`64452342d1baebc16fc8cead0ccca77574e19e055dc1a4639300975e5c86bda2`.
 
 ### Scenario axes
 
-The frozen 616-geometry v1 plan currently varies only topology and static/dynamic obstacle-family
-geometry/motion. Its generated `dynamics` and `sensor` mappings are empty and it has no localization
-perturbation mapping. The remaining axes below are **required target extensions** and may not be
-claimed from protocol v1. The separate Environment v2 suites exercise broader axes but are not part of
-this frozen 616-instance matrix.
+The frozen 616-geometry v2 plan jointly fixes topology/obstacle family and balanced deterministic
+vehicle, sensor and localization system axes. Each episode records the selected axis IDs, values and
+ID/OOD `system_domain`; aggregation reports every required axis separately.
 
 - topology: open, corridor, corner, choke point, clutter, dead end;
 - obstacle: static density, crossing, head-on, overtaking, occlusion, mixed motion;
-- target vehicle extension: mass/friction/lag/steering/braking perturbations;
-- target sensing extension: dropout, range noise, latency, stale frames, partial observability;
-- target localization extension: drift, jump, covariance inflation, invalid periods;
-- target goal extension: distance/bearing including rear/full-circle observability cases.
+- vehicle: nominal, friction scale 0.85, steering gain 0.85, command latency 0.1 s;
+- sensing: nominal, range-noise 0.03 m, ray dropout 0.03, frame dropout 0.02;
+- localization: nominal and odometry-noise standard deviation 0.02.
 
-Protocol v1 provides split-isolated held-out geometry seeds, but every split contains the same eleven
-families and it does not constitute a registered ID/OOD axis matrix. A future protocol version must
-define which ranges are ID and which layouts, trajectories or system combinations are held out; each
-OOD axis is then reported separately before any pooled score.
+Geometry seeds remain split-isolated while system-axis domain labels define the registered nominal/held-
+out perturbation reports. This does not make every possible mass, map, localization-jump or sensor-fault
+condition covered; unregistered axes require a new protocol version.
 
 ### Target metrics
 
-The current locked evaluator records navigation outcome, path/time/clearance, emergency-stop and
-latency diagnostics only. Prediction, proposal/ranking, cause-time risk and uncertainty metrics are
-implemented only as isolated helper functions/tests or remain absent from campaign records; therefore
-H1–H3 cannot yet be evaluated by the formal orchestrator.
+The locked evaluator records navigation outcome, path/time/clearance, emergency-stop and latency
+diagnostics plus per-episode H1 prediction, H2 ranking and H3 cause-time/calibration/selective-risk
+records. Required denominators are validated before aggregation; unsupported baseline metrics remain
+explicitly unavailable instead of becoming zero. Campaign aggregation emits hypothesis and
+vehicle/sensor/localization/system-domain paired effects at independent-seed replication level.
 
 | Family | Metrics |
 |---|---|

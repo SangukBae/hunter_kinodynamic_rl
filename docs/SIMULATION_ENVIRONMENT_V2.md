@@ -2,17 +2,18 @@
 
 상태: **IMPLEMENTED / CONFIGURED / NOT TRAINED / NOT FORMALLY BENCHMARKED**
 계약 ID: `tractor_env_v2`
-기준일: **2026-09-07 KST**
+기준일: **2026-09-08 KST**
 
 ## 1. 목적과 호환성
 
 `tractor_env_v2`는 Hunter SE Local policy가 단순 원통·등속 장애물에 과적합되지 않도록 만든
-opt-in 학습 환경이다. 기존 `tractor_protocol_v1`, 그 protocol의 616개 scenario plan과 기존
-profile은 수정하지 않았다. `environment_v2.enabled=false`일 때 기존 seed→scenario,
+opt-in 학습 환경이다. 현재 formal comparison은 `tractor_protocol_v2`와 별도
+`tractor_scenario_plan_v2`의 616개 scenario/system-axis 계약을 사용한다. `environment_v2.enabled=false`일 때 기존 seed→scenario,
 seed→motion 경로와 training/evaluation fingerprint는 이전 형식과 동일하게 유지된다.
 
 새 학습은 `tractor_local_dynamic_v2`, 새 고정 평가는 `evaluation_v2_*` profile을 사용한다.
-v1 결과와 v2 결과는 환경 계약이 다르므로 같은 표에서 무조건 합치지 않는다.
+이전 protocol 또는 Environment v1 결과와 v2 결과는 환경 계약이 다르므로 같은 표에서
+무조건 합치지 않는다.
 
 ## 2. 실제 구현
 
@@ -24,6 +25,7 @@ split-safe seed + restored trainer episode index
   → robot-relative start/goal
   → topology-conditioned static layout
   → TTC/DCPA-conditioned moving conflicts
+  → static + dynamic t=0 grid/Ackermann reachability 검사와 bounded layout retry
   → shape-aware Gazebo spawn
   → acceleration/turn-rate-limited motion
   → 5 substep pose/physics integration per 0.1 s control tick
@@ -60,7 +62,8 @@ validation/test는 항상 level 4를 사용한다.
 ## 4. 장면, 형상, 운동
 
 Topology taxonomy는 open, corridor, doorway, intersection, S-curve, warehouse aisle, clutter다.
-Static/dynamic object는 cylinder, box, cart, L-shape를 지원한다. legacy risk/feasibility 계산이
+Static/dynamic object는 cylinder, box, cart, L-shape를 지원한다. L-shape SDF의 두 primitive는
+collision/visual 모두 유효한 6-DoF pose로 생성된다. legacy risk/feasibility 계산이
 shape를 아직 직접 처리하지 못하는 경로에서는 각 shape의 circumscribed radius를 보수적으로
 사용하고, Gazebo spawn과 episode collision termination은 실제 primitive shape를 사용한다.
 
@@ -86,6 +89,11 @@ v1 moving obstacle은 0.1 s당 한 번 이동하는 기존 zero-order hold를 �
 Gazebo model plugin이 만드는 진짜 동적 rigid-body actuator는 아니며, service-driven substep
 integration이다. 따라서 접촉 dynamics 연구를 주장하려면 별도 model plugin 검증이 필요하다.
 
+Deterministic stepping은 각 `ControlWorld.multi_step` 요청 전후에 값이 변하는 `/clock` queue가
+안정됐는지 확인한 뒤, 관측된 시간 증가를 예상값과 대조한다. 일반 허용치와 1-step calibration
+허용치는 모두 기본 0.0002 s이며 0.001 s Gazebo physics tick의 절반보다 작아야 한다. 따라서
+완전한 한 tick 누락/초과는 허용 오차로 숨길 수 없다.
+
 ## 6. Randomization과 calibration 경계
 
 `config/environment_v2/hunter_se_calibration.yaml`이 범위와 적용 위치를 고정한다. 현재 상태는
@@ -105,7 +113,12 @@ Profile과 manifest 범위 또는 code의 적용 분류가 다르면 profile loa
 ## 7. 고정 평가 suite
 
 각 suite는 겹치지 않는 test seed 8개와 파일 SHA-256을
-`config/benchmarks/environment_v2_manifest.json`에 기록한다.
+`config/benchmarks/environment_v2_manifest.json`에 기록한다. 생성 시 start/goal과 모든 `t=0`
+static/dynamic footprint를 함께 검사하며, 의도된 feasible scene은 grid connectivity와
+Ackermann-reachable heading을 만족할 때만 고정된다. Goal-blocked negative fixture는 reason으로
+명시되어 feasible count에 섞이지 않는다. 현재 manifest의 분류는 intended-feasible **41/41**,
+deliberate `goal_blocked` negative fixture **7/7**이며, 이 수치는 policy 성공률이 아니라 생성기
+계약 검사 결과다.
 
 | Profile | World | 목적 |
 |---|---:|---|

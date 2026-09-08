@@ -1,18 +1,18 @@
 # Checkpoint and Compatibility Contract
 
-Status: **PARTIAL IMPLEMENTATION; formal promotion lineage blocked; no promoted trained artifact**
+Status: **SEMANTIC TRAINING/CALIBRATION/DEPLOYMENT LINEAGE IMPLEMENTED; no trained or promoted artifact**
 
 Checkpoint compatibility is semantic, not shape-only. Current TQC and TRACTOR are different model
 families; neither may resume the other. Partial weight import is a recorded warm start into a new
 experiment.
 
-`rl/checkpointing/tractor.py` currently implements atomic generation-directory publication,
+`rl/checkpointing/tractor.py` implements atomic generation-directory publication,
 path/role/generation/model-fingerprint/payload-hash validation before deserialization,
-agent/sampler/global-RNG restoration, and inference-only calibrated bundle serialization. It does
-**not** yet implement the canonical identity superset, parent/root/component lineage, data/training
-fingerprint validation, deterministic startup probe, or cryptographic binding of exported in-memory
-weights to an approved Stage-5 checkpoint. Formal export/promotion is therefore not ready. Tests use
-synthetic untrained state; live ROS loading and promotion evidence remain open.
+component semantic hashes, parent/root/stage lineage, exact agent/sampler/global-RNG restoration,
+online-only Stage warm start, finite-weight startup probes and inference-only calibrated bundle
+serialization. Export cryptographically binds the in-memory online weights and calibrator to the exact
+Stage-5 source generation. Tests use synthetic untrained state; an actually trained/promoted artifact,
+target latency evidence and live ROS deployment evidence remain open.
 
 ## 1. Artifact roles
 
@@ -22,13 +22,13 @@ synthetic untrained state; live ROS loading and promotion evidence remain open.
 | `calibration_artifact` | source checkpoint identity, fitted mapping/thresholds, calibration split hashes | neural optimizer/replay |
 | `deployment_bundle` | approved inference weights, calibrator, resolved robot/config and manifest | targets, optimizers, replay |
 
-Training generations are immutable after publication and currently protect the tensor payload with a
-SHA-256. A whole-generation root checksum is a target requirement below, not current behavior. Role is
-validated before tensor deserialization.
+Training generations are immutable after publication. The tensor payload has a byte SHA-256 and every
+component has a serialization-independent semantic state hash. Role, path, generation, model fingerprint
+and byte hash are validated before tensor deserialization.
 
-## 2. Target required identity — not yet implemented
+## 2. Executable identity and canonical extension
 
-The formal target manifest must record:
+The current manifest/metadata records or binds the operational subset below:
 
 ```text
 schema_id, artifact_role, experiment_id, generation, parent_generation
@@ -46,8 +46,11 @@ optimizer ownership hashes, target-network contract
 calibration context, evidence level and promotion status
 ```
 
-Keys in the canonical superset are always present: inactive fields are JSON `null`, `[]` or `{}` as
-specified by schema. Missing and disabled are not synonymous.
+The checkpoint schema is `tractor_training_checkpoint_v2`; calibration and deployment use role-separated
+v2 schemas. The training entrypoint supplies dataset manifest/index/validation hashes, scenario/contract/
+protocol, method/seed/stage, source/container identity and device metadata. Loaders can require exact
+metadata fields. A larger always-present canonical superset with explicit nulls is a future schema
+hardening item, not a claim about the current manifest.
 
 The architecture fingerprint includes grid axes/bounds, observation order, action decoder, trajectory
 and commit semantics, belief/operator/head variants, `K/H/M/Q_m/Q_r`, recurrence policy and footprint.
@@ -61,13 +64,13 @@ The active risk bundle is a tagged manifest object:
 risk_contract_id: R0 | R1 | R2 | R3 | R4 | R5 | R6
 Q_r, ordered_member_ids, enabled_subhead_keys, output_shape_schema
 loss_and_label_schema_hashes
-bootstrap_policy, ordered_member_seeds, inclusion_digest
+risk_member_training_policy, ordered_member_initialization_seeds
 risk_aggregation_contract, expected_calibration_context_id
 ```
 
 R0–R5 require `Q_r=1`; R0–R4 enable exactly their registered scalar/event/hazard keys, R5 enables one
 matched hazard+clearance+stopping bundle, and R6 enables that indivisible bundle for every ordered
-member. Only R6 has non-null stochastic bootstrap seeds/inclusion digest. Inactive component keys are
+member. R6 uses independently initialized members on the same registered rows. Inactive component keys are
 absent. Output/label/loss shapes are normative in `TRACTOR_TQC_MODEL_SPEC` section 8.
 Registered deployment families map exactly as A7→R5, A8→R5 and A9→R6; a different pair is a new
 architecture fingerprint, not a load-time option.
@@ -79,14 +82,14 @@ denominator, `ddof=1`, calibrate-before-UCB/LCB order, beta/clipping and no-drop
 |---|---|---|---|
 | tag/`Q_r`/member order/schema hashes | exact active values | exact source copy | exact source copy |
 | neural risk component keys | exact active bundle | absent | exact inference bundle |
-| bootstrap policy/seeds/digest | exact active values | source copy | source copy; no sampler state |
+| member training policy/order | exact active values | source copy | source copy; no sampler state |
 | expected calibration context | non-null for R5/R6, otherwise null | exact source copy | exact source copy |
 | fitted calibration payload/hash | null | required | required exact copy |
 | deployment eligibility | never implied | never implied | only R5/R6 with approved calibration |
 
-## 3. Target component inventory — not yet enforced
+## 3. Component inventory
 
-A future formal Stage-5 training checkpoint must contain the exact enabled set of:
+A Stage-5 training checkpoint contains the exact enabled runtime set of:
 
 - belief, ego-goal and vehicle-response encoders;
 - actor and action-independent future scene model;
@@ -95,14 +98,15 @@ A future formal Stage-5 training checkpoint must contain the exact enabled set o
 - two online return critics and active risk-member bundle;
 - a complete EMA target copy of the value path, including encoders and interaction;
 - four disjoint optimizer states: value path, risk heads, actor, entropy;
-- entropy state, optional AMP scaler, `target_policy_online_actor_philox_v1` RNG state/counter and
-  sorted-join-key contract;
+- entropy state, optional AMP scaler and `target_policy_torch_generator_exact_resume_v1` state;
 - replay/index/sampler generation references.
 
-Inactive variant components must be absent. Runtime recurrent hidden states are caller-owned and are
-not serialized as model parameters. Core A7 uses exact-zero initial hidden state.
+Load rejects any missing or extra component relative to the instantiated agent and rejects any semantic
+state hash mismatch. Inactive variant components are absent from the model state. Runtime recurrent
+hidden states are caller-owned and are not serialized as model parameters. Core A7 uses exact-zero
+initial hidden state.
 
-## 4. Target phase and initialization rules
+## 4. Implemented phase and initialization rules
 
 | Phase | Trainable ownership | Target behavior |
 |---|---|---|
@@ -117,7 +121,7 @@ the complete online value path is copied once to target before any update.
 Exact resume restores both online and target weights, all optimizers/scaler, replay/sampler, RNG and
 counters. It never overwrites the restored target with online weights.
 
-## 5. Target compatibility decisions
+## 5. Compatibility decisions
 
 | Change | Resume | Warm start | New data/protocol |
 |---|---:|---:|---:|
@@ -132,38 +136,39 @@ counters. It never overwrites the restored target with online weights.
 Shape equality never overrides a semantic mismatch. Evaluation may load an unpromoted checkpoint only
 in explicit development mode and must label its outputs accordingly.
 
-## 6. Target atomic save and load
+## 6. Atomic save and load
 
-Required formal save protocol:
+Implemented save protocol:
 
 1. freeze a coherent step boundary;
 2. write payloads and manifest to a new temporary generation;
-3. hash every file and canonical manifest;
+3. hash the tensor payload and every component semantic state;
 4. validate component ownership, parent lineage and counters;
 5. fsync where supported and atomically rename;
 6. update the current pointer only after validation.
 
-The future formal load protocol validates path confinement, role/schema, root checksum, lineage, all fingerprints,
-attestations and component inventory before tensor deserialization. It then restores state and runs a
-deterministic probe. Corrupt, partial, foreign-family or dirty-identity mismatches fail closed.
+The load protocol validates path confinement, role/schema, payload checksum, model fingerprint and
+component inventory before applying tensor state. It then verifies semantic component hashes, restores
+state and runs finite-weight startup checks. Training entrypoints additionally validate dataset/source/
+protocol metadata. Corrupt, partial, foreign-family or lineage mismatches fail closed.
 
-## 7. Target calibration and deployment
+## 7. Calibration and deployment
 
 Calibration is fitted on the dedicated calibration split against one immutable Stage-5 checkpoint.
 Its artifact stores source hash, episode IDs, member order, method, fitted parameters and metrics.
 Refitting creates a new artifact; it never mutates training generations.
 
-Formal deployment export must accept only a promoted Stage-5 checkpoint plus approved calibration artifact. The
+Deployment export accepts only a promoted Stage-5 checkpoint plus approved calibration artifact. The
 bundle includes inference components, resolved robot/config, contract hashes, latency evidence and
 fallback thresholds. On the robot, mismatched footprint/controller/action decoder, missing calibrator,
 stale source identity or failed startup probe prevents command publication.
 
-## 8. Required tests before removing the formal readiness block
+## 8. Required evidence before deployment promotion
 
-- interruption at each save stage leaves the previous generation loadable;
-- bitwise/deterministic save-resume reproduces sampling, proposals and updates;
-- every semantic fingerprint mutation causes the intended reject/warm-start decision;
-- missing/extra/overlapping optimizer ownership is rejected;
-- Stage transition imports no target/optimizer/replay state;
-- calibration and deployment lineage hashes resolve to exact source artifacts;
-- path traversal, corrupted hash and wrong artifact role fail before deserialization.
+- atomic publication leaves the previous pointer valid until a complete generation is published;
+- exact save-resume restores sampling, proposal RNG, optimizer and update counters;
+- semantic component mutation, missing/extra inventory and metadata mismatch are rejected;
+- Stage transition imports online weights only and reinitializes target from online;
+- calibration and deployment hashes resolve to the exact Stage-5 source artifact;
+- path traversal, corrupted byte/semantic hash and wrong artifact role fail before state application;
+- before real promotion, record target-hardware latency, HIL startup/load and operator-approved trial evidence.

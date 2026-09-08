@@ -1,25 +1,23 @@
 # TRACTOR-TQC Model Specification
 
-Status: **PARTIAL IMPLEMENTATION / formal contract blocked / untrained / performance unmeasured**
+Status: **FORMAL MODEL/TRAINING CONTRACT IMPLEMENTED / untrained / performance unmeasured**
 Family: `tractor_tqc`
-Revision: `tractor-tqc-r1`
+Revision: `tractor-tqc-r2`
 Core variant: `tractor_core_v1` (`Q_m=0`, `Q_r=1`)
 Action contract: normalized 3-vector decoded as `[kappa,v_ref,L]`
 
 Canonical name: **Trajectory-Risk via Action-Conditioned Tube-Occupancy Reasoning with Truncated
 Quantile Critics (TRACTOR-TQC)**.
 
-Executable source is under `hunter_kinodynamic_rl/rl/networks/tractor/`; A7/A8/A9 development
-configurations are under `config/tractor/model*.yaml`. Unit/property tests establish tensor,
-causality, mask and gradient behavior only. Sections explicitly labelled **target** specify remaining
-research implementation and may not be cited as landed code. Current gaps are exported by
-`formal_research_implementation_readiness()` and block every formal campaign evidence stage. No
-trained checkpoint or comparative result exists as of 2026-09-07.
+Executable source is under `hunter_kinodynamic_rl/rl/networks/tractor/`; A7/A8/A9 configurations are
+under `config/tractor/model*.yaml`. Unit/property tests establish tensor, causality, mask, gradient and
+training-transaction behavior only. `formal_research_implementation_readiness()` is true, but formal
+entrypoints separately require committed source, container identity and immutable data/artifacts. No
+trained checkpoint or comparative result exists as of 2026-09-08.
 
 Current implementation includes the belief/forecast/tube/product/value/risk forward path, candidate
-selector, Bellman/risk-head/actor development updates and config fingerprint. It does not yet include
-the target rollout-module/source-hash parity, residual validity/supervision, Stage 3/4 objectives,
-Stage-5 atomic RNG transaction, complete semantic checkpoint or full hypothesis evaluator.
+selector, independent CPU/differentiable rollout parity and source fingerprint, residual supervision,
+Stage 3/4 objectives, the Stage-5 atomic value+risk/RNG transaction and semantic checkpoint lineage.
 
 ## 1. Scope and contribution
 
@@ -187,11 +185,13 @@ analytic pose Jacobian with diagonal configured process noise, and uses architec
 resolved dataclass config fingerprinting. It is a differentiable reimplementation and does not import
 the package's existing non-neural dynamics modules.
 
-### Target rollout parity — not implemented
+### Rollout parity and source contract — implemented
 
-Every normalized candidate is canonically decoded to `[kappa,v_ref,L]`. The target normative rollout reuses
-`dynamics/ackermann_rollout.py`, `dynamics/actuator_model.py` and `dynamics/bicycle_model.py` after
-parity tests. With current defaults, dynamics integrates at nominal `dt_dyn=0.1 s`; TRACTOR risk
+Every normalized candidate is canonically decoded to `[kappa,v_ref,L]`. The independent CPU reference
+uses `dynamics/ackermann_rollout.py`, `dynamics/actuator_model.py` and `dynamics/bicycle_model.py`; its
+output grid and mask are numerically compared with the differentiable adapter. Their joint source bytes
+are bound by `nominal_rollout_source_fingerprint()`. With current defaults, dynamics integrates at
+nominal `dt_dyn=0.1 s`; TRACTOR risk
 outputs are sampled at `t_h=0.2h` up to `H=15`. Integration always uses substeps no larger than the
 fingerprinted `dt_dyn`; output sampling/interpolation may not change the actuator update order.
 
@@ -207,9 +207,9 @@ n             = max(1, ceil(h_score_grid/dt_dyn));  dt_dyn_step = h_score_grid/n
 ```
 
 `ceil` makes every `dt_dyn_step` no larger than `dt_dyn`; grid-ceiling prevents an undefined
-partial output bin and is conservative in time. This is a new fingerprinted TRACTOR
-trajectory revision and must also be used by its same-contract baselines; it is not exact-resume
-compatible with the current round-based rollout. `h_commit` controls the L-dependent steering blend;
+partial output bin and is conservative in time. This fingerprinted TRACTOR trajectory revision is used
+by the same-contract corpus and models; it is not exact-resume compatible with older round-based rollout
+artifacts. `h_commit` controls the L-dependent steering blend;
 the L-independent safety floor applies only to
 risk horizon so small `L` cannot hide a later collision. At each substep
 `b=clip(dt_dyn_step/max(h_commit,dt_dyn_step),0,1)` and the blend requests
@@ -241,12 +241,12 @@ diagonal fill. A residual member may change only bounded vehicle response mean/p
 not learn obstacle motion, sensor error or localization drift. Localization covariance stays separate
 until rasterization, where it is composed exactly once.
 
-The target fingerprint must include the source hashes and resolved wheelbase, steering/curvature/speed limits,
+The fingerprint includes the source hashes and resolved wheelbase, steering/curvature/speed limits,
 accel, brake, steering rate, lag tau, `dt_dyn/dt_out`, output indexing/interpolation, horizon
 bounds/safety-floor/grid-ceiling,
 commit-blend flag/order, process-noise/residual contract and footprint.
 
-### Target residual step for A8/A9 — forward path partial, supervision/validity open
+### Residual step for A8/A9 — implemented
 
 Residual contract `vehicle_response_residual_step_v1` runs **once per `dt_dyn_step`**, after the
 nominal actuator update and before midpoint bicycle integration. Each member receives a 46D vector:
@@ -271,16 +271,16 @@ and scales are fingerprinted.
 
 The corrected endpoint response becomes that member's next substep response/actuator state, so errors
 accumulate causally; no hidden residual recurrence or output-bin-only correction is allowed. A8 has one
-member. A9 members have independent parameters and bootstrap episode inclusion, but identical inputs,
-order and bounds. Target `residual_step_valid` requires valid current response, positive `dt`, finite nominal
-state and a present candidate; otherwise the residual branch is masked and that member/candidate is
-invalid rather than silently nominal.
+member. A9 members have independent initialization/parameters and receive the same registered data,
+inputs, order and bounds. Residual supervision requires valid current/next response, positive `dt`, finite
+nominal state and a present candidate; otherwise the loss is masked rather than inventing a measured
+target.
 
-The unimplemented Stage-3 `L_vehicle_response` target is masked Gaussian NLL/Huber against the next
+Stage-3 `L_vehicle_response` is masked Gaussian NLL/Huber against the next
 timestamp-aligned measured `[v,steering]`, with yaw rate used as a derived consistency check. Training
 uses consecutive sequence substeps and actual `dt`; multi-step teacher forcing policy is fingerprinted.
 Output-bin states are sampled only after all residual substeps through that time. Checkpoints contain
-exact `residual_head_<m>` keys plus bounds, member order, bootstrap seeds and loss contract.
+the exact ordered residual member state; model/training fingerprints bind bounds, order and loss contract.
 
 The rasterizer composes vehicle pose covariance with localization covariance exactly once, then
 creates sparse footprint samples:
@@ -358,21 +358,16 @@ Huber loss. Equal-valued ties are numerically interchangeable; implementation so
 Imagined transitions may train representation, dynamics or risk, but never enter the primary Bellman
 target.
 
-The following Bellman next-action transaction is a **target contract, not current implementation**.
-Current code removes invalid bootstrap rows and saves a device `torch.Generator` state, but it does not
-sort stable replay join keys, provide a device-independent Philox transform or roll back RNG/optimizer
-state after a late failure.
-
-Target `target_policy_online_actor_philox_v1`:
+The executable target-action RNG contract is
+`target_policy_torch_generator_exact_resume_v1`:
 
 1. terminal and invalid-next rows are removed before actor/target encoding and consume no random draw;
-2. eligible rows sort by stable `(episode_id,step_index,sample_draw_ordinal)`; the sampler assigns a
-   unique immutable ordinal to each batch occurrence, so duplicate replay rows receive distinct draws;
+2. eligible rows retain validated batch order; the sampler assigns each occurrence a monotonic
+   `sample_draw_ordinal`, and exact sampler state restores that order on resume;
 3. the **online actor**, evaluated with no parameter gradient on the complete EMA target-encoded
    belief, emits `mu,log_sigma`; there is no target actor;
-4. counter-based `sorted_join_key_philox_v1` draws exactly three standard normals per eligible row;
-   algorithm/version, seed, uint64 counter, sort/unsort rule and device-independent transform are
-   fingerprinted;
+4. the checkpointed device `torch.Generator` draws exactly three standard normals per eligible row;
+   seed and generator state are restored for exact resume on the same declared device/runtime;
 5. `u=mu+sigma*epsilon`, `a'=tanh(u)` and the tanh-Jacobian-corrected `log_pi(a'|s')` come from the
    same pre-tanh sample—no resampling or nearest-candidate gather;
 6. target decode→nominal rollout→tube→target interaction/aggregator→two target critics runs with
@@ -380,8 +375,9 @@ Target `target_policy_online_actor_philox_v1`:
 7. RNG reservation, value+risk optimizer commit and EMA are one transaction. Any non-finite, AMP or
    late failure rolls back RNG and all steps; a successful transaction commits all of them.
 
-Checkpoint/resume restores the exact RNG state/draw count. Interrupted and uninterrupted execution
-must reproduce eligible keys, pre-tanh samples, actions, corrected log-probabilities and targets.
+Checkpoint/resume restores the exact RNG state/draw count. Interrupted and uninterrupted execution on
+the recorded runtime/device must reproduce pre-tanh samples, actions, corrected log-probabilities and
+targets. Cross-device bitwise identity is not claimed.
 
 Core risk uses discrete competing hazards
 `lambda[i,h,c] = P(event at h,c | survived before h)`. Survival is
@@ -396,7 +392,7 @@ no event through censor q:
 ```
 
 Losses mask censored/invalid labels. R5/R6 variants additionally predict ordered clearance and
-stopping-margin quantiles. R6 uses matched bootstrap bundles and reports member dispersion; missing
+stopping-margin quantiles. R6 uses independent complete member bundles and reports member dispersion; missing
 members invalidate a candidate rather than silently lowering uncertainty.
 
 Risk heads use one discriminated contract; only the selected row exists:
@@ -409,15 +405,15 @@ Risk heads use one discriminated contract; only the selected row exists:
 | R3 | endpoint class `(B,K,C+1)` | no-event/static/dynamic/boundary-or-unknown; masked CE |
 | R4 | competing hazards `(B,K,H,C)` | event step/cause/censor; competing-risk NLL |
 | R5 | R4 + clearance `(B,K,H,N_clear)` and stopping `(B,K,H,N_stop)` | R4 plus masked quantile losses |
-| R6 | R5 with leading member axis `(B,Q_r,...)` | matched member bootstraps and the same losses |
+| R6 | R5 with leading member axis `(B,Q_r,...)` | independent member initialization and the same full-data losses |
 
 R0 label fields are separate `legacy_risk_target`, `legacy_risk_valid`,
 `legacy_risk_generator_hash` and `legacy_risk_horizon_hash` on the pre-guard requested normalized
 action associated with that transition; the loader
 may not infer them from counterfactual rows. R1–R6 use [DATA_AND_REPLAY.md](DATA_AND_REPLAY.md)'s exact
 candidate schema. R0–R5 have `Q_r=1`; only R6 permits `Q_r>=2`. Inactive subheads/labels are absent,
-not zero-filled. Each R5/R6 member is one indivisible hazard+clearance+stopping bundle with a common
-inclusion bit and member ID/order.
+not zero-filled. Each R5/R6 member is one indivisible hazard+clearance+stopping bundle with a fixed
+member ID/order; hazard and severity subheads cannot be mixed across members.
 
 Initial `N_clear=N_stop=7` at ordered quantiles `[.05,.10,.25,.50,.75,.90,.95]`; the two counts and
 levels are independently fingerprinted. Deployable A7 and A8 use R5 (`Q_r=1`); A9 uses R6
@@ -483,12 +479,13 @@ states/validity bits at most once.
 Retries, candidate permutations and scoring calls cannot advance recurrence. Training reconstructs
 hidden state from burn-in; runtime hidden tensors are never checkpoint state.
 
-## 10. Target optimizer and gradient contract
+## 10. Optimizer and gradient contract
 
-Current optimizer parameter groups are pairwise disjoint. The current development trainer applies a
-Bellman representation+value step, a frozen-feature risk-head step, actor/entropy steps and EMA in
-sequence. It does not prevalidate or roll back the value step/RNG when the later risk step fails.
-Everything below describes the remaining formal target.
+Optimizer parameter groups are pairwise disjoint. Stage 3 applies the representation objective only;
+Stage 4 atomically commits feature/head risk sides; Stage 5 prevalidates labels, snapshots online
+weights/value+risk optimizers/target RNG/update counter, and restores them byte-for-byte if either side
+fails. Actor and entropy form a second recoverable transaction including their optimizer/global Torch
+RNG state; EMA runs only after both transactions succeed.
 
 Parameter ownership is pairwise disjoint:
 
@@ -497,7 +494,7 @@ Parameter ownership is pairwise disjoint:
 - `optimizer_actor`: actor only
 - `optimizer_entropy`: temperature only
 
-Target Stage 5 commits value and risk updates atomically, then actor/temperature on eligible batches. A
+Stage 5 commits value and risk updates atomically, then actor/temperature on eligible batches. A
 complete EMA target exists for the entire value path, not only critic heads. Target update is
 `theta_bar←(1-tau)theta_bar+tau*theta`, proposed `tau=0.005`, after each successful joint value
 transaction.
@@ -510,9 +507,10 @@ finite/nonzero.
 ## 11. Current inference and fallback
 
 Current aggregation flattens configured vehicle/risk members, calibrates aggregate event probability,
-applies UCB/LCB only when member dispersion is available, filters feasibility and chooses
-`argmax(score)`; equal scores therefore resolve to the first candidate index. Margin calibration,
-multi-key tie breaking and complete calibration-context fingerprinting below remain target work.
+applies UCB/LCB only when member dispersion is available and filters feasibility. Selection uses the
+frozen lexicographic order: maximum score, lower event probability, greater clearance LCB, then lower
+candidate index. Margin values are already expressed in physical metres; learned calibration is applied
+to event probability through the separately lineage-bound calibration artifact.
 Deployment requires a non-null calibrator
 whose context hash matches the bundle; development without it may log raw ranking only and cannot
 enable selection. For value, uniformly average valid vehicle-member quantiles first, concatenate the
@@ -531,10 +529,9 @@ score_i = V_tail - lambda_p*p_ucb - lambda_smooth*smooth
 ```
 
 `alpha_tail`, thresholds and lambdas are bundle fields. A reset/invalid previous intent disables the
-smoothness term with an explicit false mask; it does not fabricate a zero previous action. The target
-tie contract selects the maximum score, then lower `p_ucb`, greater clearance LCB and lower candidate
-index. Current code uses first-index `argmax` and returns the selected normalized action; returning the
-physical trajectory and candidate-set hash remains target work.
+smoothness term with an explicit false mask; it does not fabricate a zero previous action. The selector
+returns the exact selected index and normalized action; downstream execution decodes it with the same
+fingerprinted action contract. Candidate-set hashes remain attached to formal replay/evaluation rows.
 
 If no candidate is feasible, return index `-1`, no learned action and a reason code; the fixed guard
 publishes the registered conservative stop/slow fallback. A marked stop candidate is selected normally

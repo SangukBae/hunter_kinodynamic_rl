@@ -6,6 +6,7 @@ by this index. Exact numbers still require their original immutable artifact.
 
 | Date / former record | Reusable scope | Not evidence for |
 |---|---|---|
+| [2026-09-08 training readiness smoke](2026-09-08_training_readiness_smoke.md) | current build/regression, L0 data path and L4 dynamic-scene wiring | formal comparison or navigation performance |
 | 2026-08-26 item1-4 fixes | fail-fast and targeted regression patterns | current model performance |
 | 2026-08-26 residual defects round2 | edge-case re-audit discipline | learned residual dynamics |
 | 2026-08-27 start-pose/noise/pool/OU | reset, sensor-noise, obstacle-pool provenance | TRACTOR data validity without rerun |

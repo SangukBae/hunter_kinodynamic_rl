@@ -1,6 +1,6 @@
 # TRACTOR-TQC Implementation and Operations Plan
 
-Status: **development core landed; formal comparison blocked by explicit implementation-readiness gaps**
+Status: **formal research implementation landed; experiments and deployment evidence pending**
 
 This document is the single code-change, integration and runbook map. It does not report completion;
 actual state belongs to [CURRENT_STATUS.md](CURRENT_STATUS.md).
@@ -55,17 +55,15 @@ config/profiles/tractor_*.yaml
 New modules consume typed dataclasses from `contracts.py`; no dict with optional semantic fields may
 cross the `encode/propose/score` boundary.
 
-As of 2026-09-07, the listed TRACTOR network, current-TQC B1 and B2–B8 baselines, core
-realized-track relabeler, reset-prefix replay adapter, development learning runners, partial
-checkpoint/calibration, navigation locked evaluator, campaign orchestrator, preflight and runtime
-boundary exist. Formal evidence stages are intentionally blocked until the readiness gaps registered
-in `config/tractor.py` are implemented.
-Work-package completion still follows the exit gates
+As of 2026-09-08, the listed TRACTOR network, current-TQC B1 and B2–B8 baselines, dense realized-track
+relabeler/lineage, reset-prefix replay, Stage 3–5 learning, semantic checkpoint/calibration, hypothesis
+evaluator, system-axis scenario plan, campaign orchestrator, preflight and runtime boundary exist.
+The implementation-readiness registry is empty. Work-package completion still follows the exit gates
 below; source presence must not be interpreted as trained or paper-ready evidence.
 
 ## 3. Work packages
 
-### P0 — repair current contracts
+### P0 — repair current contracts — implemented
 
 1. centralize footprint and assert Local/map/Global equality;
 2. extend fingerprints over trajectory, observation/replay, model family and physical attestation;
@@ -83,31 +81,31 @@ Immutable B1–B8 profiles, seed schedule, train budget and locked scenario mani
 Weights/results remain absent. The existing L0–L5 0/30 campaign stays in its own output root and is
 reported separately because it does not share the sequence-training contract.
 
-### P2 — sequence data plane
+### P2 — sequence data plane — implemented
 
-Implement versioned episode writer, checksummed chunks, index, sampler, burn-in and migration report.
-Add scripted label fixtures and a dataset validator. Do not begin long training while any leakage,
-timestamp or mask error remains.
+Versioned episode writer, checksummed chunks, index, sampler, burn-in, dense realized labels, corpus-root
+manifest and dataset validator are implemented. Long training must not begin while any leakage,
+timestamp, mask or source-lineage error remains.
 
-### P3 — belief and dynamics
+### P3 — belief and dynamics — implemented
 
-Implement ray lift, cumulative SE(2) warp, scene ConvGRU, four-class occupancy, flow, ego/health and
-vehicle-response encoders. Verify offline identifiability before connecting RL. Adapt the current
-nominal rollout only after numerical parity tests; add bounded residual as a separate variant.
+Ray lift, cumulative SE(2) warp, scene ConvGRU, four-class occupancy, flow, ego/health and
+vehicle-response encoders are implemented. CPU/differentiable nominal rollout parity is tested and
+bounded residual dynamics remain separate A8/A9 variants.
 
-### P4 — interaction and risk
+### P4 — interaction and risk — implemented
 
-Implement tube rasterization, candidate-private sparse gathers, explicit products, temporal aggregator,
-two quantile critics and registered risk heads. Property tests for action-invariance, permutation and
-single-vs-batched equivalence are release blockers.
+Tube rasterization, candidate-private sparse gathers, explicit products, temporal aggregator, two
+quantile critics and registered risk heads are implemented with action-invariance, permutation and
+single-vs-batched property tests.
 
-### P5 — RL integration
+### P5 — RL integration — implemented
 
-Implement disjoint optimizer ownership, complete target EMA, deterministic target-action RNG,
-real-transition Bellman target and actor-through-score gradient path. Add exact interruption/resume
-tests before multi-hour jobs.
+Disjoint optimizer ownership, complete target EMA, deterministic target-action RNG, real-transition
+Bellman target, actor-through-score gradient path and Stage 4/5 rollback transactions are implemented.
+Exact resume and Stage warm-start contracts are covered before multi-hour jobs.
 
-### P6 — formal evaluation
+### P6 — formal evaluation tooling implemented; campaign unrun
 
 Run development smoke, then complete baselines, ablations and TRACTOR seeds under the frozen protocol.
 Aggregate only complete verified manifests. Fit calibration on its dedicated split and evaluate ID/OOD
@@ -175,39 +173,39 @@ dataset/index. The current live collector labels are explicitly marked
 `nominal_preaction_rollout_summary_v1`; they exercise the complete development path but are not a
 substitute for the formal realized timestamp-aligned candidate corpus.
 
-The paper-matrix orchestrator can prepare an immutable manifest, but its evidence-producing commands
-currently fail closed because formal implementation readiness is false:
+The paper-matrix orchestrator prepares an immutable manifest and runs each formal stage only after
+source/container/dataset integrity checks pass:
 
 ```bash
-# freeze manifests and expected B1–B8/A7–A9 × five-seed matrix
+# first record the exact runtime image digest, then freeze the v2 matrix
+export HUNTER_CONTAINER_IMAGE_DIGEST=sha256:<64-hex-image-digest>
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 prepare
+  --campaign-root runtime/tractor_paper_v2 prepare
 
-# BLOCKED until formal_research_implementation_readiness().ready is true:
 # collect all 616 scenarios once
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 collect
+  --campaign-root runtime/tractor_paper_v2 collect
 
 # 55 matched training runs; commands are restartable with --skip-complete
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 train --device cuda --skip-complete
+  --campaign-root runtime/tractor_paper_v2 train --device cuda --skip-complete
 
 # calibration split only, then one locked-test pass per method/seed
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 calibrate --device cuda --skip-complete
+  --campaign-root runtime/tractor_paper_v2 calibrate --device cuda --skip-complete
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 evaluate --device cuda --skip-complete
+  --campaign-root runtime/tractor_paper_v2 evaluate --device cuda --skip-complete
 
 # fail closed unless 55 runs and 9,680 locked episode records are verified
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 aggregate \
+  --campaign-root runtime/tractor_paper_v2 aggregate \
   --runtime-json <target-hardware-latency.json>
 ros2 run hunter_kinodynamic_rl run_paper_comparison_campaign.py \
-  --campaign-root runtime/tractor_paper_v1 status
+  --campaign-root runtime/tractor_paper_v2 status
 ```
 
-Do not bypass the readiness gate or label development-runner output as formal evidence. Once every
-gap has code and regression coverage, formal runs require an explicit fresh output root. Run long stages in `tmux`, preserve stdout/stderr,
+Do not bypass integrity gates or label development-runner output as formal evidence. Formal runs require
+a clean committed source, exact container digest and an explicit fresh output root. Run long stages in `tmux`, preserve stdout/stderr,
 record GPU/driver/container/commit identity and verify the first checkpoint in a separate process.
 `aggregate` reports paired seed-level B1 comparisons; it cannot turn incomplete or non-target timing
 artifacts into a pass.

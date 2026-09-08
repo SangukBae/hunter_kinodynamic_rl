@@ -8,10 +8,10 @@ individual runs. Rows are append-only; corrections create a new row linked to th
 | Campaign | Planned matrix | Training complete | Benchmark complete | Status |
 |---|---:|---:|---:|---|
 | legacy Stage-2 L0–L5 | 6×5 = 30 | **0/30** | **0/30** | NOT STARTED in inspected runtime |
-| same-contract paper comparison | B1–B8/A7–A9 × 5 seeds; 176 locked scenarios | **0/55** | **0/55 runs; 0/9,680 episodes** | FORMAL-BLOCKED / UNTRAINED |
+| same-contract paper comparison | B1–B8/A7–A9 × 5 seeds; 176 locked scenarios | **0/55** | **0/55 runs; 0/9,680 episodes** | IMPLEMENTATION-READY / UNTRAINED |
 | comparison risk calibration | A7/A8/A9/B8 × 5 seeds; 88 calibration scenarios | — | **0/20** | IMPLEMENTED / UNFITTED |
-| formal realized-track corpus | 352 development + 88 calibration + 176 locked | — | **0/616** | CORE COLLECTOR PRESENT / FULL SCHEMA BLOCKED |
-| TRACTOR simulation env v2 | 6 fixed suites × 8 scenarios | 0 | 0 | CONFIGURED / NO ROLLOUT EVIDENCE |
+| formal realized-track corpus | 352 development + 88 calibration + 176 locked | — | **0/616** | COLLECTOR/SCHEMA/MANIFEST READY / UNCOLLECTED |
+| TRACTOR simulation env v2 | 6 fixed suites × 8 scenarios | 0 | 0 | DEV GAZEBO SMOKE PASSED / FORMAL 0 |
 | formal Global | blocked by Local promotion | 0 | 0 | BLOCKED |
 | Hunter real navigation | not approved | 0 | 0 | NO EVIDENCE |
 
@@ -93,7 +93,7 @@ check. Compound changes are labelled and cannot support a single-factor causal c
 | D-08 | Local promotion precedes Global training | prevent moving capability contract | after immutable Local promotion |
 | D-09 | seed-level CI is the headline replication rule | episodes from one trained policy are not independent replicas | new protocol version only |
 | D-10 | split identity is canonical geometry SHA-256 | renamed copies must still trigger leakage rejection | new data schema only |
-| D-11 | preserve v1 and add opt-in `tractor_env_v2` | avoid invalidating 616-scenario frozen evidence while increasing motion/geometry diversity | only with a new environment contract |
+| D-11 | preserve prior artifacts and version new work as protocol/environment v2 | avoid mixing prior contracts while increasing motion/geometry/system-axis diversity | only with another protocol version |
 | D-12 | curriculum index is trainer-delivered and fail-fast | exact resume must restore difficulty stage; reset count is not a reliable proxy | service/interface revision only |
 
 New decisions use `D-<number>`, list alternatives, affected fingerprints and migration/test impact in a
@@ -120,8 +120,8 @@ Use [templates/EXPERIMENT_CARD.md](templates/EXPERIMENT_CARD.md) for a new run a
 
 ## 8. Completion rule
 
-Documentation or partial implementation completion is not research completion. Formal collection and
-training remain blocked while `formal_research_implementation_readiness()` reports any gap. The project may be marked
-complete only when every claim has a valid artifact, the registered matrix is complete, target timing
+Documentation or implementation completion is not research completion. Formal collection and training
+may start only when `formal_research_implementation_readiness()` is ready and source/container/data
+preflight passes. The project may be marked complete only when every claim has a valid artifact, the registered matrix is complete, target timing
 and calibration gates pass, and any reported real claim has approved trial cards. Until then the
 registry remains explicit about zero/missing evidence.

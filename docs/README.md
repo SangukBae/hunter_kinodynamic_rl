@@ -1,6 +1,6 @@
 # TRACTOR-TQC 문서 안내
 
-기준일: **2026-09-07 KST**
+기준일: **2026-09-08 KST**
 
 이 폴더는 Hunter SE용 **Trajectory-Risk via Action-Conditioned Tube-Occupancy Reasoning with
 Truncated Quantile Critics (TRACTOR-TQC)** 연구의 설계, 구현, 평가 및 실차 전환 계약을 담는다.
@@ -92,17 +92,16 @@ compatibility index이며 별도 정본이 아니다.
 
 - prior audit의 Docker `2,138 passed`는 provenance가 불완전한 code-health snapshot이다.
 - Stage-2 L0–L5 formal matrix는 training **0/30**, benchmark **0/30**이다.
-- TRACTOR-TQC와 B1–B8 development implementation, realized-track relabeler, navigation evaluator,
-  frozen acceptance/scenario protocol v1과 616-instance split-safe scenario plan은 존재한다.
-  다만 full Stage 3–5, supervision schema, H1–H3 evaluator, semantic promotion과 system-axis
-  scenario가 미구현이라 formal campaign evidence 단계는 fail-closed되어 있다.
+- TRACTOR-TQC와 B1–B8, dense realized-track schema, Stage 3–5 trainer, semantic checkpoint,
+  H1–H3 evaluator, frozen protocol v2와 system axes를 포함한 616-instance split-safe plan이
+  구현돼 있다. Formal run은 dirty source, container identity 누락 또는 dataset/artifact mismatch에
+  대해 fail-closed한다.
 - 별도 `tractor_env_v2` curriculum과 48개 fixed ID/OOD scenario가 구현·checksum 고정됐지만,
   아직 navigation rollout 또는 비교 성능 증거는 아니다.
 - accepted Local을 고정한 formal Global 결과와 Hunter SE 실차 navigation 증거도 없다.
 
 따라서 현재 허용되는 요약은 다음과 같다.
 
-> The package contains a TQC-based Local baseline, hierarchical infrastructure, and an
-> untrained regression-tested TRACTOR-TQC and matched-baseline development implementation. The full
-> formal campaign is blocked by explicit implementation-readiness gates. Formal training, comparative
+> The package contains a TQC-based Local baseline, hierarchical infrastructure, and an untrained,
+> regression-tested formal TRACTOR-TQC/matched-baseline implementation. Formal training, comparative
 > benchmarking, calibration, target-hardware timing, and real-robot validation remain open.

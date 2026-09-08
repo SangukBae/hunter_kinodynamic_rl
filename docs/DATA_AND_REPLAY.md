@@ -1,26 +1,27 @@
 # Data and Replay Contract
 
-Status: **PARTIAL IMPLEMENTATION: core storage/index/sampler/candidate labels; full supervision and lineage schema blocked; no collected rollout dataset**
+Status: **FORMAL SCHEMA/VALIDATOR IMPLEMENTED; no collected rollout dataset**
 Schema: `tractor_sequence_v2`
 
 Current IID transition replay cannot train recurrent ego-warped belief or cause-time risk. TRACTOR
 therefore uses episode-oriented durable storage plus sampled sequence windows in `rl/replay/`.
-Durability, checksum, reset-boundary, terminal and exact sampler-resume tests pass. This schema does
-not silently reinterpret legacy replay, and no dataset artifact has yet passed the validator.
+Durability, checksum, reset-boundary, terminal and exact sampler-resume tests pass. Dense supervision,
+candidate lineage and the immutable corpus-root manifest are enforced for formal data. This schema
+does not silently reinterpret legacy replay, and no 616-episode formal dataset has yet been collected.
 
 ## 1. Storage layers
 
 | Layer | Role |
 |---|---|
-| raw episode store | immutable packed observation, timestamps, masks, outcomes and core provenance |
+| raw episode store | immutable packed observation, timestamps, masks, outcomes, dense targets and provenance |
 | replay index | valid sequence starts, event strata, split and sidecar references |
 | sampled batch | burn-in + loss window, normalized only after loading |
-| optional sidecar | large counterfactual/dense future targets keyed by episode and step |
+| optional sidecar | additional large targets keyed by episode and step; core formal dense targets are in episode rows |
 
-Candidate trajectories and command telemetry use physical units, but the current observation is stored
-as the packed policy vector rather than decomposed authoritative raw scan/goal/pose fields. A future
-formal schema must preserve those raw fields separately; normalization parameters remain model-manifest
-fields.
+Candidate trajectories and command telemetry use physical units, but the observation remains the exact
+packed policy vector plus validity/motion/covariance fields rather than a second decomposed copy of all
+raw sensor messages. Formal provenance binds the generator and packed contract; normalization parameters
+remain model-manifest fields.
 
 ## 2. Episode header
 
@@ -39,24 +40,24 @@ sensor/localization/controller sources and clock domains
 
 An episode belongs to exactly one development, calibration or locked-test split. Derived windows and
 sidecars inherit that assignment. In v2, `group_id` equals the canonical scenario geometry SHA-256;
-renaming a copied scenario therefore cannot hide cross-split geometry leakage.
+renaming a copied scenario therefore cannot hide cross-split geometry leakage. The corpus-root manifest
+additionally records every episode byte hash, row/split counts, sequence-index hash, protocol/contract,
+behavior seed and committed source/container identity.
 
-## 3. Per-step record: current implementation and formal target
+## 3. Per-step record
 
 The currently enforced `CORE_STEP_FIELDS` store the packed observation and masks, motion delta,
 previous published command, covariance/localization fields, requested normalized action, reward,
 measured `dt`/discount and terminal semantics. `CANDIDATE_FIELDS` store fixed-capacity physical
 trajectories, candidate masks, cause/time/censor/severity/progress labels and one candidate-set hash.
-`PRIVILEGED_LABEL_FIELDS` store the pre-action ego/obstacle snapshot. Fields listed below that are not
-in those three executable tuples are **formal target extensions**, not current collected columns.
+`PRIVILEGED_LABEL_FIELDS` store the pre-action ego/obstacle snapshot. Formal collection additionally
+requires the all-or-none `FORMAL_SUPERVISION_FIELDS` and validates every shape, mask and SHA-256 field.
 
-### Target observation and timing extensions
+### Observation and timing fields
 
 ```text
 decision_timestamp_ns
-scan_ranges[80], scan_valid[80], scan_timestamp_ns
-goal_distance_m, goal_heading_rad, local_subgoal_valid
-measured_speed_mps, yaw_rate_rad_s, centre_steering_rad
+packed observation[328], scan_valid[4,80]
 vehicle_response_valid[3]
 pose_xyyaw, pose_covariance[3,3], localization/confidence validity
 sensor_freshness_sec and validity
@@ -64,38 +65,35 @@ motion_delta_from_previous[dx,dy,dyaw,dt] and validity
 reset_epoch, scene_reset, response_reset
 ```
 
-The four-frame observation is reconstructed inside one reset epoch. `dt` is timestamp-derived and
+The packed vector preserves the current four-frame scan and 8D tail contract. `dt` is timestamp-derived and
 must be positive. Missing motion, pose or scan validity is stored explicitly; it is never encoded as
 valid zero.
 
-### Target action and response extensions
+### Action and response fields
 
 ```text
 action_normalized_requested[3]
-trajectory_physical_requested[kappa,v_ref,L]
-command_requested[speed,centre_steering]
-command_guarded[2], guard_reason
-command_published[2], publication_valid, publication_timestamp_ns
-selected_candidate_index, selected_candidate_set_sha256, selector_reason
+candidate_actions_normalized[K,3]
+candidate_trajectories_physical[K,3]
+candidate_set_sha256 and candidate selection masks
 ```
 
-The runtime telemetry distinguishes requested, guarded and confirmed-published values, but the current
-sequence row stores only the requested normalized action and previous confirmed-published command. The
-formal target requires all fields below. The next row consumes the previous
-confirmed published command exactly once. `selected_candidate_index=-1` iff selection is disabled,
-no candidate is feasible, or fallback is guard-only. Otherwise it indexes a present/model-valid row in
-the exact `selected_candidate_set_sha256`; mismatch or an out-of-range index rejects the transition.
+The runtime telemetry distinguishes requested, guarded and confirmed-published values. The formal
+sequence row stores the executed transition's requested normalized action, complete candidate set and
+previous confirmed-published command. The next row consumes the previous confirmed-published command
+exactly once. Runtime selector diagnostics remain evaluation telemetry; replay does not reconstruct
+them from a near-equal action.
 
-### Outcome and risk: core plus target extensions
+### Outcome and risk
 
 ```text
-reward and named reward terms
+reward
 transition_dt_sec, discount_factor
 next_observation reference, next_observation_valid
 terminated, truncated, termination_reason, bellman_sample_valid
-collision_event, collision_time, collision_cause, cause_valid
-minimum_clearance, stopping_margin, label masks
-privileged_label_source and source timestamp
+candidate event/time/cause/censor labels and validity
+candidate clearance/stopping margin and validity
+privileged source snapshot and timestamp
 ```
 
 Terminal semantics are closed and validated before sampling:
@@ -115,9 +113,9 @@ is deterministically derived from `transition_dt_sec` and the fingerprinted refe
 it is not silently fixed to nominal 0.1 s. No-event sequence end is censored unless the observation
 window proves survival to its horizon.
 
-### Target scene and flow supervision — not implemented
+### Scene, flow and response supervision — implemented for formal rows
 
-The future formal row/sidecar must store, when labels are available:
+Formal rows store the following with independent validity masks:
 
 ```text
 current_bev_class_target[64,64]          # F/S/D/U integer class
@@ -127,6 +125,7 @@ current_dynamic_flow_valid[64,64]
 future_bev_class_target[H,64,64] and validity
 future_dynamic_flow_target[H,2,64,64] and validity
 tube_oob_mass_target[K,H], tube_coverage_valid[K,H]
+vehicle_response_target[3] and validity
 label_frame_id, generator_version, source timestamp/hash
 ```
 
@@ -136,10 +135,10 @@ becomes free occupancy or zero flow. `tube_oob_mass_target` is probability mass 
 bounds before gathering; in-grid weights retain their original scale and are not renormalized.
 Boundary-or-unknown supervision is in-grid unknown overlap plus this OOB mass.
 
-### Candidate supervision — core implemented, lineage extensions open
+### Candidate supervision and lineage — implemented
 
-Current episode rows use the fixed-capacity tensor portion of this schema (`K=8`, `H=15`). The
-`base_transition_row_sha256` join and the per-contract hashes at the end remain target extensions:
+Formal episode rows use the fixed-capacity tensor portion of this schema (`K=8`, `H=15`) and bind it
+to the base row and all generating contracts:
 
 ```text
 episode_id, step_index, base_transition_row_sha256
@@ -186,10 +185,10 @@ one present candidate may carry stop identity. Candidate index is meaningful onl
 Counterfactual labels simulate the **unguarded constant-candidate commitment** from the recorded
 pre-action measured vehicle state using the fingerprinted commit/actuator model. A later guard change
 cannot retroactively alter them. Requested/guarded/published actual-transition fields remain separate.
-The current executable row binds the candidate set with `candidate_set_sha256` and the episode header
-with its available provenance. Binding every label to action, trajectory, decoder, executor, robot,
-scenario, generator and source hashes is still a formal target. Labels remain training/evaluation
-targets, never deployment inputs.
+The executable formal row binds every label to the base transition, action, trajectory, decoder,
+executor, effective robot, scenario, generator and source artifact hashes. The validator recomputes
+the decoder, rollout, label-generator and base-row identities and rejects a mismatch. Labels remain
+training/evaluation targets, never deployment inputs.
 
 The following separate R0 legacy fields are also a target extension; the current sequence schema does
 not store them:
@@ -228,13 +227,14 @@ the scoring horizon is conservatively grid-ceiled.
 - Core Bellman and auxiliary batches sample uniformly from valid indexed windows; masked risk and
   representation losses use unweighted means over their valid elements.
 - Every sampled window occurrence receives a monotonically generated `sample_draw_ordinal:uint64` from
-  checkpointed sampler state. It is unique within a batch and joins target-policy RNG draws; sampling
-  the same replay row twice therefore creates two ordered, reproducible occurrences.
+  checkpointed sampler state. Sampling the same replay row twice therefore creates two ordered,
+  reproducible occurrences; target-action RNG reproducibility is guaranteed on the recorded
+  runtime/device, not claimed bitwise across different devices.
 - Event-balanced/priority sampling is disabled for A7 core. Enabling it creates a separate contract
   that must store exact inclusion probability and define clipped/normalized inverse-probability
   estimators plus dedicated unbiasedness/calibration tests.
-- R6 risk members use deterministic per-episode bootstrap inclusion; all subheads in a member share
-  the same bit.
+- R6 risk members are independently initialized complete bundles trained on the same registered rows;
+  hazard and severity outputs remain member-aligned during loss and aggregation.
 - Repeated windows from one episode never appear in different data splits.
 - RNG state, sampler cursor, replay generation and priority state are checkpointed for exact resume.
 
